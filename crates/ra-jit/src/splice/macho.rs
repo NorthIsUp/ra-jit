@@ -1610,7 +1610,8 @@ impl Layout {
             put64(&mut section, 40, len as u64);
             put32(&mut section, 48, u32::try_from(self.text.0 + at - old.address + old.offset)?);
             added.extend(section);
-            commands[table.header + 2..table.header + 9].copy_from_slice(b"_ra_jit_");
+            // Seven bytes over seven, `unwind_` and `eh_fram`: the name is a fixed field.
+            commands[table.header + 2..table.header + 9].copy_from_slice(b"_rajit_");
         }
         added.extend(segment(
             b"__RA_JIT_DATA",
