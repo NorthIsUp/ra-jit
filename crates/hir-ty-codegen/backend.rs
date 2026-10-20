@@ -234,6 +234,8 @@ pub(super) struct Tally {
     pub(super) phases: [AtomicU64; Phase::COUNT],
     /// Where the time around the producer went.
     steps: [AtomicU64; Step::COUNT],
+    /// Where Cranelift's time went, summed over the threads, with `RA_JIT_STATS`.
+    passes: Mutex<Option<cranelift_codegen::timing::PassTimes>>,
 }
 
 #[derive(Default)]
@@ -330,6 +332,18 @@ impl Tally {
         out
     }
 
+    /// Adds the times of Cranelift's passes on this thread since it was last asked, with
+    /// `RA_JIT_STATS`.
+    pub(super) fn passes(&self) {
+        static STATS: OnceLock<bool> = OnceLock::new();
+        if !*STATS.get_or_init(|| std::env::var_os("RA_JIT_STATS").is_some()) {
+            return;
+        }
+        let times = cranelift_codegen::timing::take_current();
+        let mut passes = self.passes.lock().unwrap_or_else(|e| e.into_inner());
+        passes.get_or_insert_with(Default::default).add(&times);
+    }
+
     /// Runs `work` as part of `step`.
     pub(super) fn step<T>(&self, step: Step, work: impl FnOnce() -> T) -> T {
         let start = Instant::now();
@@ -364,6 +378,10 @@ impl Tally {
         }
         if stats {
             eprintln!("steps: {}", steps.join(", "));
+            let passes = self.passes.lock().unwrap_or_else(|e| e.into_inner()).take();
+            if let Some(passes) = passes {
+                eprint!("cranelift passes:\n{passes}");
+            }
         }
         if let Some(llvm) = llvm {
             let phases = std::iter::zip(Phase::ALL, phases)
