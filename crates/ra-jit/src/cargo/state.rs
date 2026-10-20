@@ -536,6 +536,7 @@ impl State {
         &self,
         answers: &[Vec<Result<(), String>>],
     ) -> Result<Vec<(&Program, String)>, String> {
+        let _held = build_locks(self.programs.iter().map(|it| &*it.executable));
         let mut cargos = Vec::new();
         for program in &self.programs {
             let answer = match program.asked_as {
@@ -774,6 +775,33 @@ impl Program {
         let newer = |file: &&PathBuf| written_at(file).is_some_and(|it| it > built_at);
         self.inputs.iter().find(newer).map(PathBuf::as_path)
     }
+}
+
+/// Cargo's lock on each build directory one of `executables` is in, held: cargo takes it
+/// for a build and waits for it as this does. Every build, fresh or not, cargo puts the
+/// program in `deps` under its other name again, removing the file there first when the
+/// two are not one file, and while a program is installed under its names one by one they
+/// are not: a `cargo run` of another client of the checkout that found that moment would
+/// find no program. A directory cargo keeps no lock in, on NFS, has none to hold.
+fn build_locks<'a>(executables: impl Iterator<Item = &'a Path>) -> Vec<std::fs::File> {
+    // `debug/app`, `debug/examples/app` and `debug/deps/app-…` are all of `debug`.
+    let lock_of = |executable: &Path| {
+        let mut above = executable.ancestors().skip(1).take(2);
+        above.map(|dir| dir.join(".cargo-lock")).find(|it| it.is_file())
+    };
+    let mut locks: Vec<PathBuf> = executables.filter_map(lock_of).collect();
+    // In one order, so that two clients that each want two wait for neither.
+    locks.sort();
+    locks.dedup();
+    let held = |lock: PathBuf| {
+        let file = std::fs::File::open(lock).ok()?;
+        if file.try_lock().is_err() {
+            super::say::status(false, "Blocking", "waiting for file lock on build directory");
+            file.lock().ok()?;
+        }
+        Some(file)
+    };
+    locks.into_iter().filter_map(held).collect()
 }
 
 /// Has `to` be the file `from` is, when it is not.
