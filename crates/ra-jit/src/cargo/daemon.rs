@@ -897,6 +897,15 @@ impl Daemon {
                 self.spare();
             }
             let Some(idle) = self.idle else { continue };
+            // A program that takes edits is being edited, however long since the last save:
+            // a worker started again would link it again on the next one.
+            if crate::live::any_running() {
+                *lock(&self.asked) = Instant::now();
+                for worker in lock(&self.workers).values() {
+                    *lock(&worker.asked) = Instant::now();
+                }
+                continue;
+            }
             // Loading is what the last build asked for: the idle time starts after it.
             for worker in lock(&self.workers).values().filter(|it| it.loading()) {
                 *lock(&worker.asked) = Instant::now();
