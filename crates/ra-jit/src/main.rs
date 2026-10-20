@@ -3412,12 +3412,15 @@ struct WatchedFile {
 
 impl WatchedFile {
     /// Whether the file is never written again: everything is watched but the sysroot, the
-    /// registry and what a build made, as path dependencies live outside the project. What a
-    /// build script wrote is written again when it runs again.
+    /// registry, the Nix store (crates vendored by Nix, which `nix run` of the demo reads its
+    /// thousands of files from) and what a build made, as path dependencies live outside the
+    /// project. What a build script wrote is written again when it runs again. Each watched
+    /// file is looked at on every edit, so one too many is time on every keystroke.
     fn immutable(path: &Path) -> bool {
         let names: Vec<&str> = path.components().filter_map(|c| c.as_os_str().to_str()).collect();
         let of_script = names.windows(3).any(|it| it[0] == "build" && it[2] == "out");
-        names.iter().any(|&it| matches!(it, "rustlib" | "registry"))
+        path.starts_with("/nix/store")
+            || names.iter().any(|&it| matches!(it, "rustlib" | "registry"))
             || names.contains(&"target") && !of_script
     }
 
