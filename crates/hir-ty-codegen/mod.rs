@@ -3577,7 +3577,11 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
         } else {
             std::thread::spawn(move || drop(told));
         }
-        let object = product.emit().map_err(|e| CodegenError::Backend(e.to_string()))?;
+        let macho = product.object.format() == cranelift_object::object::BinaryFormat::MachO;
+        let mut object = product.emit().map_err(|e| CodegenError::Backend(e.to_string()))?;
+        if macho {
+            debuginfo::settle_macho(&mut object).map_err(CodegenError::Backend)?;
+        }
         Ok((object, apart))
     }
 
