@@ -42,13 +42,19 @@ LATENCY_EDITS edits (default 10) in each mode named:
           its answer; the keys up to the one built are then timed to that. Whether a key that
           was typed over before it was sent compiles is asked of the daemon after the round,
           off the clock; an error that is ra-jit's (`` `main` is not compiled by ra-jit``)
-          and not a diagnostic counts as compiling, and is counted as refused. Every answer
-          goes to the JSON, under counts
+          and not a diagnostic counts as compiling, and is counted as refused; `no program
+          built has <file>` says nothing of the text, which is asked again after the round
+          and left out if the daemon still has no program. Every answer goes to the JSON,
+          under counts
   restart a session of the program's edits one at a time, mostly bodies and a few changes of
           a type: the edits answered with a restart, and for each the time from the edit to
           the program started again running it (`cargo ra-jit build`, then the executable to
           its first answer) against plain incremental `cargo build` of the same source and the
-          start of what it built (`cargo run`), in a target directory of its own
+          start of what it built (`cargo run`), in a target directory of its own. An edit the
+          daemon refuses though it compiles (bevy's `main`, left to rustc) is restarted the
+          same way, as a launcher would, and counted as refused. A `cargo ra-jit build` that
+          fails is written down as the restart's outcome, cargo's time is still taken, and
+          the session ends there
 
 Each edit of cargo and socket is timed from just before it is written or sent (t0) to the
 program having the new code in place, and split by the epoch stamps the worker (`request:`,
@@ -68,7 +74,8 @@ The tables (median, p90, p95, p99, min, max) go to stdout and to $GITHUB_STEP_SU
 set. $LATENCY_JSON, when set, gets every edit's numbers with what was measured where:
 {"program", "date", "commit", "run_url", "host": {"name", "cpu", "cores", "memory_gib", "os",
 "battery"}, "modes": {mode: [row, ...]}, "counts": {mode: {...}}}, a row having at least
-"total" in ms; harness/benchhistory.py `live` reads it. The host's name is $RA_JIT_BENCH_MACHINE
+"total" in ms; harness/benchhistory.py `live` reads it. A mode that fails leaves the modes
+before it in the JSON, and its error under counts.failed. The host's name is $RA_JIT_BENCH_MACHINE
 or the Mac's model; "battery" is what `pmset -g batt` says ("AC" or "battery 87%").
 LATENCY_TARGET_DIR keeps the programs' target directory across runs (bevy's dependencies take
 minutes to build). Python 3.13, stdlib only.
@@ -654,12 +661,16 @@ def keystrokes(text: str, ops: list[Op], rng: random.Random) -> Iterator[tuple[s
                 raise StepError(f"replay: unknown op {op!r}")
 
 
-def builds(answer: str) -> bool:
+def builds(answer: str) -> bool | None:
     """Whether the daemon's answer to an edit says its text compiles: an error that is a
-    diagnostic (`<file>.rs:<line>: ...`) says it does not; one that is ra-jit's own (a function
+    diagnostic (`<file>.rs:<line>: ...`) or one it has no words for (`` `step` has an error
+    ra-jit cannot say more of: ...``) says it does not; one that is ra-jit's own (a function
     it does not compile, such as `` `main` is not compiled by ra-jit: unsupported: ...``) says
-    nothing against the text, which rustc would build."""
-    return not re.match(r"error: \S+?\.rs:\d+(:\d+)?: ", answer)
+    nothing against the text, which rustc would build. `no program built has <file>` says
+    nothing of the text either way (None): the daemon did not build it."""
+    if answer.startswith("error: no program built has "):
+        return None
+    return not (re.match(r"error: \S+?\.rs:\d+(:\d+)?: ", answer) or "has an error ra-jit cannot say more of" in answer)
 
 
 def outcome_lines(log: list[str]) -> tuple[list[tuple[int, int]], list[int]]:
@@ -677,8 +688,9 @@ async def relaunch(program: Program, live: list[Launched], binary: Path, env: di
     """Starts the program again, as a launcher that restarts it when told to does: `cargo
     ra-jit build` of what is on disk, once that builds, then the executable to its answer.
     `last` says what was answered last (the key and the answer); a build is tried after an
-    answer that is not an error, else after the next. Says the key built and when the build
-    started."""
+    answer that is not an error, else after the next; with no answer in 30 s (the typing is
+    over) the build's error is the round's. Says the key built and when the build started."""
+    failed = None
     while True:
         said = last()
         if said is None or (said[1].startswith("ok") and "superseded" not in said[1]):
@@ -686,12 +698,16 @@ async def relaunch(program: Program, live: list[Launched], binary: Path, env: di
             try:
                 await build("restart: cargo ra-jit build", program.project, env)
                 break
-            except StepError:
-                pass
+            except StepError as error:
+                failed = error
         if answered is None:
-            raise StepError("restart: the source on disk does not build")
+            raise failed or StepError("restart: the source on disk does not build")
         answered.clear()
-        await answered.wait()
+        try:
+            async with asyncio.timeout(30):
+                await answered.wait()
+        except TimeoutError:
+            raise failed or StepError(f"restart: no answer in 30 s after {said and said[1][:200]!r}") from None
     await live[0].stop()
     live[0] = await launch(program, binary, env)
     return key, started
@@ -785,6 +801,8 @@ async def replay(program: Program, live: list[Launched], binary: Path, env: dict
                 await asyncio.sleep(0.1)
                 worker += logs.new()
                 while restarting or wanted.is_set():
+                    if tasks[2].done():
+                        tasks[2].result()
                     await asyncio.sleep(0.1)
                 applied, _ = outcome_lines(live[0].running.log[programs[-1][1] :])
                 published = [int(f.group(1)) for line in worker if (f := re.match(r"live: edit (\d+) ", line))]
@@ -821,9 +839,11 @@ async def replay(program: Program, live: list[Launched], binary: Path, env: dict
     for at, (key, sent_at, answered_at, reply) in enumerate(sent):
         kind = reply.split()[1].split("=")[0] if reply.startswith("ok ") else "error"
         counts[f"answer {kind}"] += 1
-        if kind != "superseded":
-            compiles[typed[key][0]] = builds(reply)
-            if kind == "error" and builds(reply):
+        if reply.startswith("error: no program built has "):
+            counts["answer no program built"] += 1
+        if kind != "superseded" and (judged := builds(reply)) is not None:
+            compiles[typed[key][0]] = judged
+            if kind == "error" and judged:
                 refused.add(typed[key][0])
         if kind == "unchanged":
             if before is not None:
@@ -847,9 +867,10 @@ async def replay(program: Program, live: list[Launched], binary: Path, env: dict
     for key, (text, _, _) in enumerate(typed):
         if text not in compiles:
             asked.append(await ask_edit(program.source, text))
-            compiles[text] = builds(asked[-1])
-            if asked[-1].startswith("error") and compiles[text]:
-                refused.add(text)
+            if (judged := builds(asked[-1])) is not None:
+                compiles[text] = judged
+                if asked[-1].startswith("error") and judged:
+                    refused.add(text)
             answers.append({"round": nth, "key": key, "asked after": True, "answer": asked[-1][:200]})
     if asked:
         counts["asked after"] = len(asked)
@@ -863,6 +884,9 @@ async def replay(program: Program, live: list[Launched], binary: Path, env: dict
 
     rows = []
     for key, (text, at, name) in enumerate(typed):
+        if text not in compiles:
+            counts["keys never judged (no program built)"] += 1
+            continue
         if not compiles[text]:
             counts["keys that do not compile"] += 1
             continue
@@ -885,8 +909,9 @@ async def replay(program: Program, live: list[Launched], binary: Path, env: dict
 
 
 async def session(program: Program, live: list[Launched], env: dict[str, str], plain_env: dict[str, str], logs: Logs, binary: Path) -> tuple[list[dict], list[dict], list[dict], collections.Counter]:
-    """The program's session, an edit at a time: how each was taken, and the restarts timed
-    against cargo's build and start of the same source."""
+    """The program's session, an edit at a time: how each was taken, and the restarts (and
+    the refused edits, which a launcher restarts too) timed against cargo's build and start
+    of the same source."""
     plain_binary = Path(plain_env["CARGO_TARGET_DIR"]) / "debug" / program.binary
     print("restart: plain cargo builds the program once, untimed")
     await plain_build("plain cargo, first build", program.project, plain_env)
@@ -903,12 +928,15 @@ async def session(program: Program, live: list[Launched], env: dict[str, str], p
         running.drain()
         running.mark()
         t0 = now_us()
-        reply = await send_edit(program.source, text)
+        reply = await ask_edit(program.source, text)
         answered = now_us()
         program.source.write_text(text)
         row = {"edit": label, "kind": kind, "reply": (answered - t0) / 1e3, "answer": reply[:60]}
         if "unchanged" in reply:
             row["outcome"] = "unchanged"
+        elif not reply.startswith("ok"):
+            row["outcome"] = "refused"
+            row["why"] = reply
         else:
             outcome = await running.wait_for(f"restart {nth} ({label})", "outcome:")
             row["outcome"] = "restart" if "restart needed" in outcome else "applied" if "applied" in outcome else "declined"
@@ -917,26 +945,35 @@ async def session(program: Program, live: list[Launched], env: dict[str, str], p
             elif row["outcome"] == "restart":
                 row["why"] = outcome.split("restart needed: ", 1)[1].rsplit(" at_us=", 1)[0]
         counts[f"{kind} {row['outcome']}"] += 1
-        if row["outcome"] == "restart":
+        if row["outcome"] in ("restart", "refused"):
             built = now_us()
-            await build(f"restart {nth}: cargo ra-jit build", program.project, env)
+            try:
+                await build(f"restart {nth}: cargo ra-jit build", program.project, env)
+            except StepError as error:
+                # The daemon cannot build the source at all: what cargo takes for it is still
+                # timed, and the session ends, since every edit after it builds on it.
+                row["restart"] = f"failed: {error}"
             linked = now_us()
-            await live[0].stop()
-            live[0] = await launch(program, binary, env)
-            restart = {"edit": label, "total": (live[0].started - t0) / 1e3, "edit-reply": (answered - t0) / 1e3,
-                       "build": (linked - built) / 1e3, "start": (live[0].started - linked) / 1e3}
-            restarts.append(restart)
+            if "restart" not in row:
+                await live[0].stop()
+                live[0] = await launch(program, binary, env)
+                restart = {"edit": label, "total": (live[0].started - t0) / 1e3, "edit-reply": (answered - t0) / 1e3,
+                           "build": (linked - built) / 1e3, "start": (live[0].started - linked) / 1e3}
+                restarts.append(restart)
+                row["restart"] = restart["total"]
             c0 = now_us()
             await plain_build(f"restart {nth}: plain cargo build", program.project, plain_env)
             c1 = now_us()
             plain = await launch(program, plain_binary, plain_env)
             await plain.stop()
             cargo_runs.append({"edit": label, "total": (plain.started - c0) / 1e3, "build": (c1 - c0) / 1e3, "start": (plain.started - c1) / 1e3})
-            row["restart"] = restart["total"]
             row["cargo run"] = cargo_runs[-1]["total"]
         edits.append(row)
         shown = {k: (f"{v:.1f}" if isinstance(v, float) else v) for k, v in row.items() if k != "answer"}
         print(f"restart {nth}: {shown}")
+        if str(row.get("restart", "")).startswith("failed"):
+            counts["the daemon could not build the source"] += 1
+            break
     return edits, restarts, cargo_runs, counts
 
 
@@ -1003,6 +1040,7 @@ async def main(program_name: str, modes: list[str]) -> None:
     results: dict[str, list[dict]] = {}
     counted: dict[str, dict] = {}
     tables = []
+    mode, failed = "first build", None
     try:
         program = copy_program(program_name, work)
         env = dict(
@@ -1051,7 +1089,13 @@ async def main(program_name: str, modes: list[str]) -> None:
                 case "replay":
                     rows, counts, restarts, answers = [], collections.Counter(), [], []
                     for nth in range(ROUNDS):
-                        got, how, restarted = await replay(program, live, binary, env, logs, rng, nth, answers)
+                        try:
+                            got, how, restarted = await replay(program, live, binary, env, logs, rng, nth, answers)
+                        except StepError as error:
+                            # The rounds before it are kept.
+                            results[mode] = rows
+                            counted["replay"] = dict(sorted(counts.items()), restarts=restarts, answers=answers, failed=f"round {nth}: {error}")
+                            raise
                         rows += got
                         counts.update(how)
                         restarts += restarted
@@ -1081,6 +1125,10 @@ async def main(program_name: str, modes: list[str]) -> None:
                 case _:
                     raise StepError(f"unknown mode {mode!r}: cargo, socket, burst, replay or restart")
             results[mode] = rows
+    except StepError as error:
+        # The modes before it keep their numbers; the JSON says which mode failed and how.
+        failed = error
+        counted["failed"] = {"mode": mode, "error": str(error)}
     finally:
         for it in live:
             await it.stop()
@@ -1093,6 +1141,8 @@ async def main(program_name: str, modes: list[str]) -> None:
             f.write(f"{program_name} on {meta['host']['name']} ({meta['host']['cpu']}, {meta['host']['battery'] or 'no battery'})\n\n{text}\n")
     if out := os.environ.get("LATENCY_JSON"):
         Path(out).write_text(json.dumps(dict(meta, modes=results, counts=counted), indent=1))
+    if failed:
+        raise failed
 
 
 if __name__ == "__main__":
