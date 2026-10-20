@@ -521,6 +521,7 @@ impl CodegenUnit {
         // of has to be compiled here, to tell what an edit changes.
         let hydrate = known.base.is_none();
         if let Some(base) = known.base.take().filter(|it| !it.outdated()) {
+            let start = stdx::time::Instant::now();
             let own_statics = OwnStatics::new(
                 db,
                 all().map(|root| root.krate(db)).collect(),
@@ -528,6 +529,7 @@ impl CodegenUnit {
                 known.unknown.clone(),
                 !roots.on_demand.is_empty(),
             );
+            let statics = start.elapsed();
             let mut stale = std::mem::take(&mut known.stale);
             if stale.is_empty() {
                 stale.push(base.stale(db, 0, 1));
@@ -549,7 +551,7 @@ impl CodegenUnit {
                     bodies: base.bodies,
                     reused: base.bodies.saturating_sub(compiled_now),
                     compiled: compiled_now,
-                    phases: patch.phases,
+                    phases: Phases { statics, ..patch.phases },
                     rounds: 1,
                     patched: Some(patch.bodies),
                     declined: None,
@@ -1078,6 +1080,10 @@ pub struct Phases {
     pub fallback: std::time::Duration,
     /// The rounds before the last, whose object was not kept.
     pub discarded: std::time::Duration,
+    /// Telling which statics are the program's own (of a patch).
+    pub statics: std::time::Duration,
+    /// Setting up the object to put the code in (of a patch).
+    pub setup: std::time::Duration,
 }
 
 /// A function with concrete generic arguments that we compile ourselves.

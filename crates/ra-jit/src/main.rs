@@ -5571,6 +5571,7 @@ fn run_holding(
         if changed != 0 || !background {
             db.apply_change(change);
         }
+        let applied_change = start.elapsed();
         if !removed.is_empty() {
             tree.remove(&mut db, &removed);
             let mut index = 0;
@@ -5603,7 +5604,9 @@ fn run_holding(
             })
             .collect();
         let paths = Arc::new(Sources { paths });
+        let before_outlines = start.elapsed();
         let sources = outlines.after_edit(&db, &listed, sources);
+        let outlined = start.elapsed();
         for (file, bodies_only) in sources {
             if bodies_only {
                 if std::env::var_os("RA_JIT_STATS").is_some() {
@@ -5625,6 +5628,14 @@ fn run_holding(
             listed.touch(&db, Some(&moved));
         }
         let edit = Edit { start, age, settled, read, apply: start.elapsed(), changed };
+        if std::env::var_os("RA_JIT_STATS").is_some() {
+            eprintln!(
+                "apply-us: change={} outlines={} rest={}",
+                applied_change.as_micros(),
+                (outlined - before_outlines).as_micros(),
+                (edit.apply - applied_change - (outlined - before_outlines)).as_micros()
+            );
+        }
         if background {
             let mut asked: FxHashMap<usize, Vec<Asked>> = FxHashMap::default();
             for (at, client) in clients {
@@ -6185,6 +6196,8 @@ impl Program {
                 ("define", phases.define),
                 ("object", phases.object),
                 ("discarded", phases.discarded),
+                ("statics", phases.statics),
+                ("setup", phases.setup),
                 (
                     "compile-rest",
                     compile.saturating_sub(
@@ -6192,7 +6205,9 @@ impl Program {
                             + phases.resolve
                             + phases.define
                             + phases.object
-                            + phases.discarded,
+                            + phases.discarded
+                            + phases.statics
+                            + phases.setup,
                     ),
                 ),
                 ("write", warm.emit),

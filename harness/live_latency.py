@@ -137,10 +137,11 @@ def breakdown(t0: int, reply: int, applied_line: str, worker: list[str]) -> dict
         "reply": ms(reply - t0),
     }
     for line in worker:
-        if line.startswith("timeline-us:"):
+        if line.startswith(("timeline-us:", "apply-us:")):
+            prefix = "worker." if line.startswith("timeline") else "worker.apply."
             for step in line.split()[1:]:
                 name, _, value = step.partition("=")
-                row[f"worker.{name}"] = int(value) / 1e3
+                row[f"{prefix}{name}"] = int(value) / 1e3
         elif line.startswith("live: edit") and (took_us := re.search(r"took_us=(\d+)", line)):
             # Laying the patch out for the program and leaving it there (inside link).
             row["worker.publish"] = int(took_us.group(1)) / 1e3
@@ -224,10 +225,13 @@ async def main(modes: list[str]) -> None:
                     raise StepError(f"unknown mode {mode!r}: cargo or socket")
                 reply = now_us()
                 value += 1
+                seen = len(log)
                 applied = await wait_for(f"{mode} edit {nth} applied", lines, "outcome:", log)
                 if "applied" not in applied:
                     raise StepError(f"{mode} edit {nth}: the program did not take the patch: {applied}")
-                await wait_for(f"{mode} edit {nth} runs", lines, f"answer {value}", log)
+                # The new code can run before the apply thread says it was applied.
+                if f"answer {value}" not in log[seen:]:
+                    await wait_for(f"{mode} edit {nth} runs", lines, f"answer {value}", log)
                 # The reply came after the worker logged the whole edit.
                 row = breakdown(t0, reply, applied, logs.new())
                 print(f"{mode} {nth}: " + " ".join(f"{k}={row[k]:.2f}" for k in COLUMNS) + f"  ({said})")
