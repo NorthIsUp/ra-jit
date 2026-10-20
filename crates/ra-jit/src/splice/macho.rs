@@ -915,37 +915,6 @@ fn unwind_first(
     bail!("no symbol table")
 }
 
-/// The `-headerpad` to link the executable `bytes` with for a splice to have room in its
-/// header, when the linker left less: the load commands with two more segments
-/// ([`Layout::linked`]) and the unwind table that moves in behind them ([`frames_in_front`]),
-/// half as much again for the program to grow into. Reads the load commands alone.
-pub(super) fn header_pad(bytes: &[u8]) -> anyhow::Result<Option<u64>> {
-    ensure!(u32_at(bytes, 0)? == macho::MH_MAGIC_64, "not a 64-bit Mach-O file");
-    let count = u32_at(bytes, 16)?;
-    let commands =
-        bytes.get(..HEADER + u32_at(bytes, 20)? as usize).context("the file ends early")?;
-    let (mut room, mut unwind) = (bytes.len(), 0);
-    let mut command = HEADER;
-    for _ in 0..count {
-        if u32_at(commands, command)? == macho::LC_SEGMENT_64 {
-            for nth in 0..u32_at(commands, command + 64)? as usize {
-                let header = command + SEGMENT + nth * SECTION;
-                let len = u64_at(commands, header + 40)? as usize;
-                let offset = u32_at(commands, header + 48)? as usize;
-                if offset != 0 && len != 0 {
-                    room = room.min(offset);
-                }
-                if commands.get(header..header + 16) == Some(b"__unwind_info\0\0\0") {
-                    unwind = len;
-                }
-            }
-        }
-        command += u32_at(commands, command + 4)? as usize;
-    }
-    let needed = (commands.len() + 2 * (SEGMENT + SECTION)).next_multiple_of(16) + unwind;
-    Ok((needed > room).then(|| ((needed + needed / 2) as u64).next_multiple_of(0x10000)))
-}
-
 /// The unwinder's table (`__unwind_info`) for frames `by` bytes further from where
 /// `__eh_frame` starts: its entries that say "look in `__eh_frame`" say where.
 fn shifted(table: &mut [u8], by: u64) -> anyhow::Result<()> {
@@ -1884,6 +1853,47 @@ pub(super) fn uuid(image: &Image) -> Option<[u8; 16]> {
     uuid_of(&image.commands)
 }
 
+/// The `-headerpad` the executable that starts with `commands`, its header and load commands,
+/// is to be linked with for a splice to have room in it, when the room it has is less: room
+/// for the two segments a splice adds, of a section each, and for the unwind table, which
+/// moves there (see [`frames_in_front`]), and a quarter more for the program to grow before
+/// it is short again. `None` for one that has the room, and for one that is not an AArch64
+/// executable with an unwind table.
+pub(super) fn headerpad_short(commands: &[u8]) -> anyhow::Result<Option<u64>> {
+    let executable = u32_at(commands, 0)? == macho::MH_MAGIC_64
+        && u32_at(commands, 4)? == macho::CPU_TYPE_ARM64
+        && u32_at(commands, 12)? == macho::MH_EXECUTE;
+    if !executable {
+        return Ok(None);
+    }
+    let len = HEADER + u32_at(commands, 20)? as usize;
+    let commands = commands.get(..len).context("the file ends early")?;
+    let (mut room, mut unwind) = (usize::MAX, None);
+    let mut command = HEADER;
+    for _ in 0..u32_at(commands, 16)? {
+        if u32_at(commands, command)? == macho::LC_SEGMENT_64 {
+            for nth in 0..u32_at(commands, command + 64)? as usize {
+                let header = command + SEGMENT + nth * SECTION;
+                let size = u64_at(commands, header + 40)? as usize;
+                let offset = u32_at(commands, header + 48)? as usize;
+                if offset != 0 && size != 0 {
+                    room = room.min(offset);
+                }
+                if commands.get(header..header + 16) == Some(b"__unwind_info\0\0\0") {
+                    unwind = Some(size);
+                }
+            }
+        }
+        command += u32_at(commands, command + 4)? as usize;
+    }
+    let Some(unwind) = unwind else { return Ok(None) };
+    let needed = (len + 2 * (SEGMENT + SECTION)).next_multiple_of(16) + unwind;
+    if needed <= room {
+        return Ok(None);
+    }
+    Ok(Some((needed + needed / 4 - len).next_multiple_of(PAGE as usize) as u64))
+}
+
 /// The `LC_UUID` among the load commands `commands` start with.
 fn uuid_of(commands: &[u8]) -> Option<[u8; 16]> {
     let count = u32_at(commands, 16).ok()?;
@@ -2017,4 +2027,54 @@ pub(super) fn splice(
     }
     *stamp = written?;
     Ok(spliced)
+}
+
+#[cfg(test)]
+mod tests {
+    use object::macho;
+
+    use super::{HEADER, PAGE, SECTION, SEGMENT, headerpad_short, put32, put64};
+
+    /// The header and load commands of an executable of one segment, whose code starts
+    /// `room` bytes into the file and whose unwind table is `unwind` bytes.
+    fn commands(room: u32, unwind: u64) -> Vec<u8> {
+        let len = SEGMENT + 2 * SECTION;
+        let mut bytes = vec![0; HEADER + len];
+        put32(&mut bytes, 0, macho::MH_MAGIC_64);
+        put32(&mut bytes, 4, macho::CPU_TYPE_ARM64);
+        put32(&mut bytes, 12, macho::MH_EXECUTE);
+        put32(&mut bytes, 16, 1);
+        put32(&mut bytes, 20, len as u32);
+        put32(&mut bytes, HEADER, macho::LC_SEGMENT_64);
+        put32(&mut bytes, HEADER + 4, len as u32);
+        bytes[HEADER + 8..HEADER + 14].copy_from_slice(b"__TEXT");
+        put32(&mut bytes, HEADER + 64, 2);
+        let sections = [(&b"__text"[..], 0x1000, room), (b"__unwind_info", unwind, room + 0x1000)];
+        for (nth, (name, size, offset)) in sections.into_iter().enumerate() {
+            let at = HEADER + SEGMENT + nth * SECTION;
+            bytes[at..at + name.len()].copy_from_slice(name);
+            put64(&mut bytes, at + 40, size);
+            put32(&mut bytes, at + 48, offset);
+        }
+        bytes
+    }
+
+    #[test]
+    fn room_for_the_unwind_table() {
+        let len = (HEADER + SEGMENT + 2 * SECTION) as u64;
+        let added = 2 * (SEGMENT + SECTION) as u64;
+        let needed = |unwind: u64| (len + added).next_multiple_of(16) + unwind;
+        assert_eq!(headerpad_short(&commands(0x10_0000, 0x1000)).unwrap(), None);
+        assert_eq!(headerpad_short(&commands(needed(0x1000) as u32, 0x1000)).unwrap(), None);
+        // The table of a GUI app of 570 crates, in what Apple's linker leaves by default.
+        let unwind = 3_231_816;
+        let pad = headerpad_short(&commands(0x10_0000, unwind)).unwrap().unwrap();
+        assert!(len + pad >= needed(unwind) + needed(unwind) / 4);
+        assert!(pad.is_multiple_of(PAGE) && len + pad < needed(unwind) * 2);
+        let pad = headerpad_short(&commands(needed(0x1000) as u32 - 1, 0x1000)).unwrap();
+        assert!(pad.is_some());
+        let mut library = commands(0x100, 0x1000);
+        put32(&mut library, 12, macho::MH_DYLIB);
+        assert_eq!(headerpad_short(&library).unwrap(), None);
+    }
 }

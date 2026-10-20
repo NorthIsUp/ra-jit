@@ -1,0 +1,79 @@
+# Rust 1.99.0 (the one toolchain ra-jit is pinned to, harness/toolchain) and LLVM 20, on any of
+# the hosted runners CI uses. `llvm: build` is the headers and libraries ra-jit's `llvm` feature
+# links against; `llvm: run` is what a built ra-jit loads and what the harnesses read with
+# (llvm-dwarfdump, llvm-pdbutil); `llvm: none` is neither.
+name: toolchain
+description: Rust 1.99.0 and LLVM 20
+inputs:
+  components:
+    description: rustup components besides rust-src, space separated
+    default: ""
+  targets:
+    description: rustup targets besides the host, space separated
+    default: ""
+  llvm:
+    description: build, run or none
+    default: none
+runs:
+  using: composite
+  steps:
+    - name: Rust 1.99.0
+      shell: bash
+      run: |
+        components="-c rust-src"
+        for c in ${{ inputs.components }}; do components="$components -c $c"; done
+        # llvm-ar, which makes the stand-in for libxml2 below.
+        if [ "$RUNNER_OS" = Windows ] && [ "${{ inputs.llvm }}" != none ]; then components="$components -c llvm-tools"; fi
+        rustup toolchain install 1.99.0 --profile minimal $components
+        rustup default 1.99.0
+        for t in ${{ inputs.targets }}; do rustup target add "$t"; done
+
+    - name: LLVM 20 (Linux)
+      if: runner.os == 'Linux' && inputs.llvm != 'none'
+      shell: bash
+      run: |
+        wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 20
+        if [ "${{ inputs.llvm }}" = build ]; then sudo apt-get install -y llvm-20-dev libpolly-20-dev; fi
+        echo "LLVM_SYS_201_PREFIX=/usr/lib/llvm-20" >> "$GITHUB_ENV"
+
+    - name: LLVM 20 (macOS)
+      if: runner.os == 'macOS' && inputs.llvm != 'none'
+      shell: bash
+      run: |
+        brew install llvm@20
+        echo "LLVM_SYS_201_PREFIX=$(brew --prefix llvm@20)" >> "$GITHUB_ENV"
+
+    # The harnesses run the linker themselves, with the environment the compiler has. In Git
+    # Bash the `link` of coreutils comes before the linker, so it goes.
+    - if: runner.os == 'Windows'
+      uses: ilammy/msvc-dev-cmd@v1
+    - if: runner.os == 'Windows'
+      shell: bash
+      run: rm -f /usr/bin/link.exe
+    # The release has the libraries, the headers and `llvm-config`, which is all the build reads,
+    # and `llvm-pdbutil`, which debuginfo.py reads a PDB with. Its libraries want a static
+    # libxml2 that it does not have and that nothing here calls into, so an archive of nothing
+    # stands in for it. ra-jit links LLVM statically here: running it needs none of this.
+    - if: runner.os == 'Windows' && inputs.llvm != 'none'
+      id: llvm-windows
+      uses: actions/cache@v4
+      with:
+        path: C:\llvm20
+        key: llvm-20.1.8-x86_64-pc-windows-msvc-pdbutil
+    - name: LLVM 20 (Windows)
+      if: runner.os == 'Windows' && inputs.llvm != 'none' && steps.llvm-windows.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        version=20.1.8
+        name="clang+llvm-$version-x86_64-pc-windows-msvc"
+        curl -sSfL --retry 5 -o llvm.tar.xz "https://github.com/llvm/llvm-project/releases/download/llvmorg-$version/$name.tar.xz"
+        mkdir -p /c/llvm20
+        tar -xJf llvm.tar.xz -C /c/llvm20 --strip-components=1 --wildcards "$name/lib/*.lib" "$name/include" "$name/bin/llvm-config.exe" "$name/bin/llvm-pdbutil.exe"
+        rm llvm.tar.xz
+        echo '#![no_std]' > nothing.rs
+        rustc --crate-type=lib --emit=obj -Cpanic=abort -o nothing.o nothing.rs
+        "$(rustc --print sysroot)/lib/rustlib/x86_64-pc-windows-msvc/bin/llvm-ar.exe" rc /c/llvm20/lib/libxml2s.lib nothing.o
+        rm nothing.rs nothing.o
+    - if: runner.os == 'Windows' && inputs.llvm != 'none'
+      shell: bash
+      run: echo 'LLVM_SYS_201_PREFIX=C:\llvm20' >> "$GITHUB_ENV"

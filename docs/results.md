@@ -545,8 +545,10 @@ Commands, on the host. A loop waited for a quiet host and ran this for each proj
 Measured on an M5 Max (18 cores, macOS 27), shared with other builds, so single runs spread
 widely; the tables are medians of runs 2 to 6 of `cargo ra-jit build` after realbench's
 edits, each step from the client's `RA_JIT_TRACE` breakdown. Before is 1dbad5b048, from
-before the merges of `fn-incremental` and `tiers-speed`. After is the header pad (d611d65b66)
-and then the signature hashes (f79b93069d) on that same code; the last column is from 12
+before the merges of `fn-incremental` and `tiers-speed`. After is the header pad (d611d65b66,
+since merged with the fix of #13, which keeps the size beside the executable and adds a quarter
+rather than a half: the same links once it is in place) and then the signature hashes
+(f79b93069d) on that same code; the last column is from 12
 edits of each kind taken in turn with 12 of before.
 
 | nushell 0.108.0 | before | header pad | and signature hashes | where the time went, at the end (ms) |

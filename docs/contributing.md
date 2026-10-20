@@ -28,7 +28,7 @@ you send them, including fixes you find here and want to upstream.
     SECURITY.md               what to know before sharing a store, and how to report a problem
     vendor/rust-analyzer/     rust-analyzer with ra-jit's changes, a git subtree
     vendor/rustc_abi/         rustc's layout crate, copied from the 1.99.0 tag, a git subtree
-    vendor/subtree.sh         pulls a newer fork into vendor/, pushes vendor/ changes back
+    vendor/subtree.py         moves vendor/ changes to the forks, and the forks and upstream into vendor/
     vendor/source.rev         the commit of the old development branch this tree last took from
 
 `crates/hir-ty-codegen` is not a crate. It is the module `hir_ty::mir::codegen`, which uses
@@ -56,21 +56,52 @@ in; ra-jit carries the files themselves, so a plain clone builds:
 
 Edit the file in `vendor/rust-analyzer`, build and test from the root as usual, and commit
 in ra-jit like any other file: one commit can change MIR lowering and the code generator
-together. Then send the vendor/ part back to the fork:
+together. A branch that changes vendor/ merges into main like any other branch; there is
+nothing to port and no pointer to bump.
 
-    vendor/subtree.sh push rust-analyzer
-    # git subtree push --prefix vendor/rust-analyzer https://github.com/indexable-inc/rust-analyzer ra-jit
+The fork follows main by itself: on every push to main that changes `vendor/`, the
+`fork sync` workflow runs
 
-`git subtree push` splits the commits that touched `vendor/rust-analyzer` into commits of
-the fork and pushes them to `ra-jit`. The `ra-jit` branch only moves forward; do not rebase
-or force-push it.
+    vendor/subtree.py push rust-analyzer
+    vendor/subtree.py push rustc_abi
+
+which makes one fork commit for each commit on main's first-parent line that changed the
+directory (its tree under `vendor/<name>`, its author, dates and message, and a line naming
+it) and pushes them to the fork's branch (`ra-jit` for rust-analyzer, `main` for
+rustc_abi). The same commit always makes the same fork commit, so running it by hand
+(`--dry-run` makes the commits and pushes nothing) and in CI agree. It only fast-forwards:
+it never force-pushes, and if the fork holds a change main does not have, it stops, pushes
+nothing and says so. That happens only if someone committed to the fork directly; bring it
+in with `pull` below, merge that into main, and the next push goes through. A fork pushed
+from a branch before its merge, or a main whose history was rewritten since the last push,
+is caught up with one commit that says what it brings, once it is checked that the fork has
+nothing main lacks. The `ra-jit` branch only moves forward; do not rebase or force-push it.
+
+`git subtree split` is not used: it cannot follow `vendor/rustc_abi` past the time it was a
+submodule, and it makes different commits from a branch than from main, so the fork stopped
+being a fast-forward of what main makes.
 
 ### Taking a newer fork commit
 
-    vendor/subtree.sh pull rust-analyzer
+    vendor/subtree.py pull rust-analyzer
     # git subtree pull --prefix vendor/rust-analyzer https://github.com/indexable-inc/rust-analyzer ra-jit --squash
 
 That is the whole bump: there is no second pin, and the flake builds from the same files.
+
+### Merging upstream rust-analyzer
+
+    vendor/subtree.py upstream rust-analyzer              # its newest weekly release tag
+    vendor/subtree.py upstream rust-analyzer 2026-10-26   # a tag, a branch (master) or a commit
+
+merges upstream's commit into `vendor/rust-analyzer` on the current branch, with a clean
+tree. The base is the newest upstream commit the fork's history already has (the fork's
+branch and every squashed merge on this branch), so the merge brings exactly upstream's
+changes since then, as merging upstream in the fork would. A clean merge is committed;
+otherwise the conflicts are left in `vendor/rust-analyzer` with the usual markers and
+`git status`, and `git add` and `git commit` finish it (or `git merge --abort`). The merge's
+second parent is a squashed commit of upstream's tree with `git subtree`'s
+`git-subtree-split` line; when main gets the merge, `push` makes upstream's commit a parent
+of the fork's commit, so the fork's history records the upstream merge too.
 
 A change to rust-analyzer should be something rust-analyzer could take: a bug fix in MIR
 lowering or inference, a missing piece of the language, an accessor ra-jit needs. Where
@@ -82,15 +113,13 @@ their rules.
 
 ### Moving to a newer rust-analyzer
 
-1. In a clone of the fork, merge the new upstream commit into the `ra-jit` branch, resolve
-   conflicts and push. Merge, not rebase, so the branch keeps moving forward. Then
-   `vendor/subtree.sh pull rust-analyzer` here.
+1. On a branch, `vendor/subtree.py upstream rust-analyzer` and resolve the conflicts.
 2. Update `Cargo.toml` and `Cargo.lock` at the root for dependencies rust-analyzer changed.
 3. Build, and run the whole gate under both backends ([harness.md](harness.md)). A newer
    rust-analyzer changes inference, MIR lowering and layout queries, any of which can
    change generated code. The corpus with `--layouts`, `breakers.py` and
    `fuzz/fuzz.py smoke` are the ones that notice first.
-4. Commit on `main`.
+4. Merge into `main`. The `fork sync` workflow sends the merge to the fork.
 
 This was done once, on 2026-10-20, for upstream `0b21bd6596`. The merge was clean; the one
 API change ra-jit had to follow was `CrateData::is_proc_macro` becoming `target_kind` (a

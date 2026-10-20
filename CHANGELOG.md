@@ -39,16 +39,17 @@ All notable changes to ra-jit are written here. The format follows
 - `vendor/rust-analyzer` and `vendor/rustc_abi` are git subtrees instead of submodules: a
   plain `git clone` builds, and the flake builds from its own tree with no second pin of the
   forks.
+- `vendor/subtree.py` replaces `vendor/subtree.sh`. `push` sends what main changed under
+  `vendor/` to the fork, one fork commit per commit of main, and only fast-forwards the fork;
+  the `fork sync` workflow runs it on every push to main, so the forks no longer fall behind
+  (rust-analyzer's had: "warm edits" never reached it). `upstream` merges an upstream
+  rust-analyzer release into `vendor/rust-analyzer` in one command, with conflicts left in
+  the tree as `git merge` leaves them; before, that took a clone of the fork and a pull.
 
 ### Fixed
 
-- On macOS, an edit of a program whose unwind table is larger than 1 MiB is spliced into
-  the executable instead of linked in full: every Apple link left 1 MiB of room in the header,
-  which the splice needs for the unwind table, so each edit of nushell's debug build was linked
-  again (560 to 820 ms). The daemon now links such a program once more with the room it needs,
-  and its edits after that are spliced: nushell's edit of `main` went from 878 ms to 276 ms on
-  an M5 Max, and a library edit from 693 ms to 166 ms. Signing a splice reuses the hash of
-  each appended page that is the same as the last splice's, 21 ms to 5 ms for nushell.
+- On macOS, signing a splice reuses the hash of each appended page that is the same as the
+  last splice's: 21 ms to 5 ms of each edit of nushell.
 - The code of a function grows in a straight line with the arms of a match that leave
   through `?`, as `#[derive(Serialize, Deserialize)]` writes for an enum: it grew with
   their square, 329 MB for one function of 285 arms, which an AArch64 branch cannot reach
@@ -56,6 +57,24 @@ All notable changes to ra-jit are written here. The format follows
   checks it.
 - An edit that arrives while a function is being compiled at a higher level no longer waits
   for LLVM: the compile lets go of the database before LLVM runs.
+- A workspace under a directory whose name has a space in it is built against what rustc
+  built of it ([#14](https://github.com/indexable-inc/ra-jit/issues/14)). The daemon cut
+  the dep-info file that names a crate's sources at every space, found none of the
+  workspace's crates among rustc's, and named their functions itself, so a function it
+  refused had no copy of rustc's to link to. Dep-info is now read and written as rustc writes
+  it, in one place: a space in a path is `\ `, and `$`, `#` and backslashes are themselves;
+  the values of the variables in it are unescaped too. `harness/spaces.py` builds a
+  workspace under such a directory end to end.
+- On macOS a program whose unwind table is larger than 1 MB takes edits as splices, and so
+  live in the running program ([#13](https://github.com/indexable-inc/ra-jit/issues/13)).
+  The daemon gave Apple's linker a fixed `-headerpad` of 1 MiB, and a splice moves the
+  table into that room, so a GUI app of 570 crates with 3 MB of table, or nushell with 3.2
+  MiB, linked every edit in full. The link now reads its headerpad from a file beside the
+  executable, last on the line: 1 MiB, or what the line's own flags ask for. After each full
+  link the daemon reads the header, and when the room is short it links once again with what
+  the table needs and a quarter more, which the links after start from, in later daemons
+  too. nushell's edit of `main` went from 878 ms to 276 ms on an M5 Max, and a library edit
+  from 693 ms to 166 ms. `harness/headerpad.py` checks it.
 
 ## [0.1.0] - 2026-10-20
 
