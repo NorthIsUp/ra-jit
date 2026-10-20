@@ -318,7 +318,11 @@ impl Watched {
     }
 
     fn ask_to_sample(&self) {
-        let sample = Sample { interval_us: INTERVAL_US, counters: u64::from(self.counters) };
+        let sample = Sample {
+            interval_us: INTERVAL_US,
+            counters: u64::from(self.counters),
+            reader: std::process::id(),
+        };
         let path = self.dir.join(format::SAMPLE);
         let text = sample.encode();
         if std::fs::read_to_string(&path).ok().as_deref() != Some(&*text) {
