@@ -55,7 +55,17 @@ incremental, same linker, median of three):
 | A new function | 2.09 s | 0.56 s | 3.7x |
 | A signature used in every crate | 13.87 s | 10.87 s | 1.3x |
 
-Not measured yet: real projects, and a build from nothing against a fresh `cargo build`
+Real projects (64-core Linux x86-64, median of 5, same linker; [details](docs/results.md#11-real-projects)):
+
+| Project | Build from nothing: cargo / ra-jit ready | Edit in a library crate: cargo / ra-jit |
+|---|---:|---:|
+| ripgrep 15.1.0 | 6.2 s / 13.0 s | 0.79 s / 0.08 s (10x) |
+| just 1.43.0 | 8.1 s / 16.8 s | 0.92 s / 0.07 s (14x) |
+| nushell 0.108.0 | 35.5 s / 75.9 s | 6.19 s / 0.24 s (26x) |
+
+The first build takes about twice as long as `cargo build`, because ra-jit compiles every
+program once more after cargo. Not measured yet: workspaces of a million lines or more,
+signature and struct-field edits on real projects, and test suites
 ([#benchmarks](https://github.com/indexable-inc/ra-jit/issues?q=label%3Abenchmarks)).
 
 ## Try it on your project

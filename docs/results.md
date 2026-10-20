@@ -345,6 +345,109 @@ program's output the same as cargo's in every row.
 functions. Their numbers are not repeated here. They need regenerating before they are
 quoted.
 
+## 11. Real projects
+
+`cargo ra-jit build` against `cargo build` on three real projects, each at a pinned tag
+(issue #7). Harness: `harness/realbench.py`. ra-jit at 6a7d245e47 (main), Cranelift backend,
+release build. Measured on 2026-10-20. Seconds, wall clock of the command; median of 5
+(min-max).
+
+Machine: dev-aws-6, AWS c6i.16xlarge, Intel Xeon Platinum 8375C at 2.90 GHz, 64 vCPU,
+123 GB, NixOS, Linux 6.18.53, claimed for this run alone. The one-minute load was 7.24 at the
+start (ra-jit's own release build had just finished) and 3.19 at the end; per project,
+ripgrep 7.24 to 6.56, just 6.56 to 3.87, nushell 3.87 to 3.19.
+
+Toolchain: rustc 1.99.0 (b940084d7 2026-09-28), dev profile, incremental on, no
+`RUSTFLAGS`. Linker on both sides: Rust's default for x86_64-unknown-linux-gnu, `cc` with
+rust-lld; `readelf -p .comment` names LLD 23.1.1 in both binaries.
+
+| Project | Step | cargo | ra-jit | cargo / ra-jit | ra-jit built by |
+|---|---|---:|---:|---:|---|
+| ripgrep 15.1.0 | cold, empty store: command returns | 6.16 (6.13-6.21) | 6.96 (6.90-7.07) | 0.9x | cargo (wrapper) |
+| | cold, empty store: daemon ready | | 12.96 (12.92-13.23) | 0.5x | |
+| | cold, warm store: command returns | | 6.94 (6.90-7.00) | 0.9x | cargo (wrapper) |
+| | cold, warm store: daemon ready | | 12.55 (12.50-12.60) | 0.5x | |
+| | no-op | 0.04 (0.04-0.04) | 0.03 (0.03-0.03) | 1.4x | daemon |
+| | edit: body of `main` | 0.57 (0.51-0.69) | 0.10 (0.10-1.23) | 5.6x | daemon; output same 5/5 |
+| | edit: body in a library | 0.79 (0.77-1.07) | 0.08 (0.07-0.09) | 10.2x | daemon; output same 5/5 |
+| | edit: new function | 0.54 (0.51-0.61) | 0.11 (0.11-0.15) | 5.0x | daemon; output same 5/5 |
+| just 1.43.0 | cold, empty store: command returns | 8.14 (8.10-8.19) | 8.40 (8.24-8.41) | 1.0x | cargo (wrapper) |
+| | cold, empty store: daemon ready | | 16.84 (16.78-16.97) | 0.5x | |
+| | cold, warm store: command returns | | 8.32 (8.29-8.38) | 1.0x | cargo (wrapper) |
+| | cold, warm store: daemon ready | | 16.10 (16.04-16.19) | 0.5x | |
+| | no-op | 0.07 (0.07-0.08) | 0.03 (0.03-0.03) | 2.4x | daemon |
+| | edit: body of `main` | 0.29 (0.28-0.32) | 0.05 (0.05-1.44) | 5.7x | daemon; output same 5/5 |
+| | edit: body in a library | 0.92 (0.84-1.01) | 0.07 (0.06-0.07) | 14.1x | daemon; output same 5/5 |
+| | edit: new function | 0.28 (0.28-0.29) | 0.06 (0.05-0.08) | 5.1x | daemon; output same 5/5 |
+| nushell 0.108.0 | cold, empty store: command returns | 35.51 (35.41-35.68) | 37.19 (36.91-37.46) | 1.0x | cargo (wrapper) |
+| | cold, empty store: daemon ready | | 75.93 (75.55-79.91) | 0.5x | |
+| | cold, warm store: command returns | | 36.56 (36.47-36.84) | 1.0x | cargo (wrapper) |
+| | cold, warm store: daemon ready | | 69.93 (69.79-71.24) | 0.5x | |
+| | no-op | 0.28 (0.28-0.29) | 0.04 (0.04-0.04) | 8.1x | daemon |
+| | edit: body of `main` | 1.55 (1.51-1.68) | 0.42 (0.41-10.41) | 3.7x | daemon; output same 5/5 |
+| | edit: body in a library | 6.19 (6.10-7.46) | 0.24 (0.23-0.38) | 26.2x | daemon; output same 5/5 |
+| | edit: new function | 1.55 (1.53-1.59) | 0.42 (0.42-0.44) | 3.7x | daemon; output same 5/5 |
+
+All three projects built under ra-jit; nothing was refused or fell back to cargo after the
+first build.
+
+What each row is:
+
+- **Cold.** `rm -rf` of the target directory, then the build. The cargo side is
+  `CARGO_TARGET_DIR=t-cargo cargo build`. The ra-jit side is
+  `CARGO_TARGET_DIR=t-ra-jit RA_JIT_HOME=<new> RA_JIT_CACHE=<store> cargo ra-jit build`
+  with a new daemon home each run. A first `cargo ra-jit build` is cargo's own build with
+  ra-jit as the workspace wrapper, so "command returns" is that build. The daemon then loads
+  the workspace and compiles every program once; "daemon ready" is when
+  `cargo ra-jit status` says the checkout is ready and the background `cargo check` has
+  finished. Edits are fast only after that. "Empty store" is a new, empty `RA_JIT_CACHE`
+  each run. "Warm store" is one store filled beforehand by `cargo ra-jit build` of the same
+  commit in a second checkout. The three cold kinds were interleaved run by run.
+- **No-op.** The build again with nothing changed.
+- **Edits.** Each run writes different text, so no run repeats an earlier one, and the
+  pristine source is put back at the end. Body of `main`: `let _ = std::hint::black_box(N);`
+  at the top of `main` (ripgrep `crates/core/main.rs`, just and nushell `src/main.rs`).
+  Body in a library: the same line at the top of a function in a crate the main crate
+  depends on: ripgrep `is_suffix` in `crates/matcher/src/lib.rs` (grep-matcher); just
+  `Lexer::lex` in `src/lexer.rs` (just is one package, so this is its library target, which
+  the binary depends on); nushell `Value::get_type` in `nu-protocol`, which most of the
+  workspace depends on. New function: a
+  call from `main` to a new `#[inline(never)] fn` added to the same file.
+- **Output same.** After every edit both binaries were run with `--version` and one real
+  command line, and exit status, stdout and stderr compared: ripgrep
+  `rg -n --no-heading --sort path "fn main" crates/core/main.rs build.rs`, just
+  `just --list --unsorted`, nushell `nu -n -c "[3 1 2] | sort | str join ','"`.
+
+Why the maxima of "body of `main`" are high: that row's first run is the first edit after
+the warm-up. On nushell it recompiled 71,964 of 159,037 functions and wrote the whole object
+again ("not spliced" in the worker log), 10.3 s; the second edit spliced with a 1.9 s link,
+and from the third on it took 0.41 s. ripgrep's and just's first edits (1.23 s, 1.44 s)
+have the same cause at a smaller size.
+
+Why the warm store saves little: most of the warm-up is not code generation. From the
+worker logs, empty store against warm store:
+
+| Project | Load workspace | Compile, empty store | Compile, warm store | Functions reused | Link |
+|---|---:|---:|---:|---:|---:|
+| ripgrep | 0.9 s | 1.8 s | 1.3 s | 13,459 of 17,103 | 0.18 s |
+| just | 2.3 s | 2.3 s | 1.6 s | 19,675 of 21,008 | |
+| nushell | 4.6 s | 26.1 s | 21.4 s | 124,846 of 159,036 | 1.0 s |
+
+The store holds compiled functions, not rust-analyzer's analysis, so a warm store still
+pays for loading and type-checking every function (see [cache.md](cache.md)). The rest of
+"ready" minus "command returns" (about 3 s on ripgrep and 7 s on nushell) is starting the
+daemon and worker and waiting for the background check.
+
+Commands, on the host:
+
+    RUSTUP_TOOLCHAIN=1.99.0 cargo build -p ra-jit --release
+    RA_JIT_PROJECTS=~/rajit-realproj/projects python3 -u harness/realbench.py \
+        ripgrep just nushell --runs 5 --work ~/rajit-realproj/work
+    python3 harness/realbench.py --table ~/rajit-realproj/work/realbench.json
+
+Dependencies were fetched with `cargo fetch` first and every timed build ran with
+`CARGO_NET_OFFLINE=true`.
+
 ## Disagreements
 
 Where reports disagree, this file follows the later one.
