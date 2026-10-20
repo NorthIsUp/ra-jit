@@ -21,6 +21,8 @@ try:
     import resource
 except ImportError:  # Windows: a generated program is held to its time alone.
     resource = None
+if sys.platform == "darwin":  # macOS refuses to lower RLIMIT_AS, so there too.
+    resource = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
