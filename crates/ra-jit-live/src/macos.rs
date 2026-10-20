@@ -77,7 +77,8 @@ pub(crate) struct Live {
     uuid: [u8; 16],
     slide: u64,
     process: Process,
-    patches: Receiver<Patch>,
+    /// Each patch with when the thread that watches for them read it.
+    patches: Receiver<(Patch, Instant)>,
     /// What the executable had where a patch wrote, by where, as long as the longest
     /// write there.
     originals: HashMap<u64, Vec<u8>>,
@@ -125,7 +126,7 @@ impl Live {
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
             }
         }
-        let patch = newest.filter(|it| it.sequence > self.sequence)?;
+        let (patch, arrived) = newest.filter(|(it, _)| it.sequence > self.sequence)?;
         self.sequence = patch.sequence;
         if patch.uuid != self.uuid {
             return Some(Outcome::Restart("the program was linked again".to_owned()));
@@ -134,6 +135,7 @@ impl Live {
             Body::Restart(why) => Outcome::Restart(why),
             Body::Code(code) => {
                 let start = Instant::now();
+                let waited = start - arrived;
                 match self.apply(&code) {
                     Ok(()) => Outcome::Applied {
                         sequence: patch.sequence,
@@ -141,6 +143,7 @@ impl Live {
                         statics: code.statics,
                         restored: code.writes.len() as u64 - code.redirected - code.statics,
                         took: start.elapsed(),
+                        waited,
                     },
                     Err(why) => Outcome::Declined(why),
                 }
@@ -329,7 +332,7 @@ fn forget_exited() {
 /// writes another executable where the program's was, which no patch says of when nothing
 /// that links it knew the program (`cargo build`, or a daemon started since), is told as
 /// a patch of that executable.
-fn watch(path: PathBuf, uuid: [u8; 16]) -> Receiver<Patch> {
+fn watch(path: PathBuf, uuid: [u8; 16]) -> Receiver<(Patch, Instant)> {
     let (send, receive) = std::sync::mpsc::channel();
     let stamp = |path: &PathBuf| {
         let meta = std::fs::metadata(path).ok()?;
@@ -355,7 +358,8 @@ fn watch(path: PathBuf, uuid: [u8; 16]) -> Receiver<Patch> {
                                 .duration_since(SystemTime::UNIX_EPOCH)
                                 .map_or(0, |it| it.as_millis() as u64);
                             let body = Body::Restart(why);
-                            if send.send(Patch { uuid: other, sequence, body }).is_err() {
+                            let patch = Patch { uuid: other, sequence, body };
+                            if send.send((patch, Instant::now())).is_err() {
                                 return;
                             }
                         }
@@ -369,7 +373,7 @@ fn watch(path: PathBuf, uuid: [u8; 16]) -> Receiver<Patch> {
                 let Ok(bytes) = std::fs::read(&path) else { continue };
                 match Patch::decode(&bytes) {
                     Ok(patch) => {
-                        if send.send(patch).is_err() {
+                        if send.send((patch, Instant::now())).is_err() {
                             return;
                         }
                     }

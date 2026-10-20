@@ -3976,6 +3976,7 @@ fn requested(stream: UnixStream) -> Option<Asked> {
         }
     };
     let fields: Vec<&str> = request.split('\t').collect();
+    eprintln!("request: {} at_us={}", fields[0], live::epoch_us());
     let target = Target::parse(&fields[1..]);
     if let Some(request) = Request::parse(fields[0])
         && (fields.len() == 1 || target.is_some())
