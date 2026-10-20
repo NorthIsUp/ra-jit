@@ -34,7 +34,7 @@ use crate::{db::HirDatabase, next_solver::StoredGenericArgs, traits::StoredParam
 
 use super::{
     CodegenError, Instance, InstanceDef, Result,
-    fragment::{CompiledFunction, Recorder},
+    fragment::{CompiledFunction, Recorder, Wants},
     instance_serial, root_serial,
 };
 
@@ -43,11 +43,14 @@ use super::{
 pub const COUNTERS: &str = "ra_jit_live_counters";
 
 /// How deep functions are built into each other; how many instructions a hot body built in
-/// may have, and any other; and how many all that is built into one function may add up to.
+/// may have, and any other, counted with its locals out of the frame; how many a body LLVM
+/// is shown to decide on itself may have; and how many all that may add up to.
 const DEPTH: u32 = 10;
 const HOT_INSTRUCTIONS: usize = 4000;
 const SMALL_INSTRUCTIONS: usize = 600;
+const SEEN_INSTRUCTIONS: usize = 2000;
 const BUDGET: usize = 40_000;
+const SEEN_BUDGET: usize = 10_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Level {
@@ -96,8 +99,6 @@ pub struct Asked {
     pub level: Level,
     /// The hot functions that may be built into it where it calls them.
     pub hot: Vec<Node>,
-    /// At level 2, the first of the counters it counts in, when there are any to spare.
-    pub counters: Option<u32>,
     /// At level 3, what level 2 counted.
     pub profile: Option<Branches>,
 }
@@ -210,8 +211,9 @@ struct Inlining {
     instances: FxHashSet<(InstanceDef, StoredGenericArgs)>,
     inlined: Vec<(Instance, StoredParamEnvAndCrate)>,
     depth: u32,
-    /// How many instructions were built in so far.
+    /// How many instructions were built in so far, and shown to LLVM in bodies of their own.
     spent: usize,
+    seen: usize,
     /// The bodies built so far, by what they are of: `None` for one that is not built in.
     built: FxHashMap<
         (InstanceDef, StoredGenericArgs, bool),
@@ -253,17 +255,22 @@ pub(super) fn inline_limit(db: &dyn HirDatabase, instance: &Instance) -> Option<
         {
             return None;
         }
-        let hot = inlining.instances.contains(&(instance.def, instance.args.clone()))
-            || func.is_some_and(|func| {
-                instance.args.as_ref().iter().all(|it| it.region().is_some())
-                    && inlining.roots.contains(&func)
-            });
-        Some(if hot { HOT_INSTRUCTIONS } else { SMALL_INSTRUCTIONS })
+        Some(if inlining.is_hot(instance) { HOT_INSTRUCTIONS } else { SMALL_INSTRUCTIONS })
     })
 }
 
+impl Inlining {
+    fn is_hot(&self, instance: &Instance) -> bool {
+        self.instances.contains(&(instance.def, instance.args.clone()))
+            || matches!(instance.def, InstanceDef::Fn(func)
+                if instance.args.as_ref().iter().all(|it| it.region().is_some())
+                    && self.roots.contains(&func))
+    }
+}
+
 /// The body of a hot callee, built to be put where it is called, with the hot functions it
-/// calls built into it in turn.
+/// calls built into it in turn, if it has at most `limit` instructions once its locals are
+/// out of the frame.
 pub(super) fn hot_body(
     db: &dyn HirDatabase,
     instance: &Instance,
@@ -271,12 +278,74 @@ pub(super) fn hot_body(
     limit: usize,
     tracked: bool,
 ) -> Option<std::rc::Rc<super::fragment::Inlinable>> {
+    let body = body(db, instance, env, tracked)?;
+    if body.func.dfg.num_insts() > limit {
+        refused(db, instance, "too large");
+        return None;
+    }
+    spend(instance, env, &body);
+    Some(body)
+}
+
+/// The body of a callee that the compile under way calls rather than builds in, for LLVM to
+/// see what it does: one that is `#[inline(never)]` and hot, whose call LLVM keeps and knows
+/// then what it reads and writes, or one too large for [`inline_limit`], which LLVM builds in
+/// itself where its own measure, after optimization, finds it small enough. Whether it is
+/// `#[inline(never)]` comes with it.
+pub(super) fn seen_body(
+    db: &dyn HirDatabase,
+    instance: &Instance,
+    env: &StoredParamEnvAndCrate,
+    tracked: bool,
+) -> Option<(std::rc::Rc<super::fragment::Inlinable>, bool)> {
+    let func = match instance.def {
+        InstanceDef::Fn(func) => Some(func),
+        InstanceDef::Closure(_) | InstanceDef::DropGlue => None,
+        _ => return None,
+    };
+    // Of what the function being compiled calls itself: a body built into it shows none.
+    let (hot, room) = INLINING.with(|it| {
+        let it = it.borrow();
+        let inlining = it.as_ref()?;
+        Some((inlining.is_hot(instance), inlining.depth == 0 && inlining.seen < SEEN_BUDGET))
+    })?;
+    if !room {
+        return None;
+    }
+    let never = func
+        .is_some_and(|func| AttrFlags::query(db, func.into()).contains(AttrFlags::INLINE_NEVER));
+    let limit = if hot { HOT_INSTRUCTIONS } else { SEEN_INSTRUCTIONS };
+    if never && !hot {
+        return None;
+    }
+    let body = body(db, instance, env, tracked)?;
+    if body.func.dfg.num_insts() > limit {
+        return None;
+    }
+    INLINING.with(|it| {
+        if let Some(it) = it.borrow_mut().as_mut() {
+            it.seen += body.func.dfg.num_insts();
+            if !it.inlined.iter().any(|(known, _)| known == instance) {
+                it.inlined.push((instance.clone(), env.clone()));
+            }
+        }
+    });
+    Some((body, never))
+}
+
+/// The body of `instance`, built once per compile.
+fn body(
+    db: &dyn HirDatabase,
+    instance: &Instance,
+    env: &StoredParamEnvAndCrate,
+    tracked: bool,
+) -> Option<std::rc::Rc<super::fragment::Inlinable>> {
     let key = (instance.def, instance.args.clone(), tracked);
     let known = INLINING.with(|it| it.borrow().as_ref()?.built.get(&key).cloned());
-    let body = match known {
+    match known {
         Some(body) => body,
         None => {
-            let body = build_body(db, instance, env, limit, tracked).map(std::rc::Rc::new);
+            let body = build_body(db, instance, env, tracked).map(std::rc::Rc::new);
             INLINING.with(|it| {
                 if let Some(it) = it.borrow_mut().as_mut() {
                     it.built.insert(key, body.clone());
@@ -284,8 +353,12 @@ pub(super) fn hot_body(
             });
             body
         }
-    };
-    let body = body?;
+    }
+}
+
+/// Counts `body` as built into the compile under way, which an edit of it then sends back
+/// to level 1.
+fn spend(instance: &Instance, env: &StoredParamEnvAndCrate, body: &super::fragment::Inlinable) {
     INLINING.with(|it| {
         if let Some(it) = it.borrow_mut().as_mut() {
             it.spent += body.func.dfg.num_insts();
@@ -294,28 +367,30 @@ pub(super) fn hot_body(
             }
         }
     });
-    Some(body)
+}
+
+/// Says why a body is not built in, with `RA_JIT_DUMP_TIER`.
+fn refused(db: &dyn HirDatabase, instance: &Instance, why: &str) {
+    if std::env::var_os("RA_JIT_DUMP_TIER").is_none() {
+        return;
+    }
+    let name = match instance.def {
+        InstanceDef::Fn(func) => {
+            hir_def::signatures::FunctionSignature::of(db, func).name.as_str().to_owned()
+        }
+        InstanceDef::DropGlue => "drop glue".to_owned(),
+        _ => "a closure".to_owned(),
+    };
+    eprintln!("tier: {name} is not built in: {why}");
 }
 
 fn build_body(
     db: &dyn HirDatabase,
     instance: &Instance,
     env: &StoredParamEnvAndCrate,
-    limit: usize,
     tracked: bool,
 ) -> Option<super::fragment::Inlinable> {
-    let dump = std::env::var_os("RA_JIT_DUMP_TIER").is_some();
-    let refused = |why: &str| {
-        if dump {
-            let name = match instance.def {
-                InstanceDef::Fn(func) => {
-                    hir_def::signatures::FunctionSignature::of(db, func).name.as_str().to_owned()
-                }
-                _ => "a closure".to_owned(),
-            };
-            eprintln!("tier: {name} is not built in: {why}");
-        }
-    };
+    let refused = |why: &str| refused(db, instance, why);
     if let InstanceDef::Fn(func) = instance.def {
         let generic = db.mir_body(func.into()).ok()?;
         if generic.coroutine.is_some() {
@@ -323,9 +398,16 @@ fn build_body(
             return None;
         }
     }
-    let Ok(body) = super::instance_body(db, instance, env.clone()) else {
-        refused("no body");
-        return None;
+    // Drop glue is built from the type it drops, and has no MIR.
+    let body = match instance.def {
+        InstanceDef::DropGlue => None,
+        _ => match super::instance_body(db, instance, env.clone()) {
+            Ok(body) => Some(body),
+            Err(_) => {
+                refused("no body");
+                return None;
+            }
+        },
     };
     INLINING.with(|it| it.borrow_mut().as_mut().map(|it| it.depth += 1));
     let built = (|| {
@@ -337,22 +419,29 @@ fn build_body(
         );
         cg.unlocated = true;
         let args = instance.args.clone();
-        let mut ctx = super::build(&mut cg, env.as_ref(db), Some(&*body), tracked, |fx| {
-            fx.args = Some(args);
-            fx.codegen()
-        })
-        .map_err(|e| refused(&e.to_string()))
-        .ok()?;
+        let mut ctx =
+            super::build(&mut cg, env.as_ref(db), body.as_deref(), tracked, |fx| match fx.body {
+                Some(_) => {
+                    fx.args = Some(args);
+                    fx.codegen()
+                }
+                None => {
+                    use rustc_type_ir::inherent::GenericArgs as _;
+                    fx.drop_glue(args.as_ref().type_at(0))
+                }
+            })
+            .map_err(|e| refused(&e.to_string()))
+            .ok()?;
         if cg.naked.is_some() || cg.opaque {
             refused("naked or opaque");
             return None;
         }
         super::inline(&mut ctx, &cg.inlined).map_err(|e| refused(&e.to_string())).ok()?;
-        if ctx.func.dfg.num_insts() > limit {
-            refused("too large");
-            return None;
-        }
-        let inlinable = super::fragment::Inlinable::of(ctx.func, cg.finish().0);
+        // Its size is measured with its locals out of the frame, as the caller has them.
+        super::promote::promote(&mut ctx.func, cg.named_slots());
+        let pointees = std::mem::take(&mut cg.pointees);
+        let seen = std::mem::take(&mut cg.seen);
+        let inlinable = super::fragment::Inlinable::of(ctx.func, cg.finish().0, pointees, seen);
         if inlinable.is_none() {
             refused("its data is out of order");
         }
@@ -366,8 +455,25 @@ fn build_body(
     built
 }
 
-/// Compiles the function `asked` names at the level it asks for.
+/// Compiles the function `asked` names at the level it asks for: [`prepare`], then
+/// [`Prepared::finish`] with no counters to count in.
 pub fn compile(db: &dyn HirDatabase, asked: &Asked) -> std::result::Result<Tiered, String> {
+    prepare(db, asked)?.finish(None)
+}
+
+/// A function of [`prepare`]: its IR, with all it took of the database.
+pub struct Prepared {
+    level: Level,
+    profile: Option<Branches>,
+    pending: super::Pending,
+    serial: u128,
+    inlined: Vec<(Node, u128)>,
+    start: std::time::Instant,
+}
+
+/// Builds the IR of the function `asked` names, with what it builds in, for LLVM to compile
+/// at the level asked for once the database is let go of (an edit is then applied at once).
+pub fn prepare(db: &dyn HirDatabase, asked: &Asked) -> std::result::Result<Prepared, String> {
     let start = std::time::Instant::now();
     if asked.level == Level::Cranelift {
         return Err("level 1 is what every build compiles".to_owned());
@@ -382,6 +488,7 @@ pub fn compile(db: &dyn HirDatabase, asked: &Asked) -> std::result::Result<Tiere
         inlined: Vec::new(),
         depth: 0,
         spent: 0,
+        seen: 0,
         built: FxHashMap::default(),
     };
     for node in &asked.hot {
@@ -392,12 +499,6 @@ pub fn compile(db: &dyn HirDatabase, asked: &Asked) -> std::result::Result<Tiere
             }
         }
     }
-    let request = Request {
-        level: asked.level,
-        counters: asked.counters.filter(|_| asked.level == Level::Llvm),
-        profile: asked.profile.clone().filter(|_| asked.level == Level::Pgo),
-        branches: std::cell::Cell::new(0),
-    };
     if std::env::var_os("RA_JIT_DUMP_TIER").is_some() {
         eprintln!(
             "tier: {:?} at {:?}: {} roots and {} instances may be built in",
@@ -416,14 +517,16 @@ pub fn compile(db: &dyn HirDatabase, asked: &Asked) -> std::result::Result<Tiere
     }
     let held = INLINING.with(|it| it.borrow_mut().replace(inlining));
     let compiled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match &asked.node.0 {
-        Kind::Root(func) => super::root_code(db, *func, Some(&request)),
+        Kind::Root(func) => super::root_code(db, *func, true),
         Kind::Instance(instance, env) => {
-            super::instance_code(db, instance.clone(), env.clone(), Some(&request))
+            super::instance_code(db, instance.clone(), env.clone(), true)
         }
     }));
     let inlining = INLINING.with(|it| std::mem::replace(&mut *it.borrow_mut(), held));
-    let code = match compiled {
-        Ok(code) => code.map_err(|e| e.to_string())?,
+    let pending = match compiled {
+        Ok(Ok(super::Produced::Pending(pending))) => pending,
+        Ok(Ok(super::Produced::Code(_))) => return Err("its code is its assembly".to_owned()),
+        Ok(Err(e)) => return Err(e.to_string()),
         Err(panic) => std::panic::resume_unwind(panic),
     };
     let mut inlined = Vec::new();
@@ -441,16 +544,39 @@ pub fn compile(db: &dyn HirDatabase, asked: &Asked) -> std::result::Result<Tiere
             inlined.push((node, serial));
         }
     }
-    Ok(Tiered {
+    Ok(Prepared {
         level: asked.level,
-        code,
+        profile: asked.profile.clone().filter(|_| asked.level == Level::Pgo),
+        pending,
         serial,
-        inlined_count: inlined.len(),
         inlined,
-        branches: request.branches.get(),
-        counters: request.counters,
-        took: start.elapsed(),
+        start,
     })
+}
+
+impl Prepared {
+    /// LLVM's code of the function, which takes nothing of the database. Code of level 2
+    /// counts in the counters from the first of `counters` on, if all it counts fits in the
+    /// second, how many there are.
+    pub fn finish(self, counters: Option<(u32, u32)>) -> std::result::Result<Tiered, String> {
+        let Prepared { level, profile, pending, serial, inlined, start } = self;
+        let branches = branches(pending.func()).len() as u32;
+        let counters = counters
+            .filter(|&(first, room)| level == Level::Llvm && first + 1 + 2 * branches <= room)
+            .map(|(first, _)| first);
+        let request = Request { level, counters, profile, branches: std::cell::Cell::new(0) };
+        let code = pending.produce(&request).map_err(|e| e.to_string())?;
+        Ok(Tiered {
+            level,
+            code,
+            serial,
+            inlined_count: inlined.len(),
+            inlined,
+            branches: request.branches.get(),
+            counters: request.counters,
+            took: start.elapsed(),
+        })
+    }
 }
 
 /// The two-way branches of `func`, in the order of its layout.
@@ -465,7 +591,7 @@ fn branches(func: &ir::Function) -> Vec<ir::Inst> {
 /// Has `func` count, in the counters from `first` on, how often it is entered and which way
 /// each of `branches` goes. The counters are found by a call at the entry.
 fn count(
-    recorder: &mut Recorder<'_>,
+    recorder: &mut Wants,
     func: &mut ir::Function,
     first: u32,
     branches: &[ir::Inst],
@@ -506,11 +632,12 @@ fn count(
 /// The machine code of a function compiled at a level above 1: LLVM's, or an error where
 /// LLVM has none, as the function then stays where it is.
 pub(super) fn emit(
-    recorder: &mut Recorder<'_>,
-    ctx: &mut cranelift_codegen::Context,
+    recorder: &mut Wants,
+    named: &[ir::StackSlot],
+    func: &mut ir::Function,
     request: &Request,
 ) -> Result<super::fragment::Code> {
-    let found = branches(&ctx.func);
+    let found = branches(func);
     request.branches.set(found.len() as u32);
     let weights = match &request.profile {
         Some(profile) if profile.taken.len() == found.len() => Some(Weights {
@@ -520,12 +647,12 @@ pub(super) fn emit(
         _ => None,
     };
     if let Some(first) = request.counters {
-        count(recorder, &mut ctx.func, first, &found)?;
+        count(recorder, func, first, &found)?;
     }
     if std::env::var_os("RA_JIT_DUMP_TIER").is_some() {
-        eprintln!("tier {:?}:\n{}", request.level, ctx.func.display());
+        eprintln!("tier {:?}:\n{}", request.level, func.display());
     }
-    produce(recorder, &ctx.func, weights.as_ref())
+    produce(recorder, named, func, weights.as_ref())
 }
 
 /// What level 3 tells LLVM: how often the function is entered, and how often each branch
@@ -538,20 +665,22 @@ pub(super) struct Weights {
 
 #[cfg(feature = "llvm")]
 fn produce(
-    recorder: &mut Recorder<'_>,
+    recorder: &mut Wants,
+    named: &[ir::StackSlot],
     func: &ir::Function,
     weights: Option<&Weights>,
 ) -> Result<super::fragment::Code> {
     use super::backend::{Optimization, Passes, Selection};
     let optimization = Optimization { passes: Passes::Aggressive, selection: Selection::Optimized };
-    let code = super::llvm::emit(recorder, func, optimization, weights)
+    let code = super::llvm::emit(recorder, named, func, optimization, weights)
         .map_err(|why| CodegenError::Unsupported(format!("LLVM has no code for it: {why}")))?;
     super::backend::pad(code)
 }
 
 #[cfg(not(feature = "llvm"))]
 fn produce(
-    _: &mut Recorder<'_>,
+    _: &mut Wants,
+    _: &[ir::StackSlot],
     _: &ir::Function,
     _: Option<&Weights>,
 ) -> Result<super::fragment::Code> {

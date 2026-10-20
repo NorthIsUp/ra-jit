@@ -3,7 +3,8 @@
 //! The daemon writes `sample` in the program's directory to ask and removes it to stop. Until
 //! then the sampler looks for that file four times a second and does nothing else. While it
 //! samples it reads where each running thread is, and writes what it counted to `profile` a
-//! few times a second.
+//! few times a second. `sample` names the worker that reads `profile`; once that process is
+//! gone the sampler stops as if the file were, and starts again when a worker asks anew.
 //!
 //! The kernel stops a thread for as long as reading its registers takes and lets it go itself
 //! (`thread_get_state` holds a thread other than the caller while it reads), so the sampler
@@ -34,6 +35,7 @@ unsafe extern "C" {
     fn mach_absolute_time() -> u64;
     fn mach_wait_until(deadline: u64) -> i32;
     fn mach_timebase_info(info: *mut Timebase) -> i32;
+    fn kill(pid: i32, signal: i32) -> i32;
 }
 
 const THREAD_BASIC_INFO: i32 = 3;
@@ -125,8 +127,19 @@ pub(crate) fn start(dir: PathBuf, code: Code) {
         .expect("spawning the thread that samples");
 }
 
+/// What `sample` asks, unless the process it names to read what is sampled is gone: a
+/// worker that exited, or was killed, does not remove the file.
 fn read(path: &Path) -> Option<Sample> {
-    Sample::decode(&std::fs::read_to_string(path).ok()?)
+    let sample = Sample::decode(&std::fs::read_to_string(path).ok()?)?;
+    (sample.reader == 0 || alive(sample.reader)).then_some(sample)
+}
+
+/// Whether there is a process `pid`. One that is there and not this user's is.
+fn alive(pid: u32) -> bool {
+    const ESRCH: i32 = 3;
+    let Ok(pid) = i32::try_from(pid) else { return false };
+    // SAFETY: signal 0 only checks that the process can be signalled.
+    unsafe { kill(pid, 0) == 0 || std::io::Error::last_os_error().raw_os_error() != Some(ESRCH) }
 }
 
 /// Samples until `sample` is removed, counting from nothing.

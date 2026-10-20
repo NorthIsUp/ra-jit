@@ -1626,15 +1626,12 @@ fn rows_of(db: &dyn HirDatabase, compiled: &CompiledFunction) -> Vec<Row> {
 #[salsa::tracked(returns(ref))]
 fn compiled_root<'db>(db: &'db dyn HirDatabase, func: FunctionId) -> Result<CompiledFunction> {
     let _span = tracing::info_span!(target: "ra_jit", "compiled_root").entered();
-    tier::plain(|| root_code(db, func, None))
+    tier::plain(|| root_code(db, func, false)).map(Produced::code)
 }
 
-/// The code of a non-generic function: Cranelift's, or at a level above 1 as `tier` asks.
-fn root_code(
-    db: &dyn HirDatabase,
-    func: FunctionId,
-    tier: Option<&tier::Request>,
-) -> Result<CompiledFunction> {
+/// The code of a non-generic function: Cranelift's, or, for a compile at a level above 1
+/// (`tier`), its IR for LLVM.
+fn root_code(db: &dyn HirDatabase, func: FunctionId, tier: bool) -> Result<Produced> {
     let (body, env) = root_body(db, func)?;
     if std::env::var("RA_JIT_DUMP_MIR")
         .is_ok_and(|want| FunctionSignature::of(db, func).name.as_str() == want)
@@ -1700,21 +1697,21 @@ fn compiled_instance<'db>(
     env: StoredParamEnvAndCrate,
 ) -> Result<CompiledFunction> {
     let _span = tracing::info_span!(target: "ra_jit", "compiled_instance").entered();
-    tier::plain(|| instance_code(db, instance, env, None))
+    tier::plain(|| instance_code(db, instance, env, false)).map(Produced::code)
 }
 
-/// The code of an instance: Cranelift's, or at a level above 1 as `tier` asks, which only a
-/// function, closure or `async` block of the source is compiled at.
+/// The code of an instance: Cranelift's, or, for a compile at a level above 1 (`tier`), its
+/// IR for LLVM, which only a function, closure or `async` block of the source is compiled at.
 fn instance_code(
     db: &dyn HirDatabase,
     instance: Instance,
     env: StoredParamEnvAndCrate,
-    tier: Option<&tier::Request>,
-) -> Result<CompiledFunction> {
+    tier: bool,
+) -> Result<Produced> {
     let stored_env = env.clone();
     let env = env.as_ref(db);
     let ty = || instance.args.as_ref().type_at(0);
-    if tier.is_some()
+    if tier
         && !matches!(
             instance.def,
             InstanceDef::Fn(_)
@@ -1727,7 +1724,7 @@ fn instance_code(
     }
     let body = match instance.def {
         InstanceDef::DropGlue => {
-            return compile(db, env, None, false, instance.checked, |fx| {
+            return compile_as(db, env, None, false, instance.checked, false, |fx| {
                 let ty = ty();
                 fx.drop_glue(ty)?;
                 if std::env::var_os("RA_JIT_DUMP_CLIF").is_some() {
@@ -1738,22 +1735,26 @@ fn instance_code(
         }
         InstanceDef::CallOnceShim => {
             let args = instance.args.as_ref();
-            return compile(db, env, None, false, instance.checked, |fx| match args.len() {
-                1 => fx.call_once_shim(ty()),
-                _ => fx.call_once_by_pointer(args),
+            return compile_as(db, env, None, false, instance.checked, false, |fx| {
+                match args.len() {
+                    1 => fx.call_once_shim(ty()),
+                    _ => fx.call_once_by_pointer(args),
+                }
             });
         }
         InstanceDef::VtableShim(func) => {
             let args = instance.args.as_ref();
-            return compile(db, env, None, false, instance.checked, |fx| {
+            return compile_as(db, env, None, false, instance.checked, false, |fx| {
                 fx.vtable_shim(func, args)
             });
         }
         InstanceDef::FnPointerShim => {
-            return compile(db, env, None, false, instance.checked, |fx| fx.fn_pointer_shim(ty()));
+            return compile_as(db, env, None, false, instance.checked, false, |fx| {
+                fx.fn_pointer_shim(ty())
+            });
         }
         InstanceDef::ReifyShim { receiver } => {
-            return compile(db, env, None, false, instance.checked, |fx| {
+            return compile_as(db, env, None, false, instance.checked, false, |fx| {
                 fx.reify_shim(ty(), receiver)
             });
         }
@@ -1793,7 +1794,10 @@ fn instance_code(
         fx.args = Some(args);
         fx.codegen()
     })?;
-    Ok(CompiledFunction { closure, ..compiled })
+    Ok(match compiled {
+        Produced::Code(compiled) => Produced::Code(CompiledFunction { closure, ..compiled }),
+        Produced::Pending(pending) => Produced::Pending(Pending { closure, ..pending }),
+    })
 }
 
 /// How many of the argument registers of a C convention the named parameters of a variadic
@@ -3213,20 +3217,20 @@ fn compile<'db>(
     checked: bool,
     fill: impl for<'cx> FnOnce(&mut FunctionCx<'cx, 'db>) -> Result<()>,
 ) -> Result<CompiledFunction> {
-    compile_as(db, env, body, tracked, checked, None, fill)
+    compile_as(db, env, body, tracked, checked, false, fill).map(Produced::code)
 }
 
-/// Builds the IR of one function and compiles it: with Cranelift, or at a level above 1 as
-/// `tier` asks.
+/// Builds the IR of one function and compiles it with Cranelift, or, for a compile at a level
+/// above 1 (`tier`), leaves it to LLVM to compile once the database is let go of.
 fn compile_as<'db>(
     db: &'db dyn HirDatabase,
     env: ParamEnvAndCrate<'db>,
     body: Option<&'db MirBody<'db>>,
     tracked: bool,
     checked: bool,
-    tier: Option<&tier::Request>,
+    tier: bool,
     fill: impl for<'cx> FnOnce(&mut FunctionCx<'cx, 'db>) -> Result<()>,
-) -> Result<CompiledFunction> {
+) -> Result<Produced> {
     let isa = &**target()?;
     let mut cg = Recorder::new(db, isa, selected_target()?, checked);
     let tally = backend::Tally::global();
@@ -3273,11 +3277,93 @@ fn compile_as<'db>(
                 slots: SlotPlaces::default(),
             }
         }
-        None => match tier {
-            None => Backend::emit(&mut cg, &mut ctx)?,
-            Some(request) => tier::emit(&mut cg, &mut ctx, request)?,
-        },
+        None if tier => {
+            let named = cg.named_slots().collect();
+            let (source, variables) = described(&mut cg, env, body);
+            let (wants, layouts) = cg.detach();
+            return Ok(Produced::Pending(Pending {
+                func: ctx.func,
+                wants,
+                named,
+                source,
+                variables,
+                layouts,
+                closure: None,
+            }));
+        }
+        None => Backend::emit(&mut cg, &mut ctx)?,
     };
+    let (source, variables) = described(&mut cg, env, body);
+    let (requests, layouts) = cg.finish();
+    // What a build compiled, which a compile at a level above 1 is not part of.
+    if !tier {
+        COMPILED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    Ok(Produced::Code(CompiledFunction {
+        requests,
+        code,
+        source,
+        closure: None,
+        variables,
+        layouts,
+    }))
+}
+
+/// What `compile_as` gives: the code, or, for a compile at a level above 1, what LLVM makes
+/// it of once the database is let go of.
+pub(crate) enum Produced {
+    Code(CompiledFunction),
+    Pending(Pending),
+}
+
+impl Produced {
+    /// The code of a compile at level 1, which leaves nothing for later.
+    fn code(self) -> CompiledFunction {
+        match self {
+            Produced::Code(code) => code,
+            Produced::Pending(_) => unreachable!("only a compile at a level above 1 is pending"),
+        }
+    }
+}
+
+/// A function whose IR is built, and all that was asked of the database for it, which LLVM
+/// compiles without it: an edit applied meanwhile waits for nothing.
+pub struct Pending {
+    func: ir::Function,
+    wants: fragment::Wants,
+    named: Vec<ir::StackSlot>,
+    source: Option<(DefWithBodyId, Vec<MirSpan>)>,
+    variables: Option<(StoredParamEnvAndCrate, Vec<Variable>)>,
+    layouts: Vec<(String, u64, u64)>,
+    closure: Option<ExprId>,
+}
+
+impl Pending {
+    pub(crate) fn func(&self) -> &ir::Function {
+        &self.func
+    }
+
+    /// The code LLVM makes of the function, at the level `request` asks for.
+    pub(crate) fn produce(mut self, request: &tier::Request) -> Result<CompiledFunction> {
+        let code = tier::emit(&mut self.wants, &self.named, &mut self.func, request)?;
+        Ok(CompiledFunction {
+            requests: self.wants.into_requests(),
+            code,
+            source: self.source,
+            closure: self.closure,
+            variables: self.variables,
+            layouts: self.layouts,
+        })
+    }
+}
+
+/// What tells the code of a function's lines and variables: the statements of `body` its
+/// instructions were built for, and its locals with a name.
+fn described<'db>(
+    cg: &mut Recorder<'db>,
+    env: ParamEnvAndCrate<'db>,
+    body: Option<&'db MirBody<'db>>,
+) -> (Option<(DefWithBodyId, Vec<MirSpan>)>, Option<(StoredParamEnvAndCrate, Vec<Variable>)>) {
     let source = match body.map(|body| body.owner) {
         Some(InferBodyId::DefWithBodyId(owner)) => Some((owner, cg.take_spans())),
         _ => None,
@@ -3292,13 +3378,7 @@ fn compile_as<'db>(
             pointer,
         })
         .collect::<Vec<_>>();
-    let variables = Some((env.store(), variables)).filter(|it| !it.1.is_empty());
-    let (requests, layouts) = cg.finish();
-    // What a build compiled, which a compile at a level above 1 is not part of.
-    if tier.is_none() {
-        COMPILED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    }
-    Ok(CompiledFunction { requests, code, source, closure: None, variables, layouts })
+    (source, Some((env.store(), variables)).filter(|it| !it.1.is_empty()))
 }
 
 fn build<'db>(
@@ -3410,7 +3490,8 @@ fn small_body(
     if ctx.func.dfg.num_insts() > INSTRUCTIONS {
         return None;
     }
-    fragment::Inlinable::of(ctx.func, cg.finish().0)
+    let pointees = std::mem::take(&mut cg.pointees);
+    fragment::Inlinable::of(ctx.func, cg.finish().0, pointees, Vec::new())
 }
 
 fn inlinable_cycle(
@@ -7260,6 +7341,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             false => None,
         };
         self.builder.func.signature = sig;
+        self.cg.pointees = self.pointees(body, ret, &param_modes)?;
 
         let entry = self.builder.create_block();
         self.builder.append_block_params_for_function_params(entry);
@@ -7987,6 +8069,130 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
     /// Whether `ty` is known to have no `UnsafeCell` outside of indirections.
     fn is_freeze(&self, ty: Ty<'db>) -> bool {
         crate::drop::is_freeze(self.cg.db, self.interner, ty)
+    }
+
+    /// The parameters of the function being built that are addresses, with what their types
+    /// say of the memory there, by their place among the parameters of its IR. As rustc's
+    /// `arg_attrs_for_rust_scalar`: a reference is aligned and not null, and a `&mut T` of a
+    /// `T` that is `Unpin` and a `&T` of one without an `UnsafeCell` are the only way to their
+    /// memory, which may be read at any time; an aggregate passed or returned in memory is at
+    /// an address of its own of its size.
+    fn pointees(
+        &self,
+        body: &MirBody<'db>,
+        ret: PassMode,
+        modes: &[PassMode],
+    ) -> Result<Vec<(u32, fragment::Pointee)>> {
+        use fragment::Pointee;
+        let mut found = Vec::new();
+        // The body of a coroutine is resumed with a null context too, which it tells apart.
+        if body.coroutine.is_some() {
+            return Ok(found);
+        }
+        let mut at = 0u32;
+        let in_memory = |layout: &Layout| Pointee {
+            unique: false,
+            frozen: false,
+            size: layout.size.bytes(),
+            align: layout.align.abi.bytes(),
+        };
+        if let PassMode::Indirect = ret {
+            let ty = body.locals[returned_local(body)].ty.as_ref();
+            found.push((at, in_memory(&*self.layout(ty)?)));
+            at += 1;
+        }
+        for (&local, &mode) in body.param_locals.iter().zip(modes) {
+            let ty = body.locals[local].ty.as_ref();
+            let pointee = match mode {
+                PassMode::Indirect => Some(in_memory(&*self.layout(ty)?)),
+                PassMode::Direct(_) | PassMode::Pair(..) => self.reference_pointee(ty)?,
+                _ => None,
+            };
+            if let Some(pointee) = pointee {
+                found.push((at, pointee));
+            }
+            let mut params = Vec::new();
+            self.push_abi_params(mode, &mut params);
+            at += params.len() as u32;
+        }
+        Ok(found)
+    }
+
+    /// What a reference of type `ty` says of its memory, if `ty` is one that is the only way
+    /// to its memory. Only a reference to plain data is looked at: whether a type with a
+    /// coroutine, a closure or a trait object in it is `Unpin` takes more than its fields to
+    /// know, and a wrong yes is a miscompile.
+    fn reference_pointee(&self, ty: Ty<'db>) -> Result<Option<fragment::Pointee>> {
+        let TyKind::Ref(_, pointee, mutability) = ty.kind() else { return Ok(None) };
+        let element = match pointee.kind() {
+            TyKind::Str => None,
+            TyKind::Slice(element) => Some(element),
+            _ => Some(pointee),
+        };
+        if !element.is_none_or(|it| self.is_plain_data(it, 0)) {
+            return Ok(None);
+        }
+        let unique = match mutability {
+            Mutability::Not => self.is_freeze(pointee),
+            Mutability::Mut => self.interner.lang_items().Unpin.is_some_and(|unpin| {
+                crate::traits::implements_trait_unique(pointee, self.cg.db, self.env, unpin)
+            }),
+        };
+        if !unique {
+            return Ok(None);
+        }
+        let (size, align) = match pointee.kind() {
+            TyKind::Str => (0, 1),
+            TyKind::Slice(element) => (0, self.layout(element)?.align.abi.bytes()),
+            _ => {
+                let layout = self.layout(pointee)?;
+                (layout.size.bytes(), layout.align.abi.bytes())
+            }
+        };
+        Ok(Some(fragment::Pointee { unique, frozen: mutability == Mutability::Not, size, align }))
+    }
+
+    /// Whether `ty` is made of scalars, pointers and references only, through arrays, tuples
+    /// and the fields of structs and enums, `depth` deep in a type that is.
+    fn is_plain_data(&self, ty: Ty<'db>, depth: u32) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        match self.normalize(ty).kind() {
+            TyKind::Bool
+            | TyKind::Char
+            | TyKind::Int(_)
+            | TyKind::Uint(_)
+            | TyKind::Float(_)
+            | TyKind::Never
+            | TyKind::RawPtr(..)
+            | TyKind::Ref(..)
+            | TyKind::FnPtr(..)
+            | TyKind::FnDef(..) => true,
+            TyKind::Array(element, _) | TyKind::Pat(element, _) => {
+                self.is_plain_data(element, depth + 1)
+            }
+            TyKind::Tuple(fields) => fields.iter().all(|it| self.is_plain_data(it, depth + 1)),
+            TyKind::Adt(def, args) => {
+                let variants: Vec<hir_def::VariantId> = match def.def_id() {
+                    AdtId::StructId(id) => vec![id.into()],
+                    AdtId::EnumId(id) => id
+                        .enum_variants(self.cg.db)
+                        .variants
+                        .iter()
+                        .map(|(_, it)| it.0.into())
+                        .collect(),
+                    AdtId::UnionId(_) => return false,
+                };
+                variants.into_iter().all(|variant| {
+                    self.cg.db.field_types(variant).iter().all(|(_, field)| {
+                        let ty = field.ty().instantiate(self.interner, args).skip_norm_wip();
+                        self.is_plain_data(ty, depth + 1)
+                    })
+                })
+            }
+            _ => false,
+        }
     }
 
     fn eval_const(&mut self, unevaluated: UnevaluatedConst<'db>) -> Result<Allocation<'db>> {
@@ -11033,6 +11239,43 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         Some(self.cg.declare_inlined(body, self.builder.func))
     }
 
+    /// Shows LLVM the body of the callee `id` a compile at a level above 1 calls, where
+    /// `tier::seen_body` has one.
+    fn show_callee(
+        &mut self,
+        def: InstanceDef,
+        args: GenericArgs<'db>,
+        sig: &Signature,
+        id: FuncId,
+    ) {
+        let db = self.cg.db;
+        let tracked = match def {
+            InstanceDef::Fn(func) => {
+                let signature = FunctionSignature::of(db, func);
+                if signature.abi != ExternAbi::Rust
+                    || signature.is_varargs()
+                    || FunctionSignature::is_intrinsic(db, func)
+                {
+                    return;
+                }
+                track_caller(db, func)
+            }
+            InstanceDef::Closure(_) | InstanceDef::DropGlue => false,
+            _ => return,
+        };
+        let interner = DbInterner::new_with(db, self.env.krate);
+        let args = rustc_type_ir::fold_regions(interner, args, |region, _| match region.kind() {
+            rustc_type_ir::RegionKind::ReBound(..) => region,
+            _ => Region::new_erased(interner),
+        });
+        let instance = Instance { def, args: args.store(), checked: self.cg.checked };
+        if let Some((body, never)) = tier::seen_body(db, &instance, &self.env.store(), tracked)
+            && body.func.signature == *sig
+        {
+            self.cg.declare_seen(id, &body, never);
+        }
+    }
+
     /// Calls `callee` with `values`, which are what `sig` says, and stores the result in `dst`.
     fn call_as(
         &mut self,
@@ -11049,6 +11292,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                     Some(callee) => callee,
                     None => {
                         let callee = self.cg.callee(def, generic_args, self.env, &sig)?;
+                        self.show_callee(def, generic_args, &sig, callee);
                         self.cg.declare_func_in_func(callee, self.builder.func)
                     }
                 };
@@ -12904,6 +13148,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         }
         let args = GenericArgs::new_from_slice(&[ty.into()]);
         let callee = self.cg.callee(InstanceDef::DropGlue, args, self.env, &sig)?;
+        self.show_callee(InstanceDef::DropGlue, args, &sig, callee);
         let callee = self.cg.declare_func_in_func(callee, self.builder.func);
         self.invoke(callee, &values);
         Ok(())

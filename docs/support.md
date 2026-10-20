@@ -103,11 +103,13 @@ default there, off with `RA_JIT_TIER=off`.
 
 | | macOS arm64 | elsewhere |
 |---|---|---|
-| Sampling, under 1% of a core at 500 Hz | yes (local, 2026-10-20) | no: live edits are macOS only (Linux would sample with `perf_event_open`) |
+| Sampling, under 1% of a core at 500 Hz | yes (local, 2026-10-20) | no: live edits are macOS only (Linux would sample with `perf_event_open`, [tiers.md](tiers.md#linux)) |
+| The sampler stops once the worker reading it is gone | yes (local, by killing the worker) | no |
 | Levels 2 and 3, output identical to cargo's | yes, `harness/tiers.py` (local) | no |
 | An edit demotes a tiered function in the same build | yes, `harness/tiers.py` (local) | no |
+| An edit does not wait for a compile at a higher level | yes (local, with LLVM's part stretched to a second) | no |
 | `RA_JIT_TIER=off` changes nothing | yes, `harness/tiers.py` (local) | does not apply |
-| Within 10% of a release build | no: 47% of it on the Life benchmark | no |
+| Within 10% of a release build | no: 68% of it on the Life benchmark, and 79% of a release build that checks overflow as the dev profile does, which is as far as the tiered code may go | no |
 
 ## Debug info
 

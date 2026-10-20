@@ -250,20 +250,27 @@ pub struct Sample {
     pub interval_us: u64,
     /// How many of the counters code of the daemon's counts into: the program reads those.
     pub counters: u64,
+    /// The process that reads what is sampled: the sampler stops once it is gone, as when
+    /// a worker of the daemon exits. 0 for one not named.
+    pub reader: u32,
 }
 
 impl Sample {
     pub fn encode(&self) -> String {
-        format!("interval_us {}\ncounters {}\n", self.interval_us, self.counters)
+        format!(
+            "interval_us {}\ncounters {}\nreader {}\n",
+            self.interval_us, self.counters, self.reader
+        )
     }
 
     pub fn decode(text: &str) -> Option<Sample> {
-        let mut sample = Sample { interval_us: 0, counters: 0 };
+        let mut sample = Sample { interval_us: 0, counters: 0, reader: 0 };
         for line in text.lines() {
             let (key, value) = line.split_once(' ')?;
             match key {
                 "interval_us" => sample.interval_us = value.parse().ok()?,
                 "counters" => sample.counters = value.parse().ok()?,
+                "reader" => sample.reader = value.parse().ok()?,
                 _ => {}
             }
         }
@@ -517,7 +524,7 @@ mod tests {
 
     #[test]
     fn tiering_round_trip() {
-        let sample = Sample { interval_us: 2000, counters: 12 };
+        let sample = Sample { interval_us: 2000, counters: 12, reader: 4321 };
         assert_eq!(Sample::decode(&sample.encode()), Some(sample));
         let profile = Profile {
             pid: 7,

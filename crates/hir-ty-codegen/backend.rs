@@ -170,13 +170,16 @@ impl Backend {
             llvm::Unhandled,
             store::Store,
         };
+        let named: Vec<_> = recorder.named_slots().collect();
+        let recorder = &mut recorder.wants;
         let Some((store, key)) = Store::global().zip(StoredCode::key(
             optimization,
             func,
-            recorder.named_slots(),
+            named.iter().copied(),
             recorder.constants(),
+            &recorder.pointees,
         )) else {
-            return super::llvm::emit(recorder, func, optimization, None);
+            return super::llvm::emit(recorder, &named, func, optimization, None);
         };
         match store.lookup(&key).and_then(|it| LlvmEntry::decode(&it)) {
             Some(LlvmEntry::Code(stored)) => {
@@ -188,7 +191,7 @@ impl Backend {
             None => {}
         }
         let mark = recorder.mark();
-        let (entry, out) = match super::llvm::emit(recorder, func, optimization, None) {
+        let (entry, out) = match super::llvm::emit(recorder, &named, func, optimization, None) {
             Ok(code) => (StoredCode::of(&code, recorder, mark).map(LlvmEntry::Code), Ok(code)),
             Err(unhandled) => {
                 (Some(LlvmEntry::LeftToCranelift(unhandled.to_string())), Err(unhandled))

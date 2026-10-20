@@ -2,9 +2,9 @@
 //!
 //! The IR arrives after ABI lowering: every parameter is a scalar or a pointer, every local is
 //! a stack slot and every address is an `i64`. Blocks become blocks, block parameters become
-//! phis, stack slots become allocas. A value that is the address of a slot or a symbol stays a
-//! pointer for as long as it is only offset, so that LLVM can tell what a load reads; any
-//! other address is an integer turned into a pointer where it is used.
+//! phis, stack slots become allocas. What is an address is a pointer ([`addresses`],
+//! [`pointerish`]), so that LLVM can tell what each access is based on, and parameters carry
+//! what their Rust types say of the memory they point to ([`Pointee`]).
 
 use cranelift_codegen::ir::{
     self, ArgumentExtension, ArgumentPurpose, AtomicRmwOp, Block, BlockArg, BlockCall,
@@ -40,6 +40,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use super::{OWN, Unhandled};
 use crate::mir::codegen::{
     ObjectFormat,
+    fragment::Pointee,
     unwind::{self, seh::ARRIVAL},
 };
 
@@ -109,6 +110,258 @@ pub(super) struct Lowering<'ctx, 'f> {
     marks: Option<Marks<'ctx>>,
     /// How often each branch went each way while code of the function ran.
     weights: Option<&'f crate::mir::codegen::tier::Weights>,
+    /// The values that are addresses, which are pointers in LLVM: see [`addresses`].
+    addresses: FxHashSet<Value>,
+    /// The parameters of each callee, by its name, that are pointers: see
+    /// [`Lowering::pointer_params`].
+    pointer_params: FxHashMap<String, Vec<u32>>,
+    /// The values that are or may be addresses: see [`pointerish`]. A block parameter of
+    /// one is a phi of pointers.
+    pointerish: FxHashSet<Value>,
+    /// The functions called whose bodies LLVM is shown, by their place among the requests.
+    shown: &'f FxHashMap<u32, FunctionValue<'ctx>>,
+}
+
+/// Tells LLVM that `function` was entered `count` times while code of it counted.
+pub(super) fn entry_count<'ctx>(context: &'ctx Context, function: FunctionValue<'ctx>, count: u64) {
+    let count = context.i64_type().const_int(count, false);
+    let node = context
+        .metadata_node(&[context.metadata_string("function_entry_count").into(), count.into()]);
+    use inkwell::{llvm_sys::core, values::AsValueRef as _};
+    // SAFETY: both are of this module's context, and a function is a global.
+    unsafe {
+        let node = core::LLVMValueAsMetadata(node.as_value_ref());
+        core::LLVMGlobalSetMetadata(function.as_value_ref(), context.get_kind_id("prof"), node);
+    }
+}
+
+/// A function of the module and what it is lowered from.
+pub(super) struct Defined<'f> {
+    pub(super) name: &'f str,
+    pub(super) func: &'f ir::Function,
+    pub(super) pointees: &'f [(u32, Pointee)],
+    /// The slots of locals with a name, whose places are told.
+    pub(super) named: &'f [ir::StackSlot],
+    pub(super) weights: Option<&'f crate::mir::codegen::tier::Weights>,
+    /// Its line table and variables are told: it is the function being compiled.
+    pub(super) marked: bool,
+}
+
+/// How values move in a function without being computed: what each block parameter is
+/// passed, and what is stored at and loaded from each place of a stack slot.
+struct Flow {
+    /// What each block parameter is passed; a call's result passed is the parameter itself.
+    incoming: FxHashMap<Value, Vec<Value>>,
+    /// The values of pointer width stored at each place, and the place each load of pointer
+    /// width reads.
+    stored: FxHashMap<(ir::StackSlot, i64), Vec<Value>>,
+    loaded: FxHashMap<Value, (ir::StackSlot, i64)>,
+}
+
+impl Flow {
+    fn of(func: &ir::Function) -> Flow {
+        let dfg = &func.dfg;
+        let constant = |value: Value| match dfg.value_def(dfg.resolve_aliases(value)) {
+            ir::ValueDef::Result(inst, _) => match dfg.insts[inst] {
+                InstructionData::UnaryImm { opcode: Opcode::Iconst, imm, .. } => Some(imm.bits()),
+                _ => None,
+            },
+            _ => None,
+        };
+        // The place of a slot `address` is, through the constants added to its address.
+        let place = |address: Value, offset: i32| {
+            let (mut address, mut offset) = (address, i64::from(offset));
+            loop {
+                let ir::ValueDef::Result(inst, _) = dfg.value_def(dfg.resolve_aliases(address))
+                else {
+                    return None;
+                };
+                match dfg.insts[inst] {
+                    InstructionData::StackAddr { stack_slot, offset: at, .. } => {
+                        return Some((stack_slot, i64::from(i32::from(at)) + offset));
+                    }
+                    InstructionData::Binary { opcode: Opcode::Iadd, args: [a, b] } => {
+                        let (base, by) = match (constant(a), constant(b)) {
+                            (_, Some(by)) => (a, by),
+                            (Some(by), _) => (b, by),
+                            _ => return None,
+                        };
+                        address = base;
+                        offset = offset.checked_add(by)?;
+                    }
+                    _ => return None,
+                }
+            }
+        };
+        let mut flow = Flow {
+            incoming: FxHashMap::default(),
+            stored: FxHashMap::default(),
+            loaded: FxHashMap::default(),
+        };
+        for block in func.layout.blocks() {
+            for inst in func.layout.block_insts(block) {
+                let data = &dfg.insts[inst];
+                match *data {
+                    InstructionData::Store {
+                        opcode: Opcode::Store,
+                        args: [value, address],
+                        offset,
+                        ..
+                    } if dfg.value_type(value) == types::I64 => {
+                        if let Some(at) = place(address, offset.into()) {
+                            flow.stored.entry(at).or_default().push(dfg.resolve_aliases(value));
+                        }
+                    }
+                    InstructionData::Load { opcode: Opcode::Load, arg, offset, .. }
+                        if dfg.value_type(dfg.first_result(inst)) == types::I64 =>
+                    {
+                        if let Some(at) = place(arg, offset.into()) {
+                            flow.loaded.insert(dfg.first_result(inst), at);
+                        }
+                    }
+                    _ => {}
+                }
+                for call in data.branch_destination(&dfg.jump_tables, &dfg.exception_tables) {
+                    let target = call.block(&dfg.value_lists);
+                    let params = dfg.block_params(target).iter();
+                    for (&param, arg) in params.zip(call.args(&dfg.value_lists)) {
+                        let passed = match arg {
+                            BlockArg::Value(value) => dfg.resolve_aliases(value),
+                            _ => param,
+                        };
+                        flow.incoming.entry(param).or_default().push(passed);
+                    }
+                }
+            }
+        }
+        flow
+    }
+
+    /// Where `value` may come from without being computed: what is passed to it as a block
+    /// parameter, or stored where it is loaded from.
+    fn sources(&self, value: Value) -> &[Value] {
+        if let Some(passed) = self.incoming.get(&value) {
+            return passed;
+        }
+        match self.loaded.get(&value).and_then(|at| self.stored.get(at)) {
+            Some(stored) => stored,
+            None => &[],
+        }
+    }
+}
+
+/// The values of `func` that are used as addresses, and those they are made of: what a load,
+/// a store or an atomic access goes to, the base of an addition that gives one, both values
+/// a `select` of one picks from, and what is passed to a block parameter or stored in the
+/// place of a slot that is one. A load of one gives a pointer, a block parameter of one is a
+/// phi of pointers, and so on, so that LLVM sees which address each access is based on rather
+/// than an integer turned into a pointer where it is used, which could be based on anything.
+///
+/// A wrong guess costs nothing but speed: a value that is used as an integer as well is
+/// turned into one there (`ptrtoint`, which LLVM takes for the address escaping).
+fn addresses(func: &ir::Function, flow: &Flow) -> FxHashSet<Value> {
+    let dfg = &func.dfg;
+    let mut work = Vec::new();
+    for block in func.layout.blocks() {
+        for inst in func.layout.block_insts(block) {
+            match dfg.insts[inst] {
+                InstructionData::Load { arg, .. } => work.push(arg),
+                InstructionData::LoadNoOffset { opcode: Opcode::AtomicLoad, arg, .. } => {
+                    work.push(arg)
+                }
+                InstructionData::Store { args: [_, address], .. }
+                | InstructionData::StoreNoOffset { args: [_, address], .. }
+                | InstructionData::AtomicRmw { args: [address, _], .. }
+                | InstructionData::AtomicCas { args: [address, ..], .. } => work.push(address),
+                _ => {}
+            }
+        }
+    }
+    // An offset is computed; a base is loaded, passed or the address of something.
+    let offset = |value: Value| match dfg.value_def(value) {
+        ir::ValueDef::Result(inst, _) => matches!(
+            dfg.insts[inst].opcode(),
+            Opcode::Iconst
+                | Opcode::Imul
+                | Opcode::Ishl
+                | Opcode::Uextend
+                | Opcode::Sextend
+                | Opcode::Ineg
+        ),
+        _ => false,
+    };
+    let mut found = FxHashSet::default();
+    while let Some(value) = work.pop() {
+        let value = dfg.resolve_aliases(value);
+        if dfg.value_type(value) != types::I64 || !found.insert(value) {
+            continue;
+        }
+        work.extend(flow.sources(value).iter().copied());
+        if let ir::ValueDef::Result(inst, _) = dfg.value_def(value) {
+            match dfg.insts[inst] {
+                InstructionData::Binary { opcode: Opcode::Iadd, args: [a, b] } => {
+                    work.push(if offset(a) { b } else { a });
+                }
+                InstructionData::Ternary { opcode: Opcode::Select, args: [_, a, b] } => {
+                    work.extend([a, b]);
+                }
+                _ => {}
+            }
+        }
+    }
+    found
+}
+
+/// The values of `func` that are or may be addresses: [`addresses`], the parameters that
+/// are pointers, the addresses of slots, symbols and functions, what is added to one, and
+/// what comes only from those (and constants) through block parameters and slots. A call
+/// that passes one passes a pointer, so that it does not escape before the call.
+fn pointerish(
+    func: &ir::Function,
+    flow: &Flow,
+    addresses: &FxHashSet<Value>,
+    params: &[Value],
+) -> FxHashSet<Value> {
+    let dfg = &func.dfg;
+    let mut found = addresses.clone();
+    found.extend(params.iter().copied());
+    let constant = |value: Value| {
+        matches!(dfg.value_def(value), ir::ValueDef::Result(inst, _)
+            if dfg.insts[inst].opcode() == Opcode::Iconst)
+    };
+    let moved: Vec<Value> = flow.incoming.keys().chain(flow.loaded.keys()).copied().collect();
+    loop {
+        let before = found.len();
+        for &value in &moved {
+            let sources = flow.sources(value);
+            if !found.contains(&value)
+                && sources.iter().any(|it| found.contains(it))
+                && sources.iter().all(|it| found.contains(it) || constant(*it) || *it == value)
+            {
+                found.insert(value);
+            }
+        }
+        for block in func.layout.blocks() {
+            for inst in func.layout.block_insts(block) {
+                let is = match dfg.insts[inst] {
+                    InstructionData::StackAddr { .. }
+                    | InstructionData::UnaryGlobalValue { .. }
+                    | InstructionData::FuncAddr { .. } => true,
+                    InstructionData::Binary { opcode: Opcode::Iadd, args: [a, b] } => {
+                        found.contains(&dfg.resolve_aliases(a))
+                            || found.contains(&dfg.resolve_aliases(b))
+                    }
+                    _ => false,
+                };
+                if is {
+                    found.insert(dfg.first_result(inst));
+                }
+            }
+        }
+        if found.len() == before {
+            return found;
+        }
+    }
 }
 
 /// The type of a static's global: one without a size, which LLVM does not take to be at an
@@ -173,34 +426,45 @@ impl<'ctx> Marks<'ctx> {
 }
 
 impl<'ctx, 'f> Lowering<'ctx, 'f> {
-    /// Defines `func` in `module` under the name [`OWN`].
-    pub(super) fn lower(
-        context: &'ctx Context,
-        module: &'f Module<'ctx>,
-        func: &'f ir::Function,
-        named: &[ir::StackSlot],
-        constants: &'f FxHashMap<u32, &'f [u8]>,
-        statics: &'f FxHashSet<u32>,
-        weights: Option<&'f crate::mir::codegen::tier::Weights>,
-    ) -> Lowered<()> {
-        let ty = Self::function_type(context, &func.signature)?;
-        let function = module.add_function(OWN, ty, Some(Linkage::External));
-        if let Some(weights) = weights {
-            let count = context.i64_type().const_int(weights.entered, false);
-            let node = context.metadata_node(&[
-                context.metadata_string("function_entry_count").into(),
-                count.into(),
-            ]);
-            use inkwell::{llvm_sys::core, values::AsValueRef as _};
-            // SAFETY: both are of this module's context, and a function is a global.
-            unsafe {
-                let node = core::LLVMValueAsMetadata(node.as_value_ref());
-                core::LLVMGlobalSetMetadata(
-                    function.as_value_ref(),
-                    context.get_kind_id("prof"),
-                    node,
-                );
+    /// The parameters of `func` that are addresses: those whose types say so, and those
+    /// used as one.
+    fn pointers(
+        func: &ir::Function,
+        pointees: &[(u32, Pointee)],
+        addresses: &FxHashSet<Value>,
+    ) -> Vec<u32> {
+        let mut pointers: Vec<u32> = pointees.iter().map(|it| it.0).collect();
+        if let Some(entry) = func.layout.entry_block() {
+            let params = func.dfg.block_params(entry).iter().zip(&func.signature.params);
+            for (at, (param, abi)) in params.enumerate() {
+                if abi.purpose == ArgumentPurpose::Normal
+                    && addresses.contains(param)
+                    && !pointers.contains(&(at as u32))
+                {
+                    pointers.push(at as u32);
+                }
             }
+        }
+        pointers
+    }
+
+    /// Adds the function `defined` is to `module`, with the attributes of its signature.
+    pub(super) fn add(
+        context: &'ctx Context,
+        module: &Module<'ctx>,
+        defined: &Defined<'_>,
+    ) -> Lowered<FunctionValue<'ctx>> {
+        let func = defined.func;
+        let addresses = addresses(func, &Flow::of(func));
+        let pointers = Self::pointers(func, defined.pointees, &addresses);
+        let ty = Self::function_type(context, &func.signature)?;
+        let ty = Self::with_pointers(context, ty, &pointers);
+        let function = module.add_function(defined.name, ty, Some(Linkage::External));
+        Self::mark_pointees(context, defined.pointees, |loc, attribute| {
+            function.add_attribute(loc, attribute)
+        });
+        if let Some(weights) = defined.weights {
+            entry_count(context, function, weights.entered);
         }
         Self::mark_signature(context, &func.signature, Side::Callee, |loc, attribute| {
             function.add_attribute(loc, attribute)
@@ -214,7 +478,30 @@ impl<'ctx, 'f> Lowering<'ctx, 'f> {
         // Every function gets an unwind table entry, as a panic may cross any of them.
         let uwtable = Attribute::get_named_enum_kind_id("uwtable");
         function.add_attribute(AttributeLoc::Function, context.create_enum_attribute(uwtable, 2));
+        Ok(function)
+    }
 
+    /// Gives `function`, which [`Lowering::add`] added for `defined`, its body. A call
+    /// of a function `shown` has the body of goes to that body.
+    pub(super) fn define(
+        context: &'ctx Context,
+        module: &'f Module<'ctx>,
+        function: FunctionValue<'ctx>,
+        defined: &Defined<'f>,
+        constants: &'f FxHashMap<u32, &'f [u8]>,
+        statics: &'f FxHashSet<u32>,
+        shown: &'f FxHashMap<u32, FunctionValue<'ctx>>,
+    ) -> Lowered<()> {
+        let func = defined.func;
+        let flow = Flow::of(func);
+        let addresses = addresses(func, &flow);
+        let pointers = Self::pointers(func, defined.pointees, &addresses);
+        let pointer_values: Vec<Value> = func.layout.entry_block().map_or_else(Vec::new, |entry| {
+            let params = func.dfg.block_params(entry);
+            pointers.iter().filter_map(|&at| params.get(at as usize).copied()).collect()
+        });
+        let pointerish = pointerish(func, &flow, &addresses, &pointer_values);
+        let target = crate::mir::codegen::Target::selected().map_err(Unhandled::Llvm)?;
         let mut lowering = Lowering {
             context,
             module,
@@ -234,11 +521,17 @@ impl<'ctx, 'f> Lowering<'ctx, 'f> {
             frame: None,
             arrival: None,
             // Without a flag that asks for CodeView, the table is DWARF in a COFF object too.
-            marks: matches!(target.object_format, ObjectFormat::Elf | ObjectFormat::Coff)
-                .then(|| Marks::new(module, function)),
-            weights,
+            marks: (defined.marked
+                && matches!(target.object_format, ObjectFormat::Elf | ObjectFormat::Coff))
+            .then(|| Marks::new(module, function)),
+            weights: defined.weights,
+            addresses,
+            pointer_params: FxHashMap::default(),
+            pointerish,
+            shown,
         };
-        lowering.body(named)?;
+        lowering.pointer_params = lowering.pointer_params(&lowering.pointerish);
+        lowering.body(defined.named)?;
         if let Some(marks) = &lowering.marks {
             marks.builder.finalize();
         }
@@ -335,7 +628,11 @@ impl<'ctx, 'f> Lowering<'ctx, 'f> {
             self.builder.position_at_end(lowered);
             let mut phis = Vec::new();
             for &param in self.func.dfg.block_params(block) {
-                let phi = self.builder.build_phi(self.ty(self.func.dfg.value_type(param))?, "")?;
+                let ty = match self.pointerish.contains(&param) {
+                    true => self.context.ptr_type(AddressSpace::default()).into(),
+                    false => self.ty(self.func.dfg.value_type(param))?,
+                };
+                let phi = self.builder.build_phi(ty, "")?;
                 self.values.insert(param, phi.as_basic_value().into());
                 phis.push(phi);
             }
@@ -485,6 +782,70 @@ impl<'ctx, 'f> Lowering<'ctx, 'f> {
         })
     }
 
+    /// `ty` with the parameters at `pointers` taken as pointers, which they are passed as
+    /// whatever their type: an address is in an integer register either way.
+    fn with_pointers(
+        context: &'ctx Context,
+        ty: FunctionType<'ctx>,
+        pointers: &[u32],
+    ) -> FunctionType<'ctx> {
+        if pointers.is_empty() {
+            return ty;
+        }
+        let pointer = context.ptr_type(AddressSpace::default());
+        let mut params: Vec<BasicMetadataTypeEnum<'ctx>> =
+            ty.get_param_types().into_iter().map(Into::into).collect();
+        for &at in pointers {
+            if let Some(param) = params.get_mut(at as usize) {
+                *param = pointer.into();
+            }
+        }
+        match ty.get_return_type() {
+            Some(returned) => returned.fn_type(&params, false),
+            None => context.void_type().fn_type(&params, false),
+        }
+    }
+
+    /// Whether `a` is `b` but for parameters that are pointers in one and integers of their
+    /// width in the other, which are passed alike.
+    fn same_but_pointers(a: FunctionType<'ctx>, b: FunctionType<'ctx>) -> bool {
+        let (left, right) = (a.get_param_types(), b.get_param_types());
+        let address = |ty: &BasicMetadataTypeEnum<'ctx>| match ty {
+            BasicMetadataTypeEnum::PointerType(_) => true,
+            BasicMetadataTypeEnum::IntType(int) => int.get_bit_width() == 64,
+            _ => false,
+        };
+        a.get_return_type() == b.get_return_type()
+            && left.len() == right.len()
+            && std::iter::zip(&left, &right).all(|(l, r)| l == r || (address(l) && address(r)))
+    }
+
+    /// What the types of the parameters at the places of `pointees` say of their memory.
+    fn mark_pointees(
+        context: &'ctx Context,
+        pointees: &[(u32, Pointee)],
+        mut add: impl FnMut(AttributeLoc, Attribute),
+    ) {
+        let attribute = |name, value| {
+            context.create_enum_attribute(Attribute::get_named_enum_kind_id(name), value)
+        };
+        for &(at, pointee) in pointees {
+            let loc = AttributeLoc::Param(at);
+            add(loc, attribute("noundef", 0));
+            add(loc, attribute("nonnull", 0));
+            add(loc, attribute("align", pointee.align.max(1)));
+            if pointee.size != 0 {
+                add(loc, attribute("dereferenceable", pointee.size));
+            }
+            if pointee.unique {
+                add(loc, attribute("noalias", 0));
+            }
+            if pointee.frozen {
+                add(loc, attribute("readonly", 0));
+            }
+        }
+    }
+
     /// The attributes of a signature, for the function being compiled or for a call.
     ///
     /// A small integer is extended by whoever hands it over and by nobody else: rustc does
@@ -508,6 +869,8 @@ impl<'ctx, 'f> Lowering<'ctx, 'f> {
             match param.purpose {
                 ArgumentPurpose::StructReturn => {
                     add(loc, context.create_type_attribute(kind("sret"), i8.into()));
+                    // Where a value is returned to is not kept, as rustc tells LLVM.
+                    add(loc, context.create_enum_attribute(kind("nocapture"), 0));
                 }
                 ArgumentPurpose::StructArgument(size) => {
                     let ty = i8.array_type(size);
@@ -579,6 +942,32 @@ impl<'ctx, 'f> Lowering<'ctx, 'f> {
             Operand::Pointer(_) => Ok(self.int(value)?.into()),
             _ => Ok(self.basic(value)),
         }
+    }
+
+    /// `value` as `phi` takes it: a pointer for a phi of pointers.
+    fn passed(&self, phi: PhiValue<'ctx>, value: Value) -> Lowered<BasicValueEnum<'ctx>> {
+        match phi.as_basic_value() {
+            BasicValueEnum::PointerValue(_) => Ok(self.pointer(value)?.into()),
+            _ => self.plain(value),
+        }
+    }
+
+    /// The same for a value of LLVM's.
+    fn as_phi(
+        &self,
+        phi: PhiValue<'ctx>,
+        value: BasicValueEnum<'ctx>,
+    ) -> Lowered<BasicValueEnum<'ctx>> {
+        let pointer = self.context.ptr_type(AddressSpace::default());
+        Ok(match (phi.as_basic_value(), value) {
+            (BasicValueEnum::PointerValue(_), BasicValueEnum::IntValue(int)) => {
+                self.builder.build_int_to_ptr(int, pointer, "")?.into()
+            }
+            (BasicValueEnum::IntValue(want), BasicValueEnum::PointerValue(address)) => {
+                self.builder.build_ptr_to_int(address, want.get_type(), "")?.into()
+            }
+            _ => value,
+        })
     }
 
     fn condition(&self, value: Value) -> Lowered<IntValue<'ctx>> {
@@ -671,9 +1060,18 @@ impl<'ctx, 'f> Lowering<'ctx, 'f> {
             InstructionData::Unary { arg, .. } => self.unary(inst, opcode, arg)?,
             InstructionData::Binary { args: [l, r], .. } => self.binary(inst, opcode, l, r)?,
             InstructionData::IntCompare { args: [l, r], cond, .. } => {
-                let (l, r) = (self.int(l)?, self.int(r)?);
-                let compared =
-                    self.builder.build_int_compare(Self::int_predicate(cond), l, r, "")?;
+                let predicate = Self::int_predicate(cond);
+                // Two addresses are compared as pointers: as integers they would have
+                // escaped.
+                let compared = match (self.operand(l), self.operand(r)) {
+                    (Operand::Pointer(_), _) | (_, Operand::Pointer(_)) => {
+                        let (l, r) = (self.pointer(l)?, self.pointer(r)?);
+                        self.builder.build_int_compare(predicate, l, r, "")?
+                    }
+                    _ => {
+                        self.builder.build_int_compare(predicate, self.int(l)?, self.int(r)?, "")?
+                    }
+                };
                 self.set_condition(inst, compared)?;
             }
             InstructionData::FloatCompare { args: [l, r], cond, .. } => {
@@ -685,10 +1083,12 @@ impl<'ctx, 'f> Lowering<'ctx, 'f> {
             InstructionData::Ternary { args: [a, b, c], .. } => match opcode {
                 Opcode::Select => {
                     let condition = self.condition(a)?;
+                    let address = self.addresses.contains(&dfg.first_result(inst));
                     let (then, otherwise) = match (self.operand(b), self.operand(c)) {
                         (Operand::Pointer(_), Operand::Pointer(_)) => {
                             (self.basic(b), self.basic(c))
                         }
+                        _ if address => (self.pointer(b)?.into(), self.pointer(c)?.into()),
                         _ => (self.plain(b)?, self.plain(c)?),
                     };
                     let selected = self.builder.build_select(condition, then, otherwise, "")?;
@@ -737,32 +1137,33 @@ impl<'ctx, 'f> Lowering<'ctx, 'f> {
             InstructionData::Call { func_ref, .. } => {
                 let callee = self.callee(func_ref)?;
                 let sig = &dfg.signatures[dfg.ext_funcs[func_ref].signature];
+                let ty = callee.get_type();
                 if unwind::seh::is_guarded(self.func.srcloc(inst)) {
                     let (returned, pad) = self.guard();
-                    let args = self.invoke_arguments(sig, dfg.inst_args(inst))?;
+                    let args = self.invoke_arguments(ty, sig, dfg.inst_args(inst))?;
                     let call =
                         self.builder.build_direct_invoke(callee, &args, returned, pad, "")?;
                     return self.finish_guarded(call, sig, dfg.inst_results(inst), returned, pad);
                 }
-                let args = self.arguments(sig, dfg.inst_args(inst))?;
+                let args = self.arguments(ty, sig, dfg.inst_args(inst))?;
                 let call = self.builder.build_direct_call(callee, &args, "")?;
                 self.finish_call(call, sig, dfg.inst_results(inst))?;
             }
             InstructionData::CallIndirect { sig_ref, .. } => {
                 let sig = &dfg.signatures[sig_ref];
-                let ty = Self::function_type(self.context, sig)?;
                 let [callee, args @ ..] = dfg.inst_args(inst) else {
                     return Err(Unhandled::Shape("indirect call without a callee"));
                 };
+                let ty = self.indirect_type(sig, args)?;
                 let callee = self.pointer(*callee)?;
                 if unwind::seh::is_guarded(self.func.srcloc(inst)) {
                     let (returned, pad) = self.guard();
-                    let args = self.invoke_arguments(sig, args)?;
+                    let args = self.invoke_arguments(ty, sig, args)?;
                     let call =
                         self.builder.build_indirect_invoke(ty, callee, &args, returned, pad, "")?;
                     return self.finish_guarded(call, sig, dfg.inst_results(inst), returned, pad);
                 }
-                let args = self.arguments(sig, args)?;
+                let args = self.arguments(ty, sig, args)?;
                 let call = self.builder.build_indirect_call(ty, callee, &args, "")?;
                 self.finish_call(call, sig, dfg.inst_results(inst))?;
             }
@@ -770,19 +1171,19 @@ impl<'ctx, 'f> Lowering<'ctx, 'f> {
                 let callee = self.callee(func_ref)?;
                 let (normal, pad) = self.exception_edges(exception)?;
                 let sig = &dfg.signatures[dfg.ext_funcs[func_ref].signature];
-                let args = self.invoke_arguments(sig, dfg.inst_args(inst))?;
+                let args = self.invoke_arguments(callee.get_type(), sig, dfg.inst_args(inst))?;
                 let call = self.builder.build_direct_invoke(callee, &args, normal, pad, "")?;
                 self.finish_invoke(call, sig, exception, normal)?;
             }
             InstructionData::TryCallIndirect { exception, .. } => {
                 let sig = &dfg.signatures[dfg.exception_tables[exception].signature()];
-                let ty = Self::function_type(self.context, sig)?;
                 let [callee, args @ ..] = dfg.inst_args(inst) else {
                     return Err(Unhandled::Shape("indirect call without a callee"));
                 };
+                let ty = self.indirect_type(sig, args)?;
                 let callee = self.pointer(*callee)?;
                 let (normal, pad) = self.exception_edges(exception)?;
-                let args = self.invoke_arguments(sig, args)?;
+                let args = self.invoke_arguments(ty, sig, args)?;
                 let call =
                     self.builder.build_indirect_invoke(ty, callee, &args, normal, pad, "")?;
                 self.finish_invoke(call, sig, exception, normal)?;
@@ -1243,7 +1644,11 @@ impl<'ctx, 'f> Lowering<'ctx, 'f> {
             Opcode::Sload32 => (types::I32, true),
             _ => return Err(Unhandled::Opcode(opcode)),
         };
-        let ty = self.ty(narrow)?;
+        let address = self.pointerish.contains(&self.func.dfg.first_result(inst));
+        let ty = match address && narrow == result {
+            true => self.context.ptr_type(AddressSpace::default()).into(),
+            false => self.ty(narrow)?,
+        };
         let loaded = match self.known(base, offset, narrow) {
             Some(known) => known,
             None => {
@@ -1282,7 +1687,8 @@ impl<'ctx, 'f> Lowering<'ctx, 'f> {
             _ => return Err(Unhandled::Opcode(opcode)),
         };
         let value = match narrow {
-            None => self.plain(value)?,
+            // An address is stored as the pointer it is, so that a load of it gives it back.
+            None => self.basic(value),
             Some(ty) => {
                 self.builder.build_int_truncate(self.int(value)?, self.int_ty(ty)?, "")?.into()
             }
@@ -1314,14 +1720,20 @@ impl<'ctx, 'f> Lowering<'ctx, 'f> {
         let name = self.external_name(&data.name)?;
         let sig = &self.func.dfg.signatures[data.signature];
         let ty = Self::function_type(self.context, sig)?;
+        let shown = match super::Symbol::parse(&name) {
+            Some(super::Symbol::Func(id)) => self.shown.get(&id).copied(),
+            _ => None,
+        };
         // One request can be imported with more than one signature; calls then go through
         // the pointer with their own.
-        let callee = match self.module.get_function(&name) {
-            Some(known) if known.get_type() != ty => {
+        let callee = match shown.or_else(|| self.module.get_function(&name)) {
+            Some(known) if !Self::same_but_pointers(known.get_type(), ty) => {
                 return Err(Unhandled::Shape("one callee with two signatures"));
             }
             Some(known) => known,
             None => {
+                let pointers = self.pointer_params.get(&name).map_or(&[][..], Vec::as_slice);
+                let ty = Self::with_pointers(self.context, ty, pointers);
                 let callee = self.module.add_function(&name, ty, Some(Linkage::External));
                 Self::mark_signature(self.context, sig, Side::Caller, |loc, attribute| {
                     callee.add_attribute(loc, attribute)
@@ -1416,32 +1828,77 @@ impl<'ctx, 'f> Lowering<'ctx, 'f> {
 
     fn arguments(
         &self,
+        ty: FunctionType<'ctx>,
         sig: &Signature,
         args: &[Value],
     ) -> Lowered<Vec<BasicMetadataValueEnum<'ctx>>> {
+        Ok(self.invoke_arguments(ty, sig, args)?.into_iter().map(Into::into).collect())
+    }
+
+    /// What a call of type `ty` passes for `args`: what is a pointer there is passed as one.
+    fn invoke_arguments(
+        &self,
+        ty: FunctionType<'ctx>,
+        sig: &Signature,
+        args: &[Value],
+    ) -> Lowered<Vec<BasicValueEnum<'ctx>>> {
+        let types = ty.get_param_types();
         std::iter::zip(&sig.params, args)
-            .map(|(param, &arg)| {
+            .enumerate()
+            .map(|(at, (param, &arg))| {
+                let pointer = types.get(at).is_some_and(|it| it.is_pointer_type());
                 Ok(match param.purpose {
-                    ArgumentPurpose::Normal => self.plain(arg)?.into(),
+                    ArgumentPurpose::Normal if !pointer => self.plain(arg)?,
                     _ => self.pointer(arg)?.into(),
                 })
             })
             .collect()
     }
 
-    fn invoke_arguments(
-        &self,
-        sig: &Signature,
-        args: &[Value],
-    ) -> Lowered<Vec<BasicValueEnum<'ctx>>> {
-        std::iter::zip(&sig.params, args)
-            .map(|(param, &arg)| {
-                Ok(match param.purpose {
-                    ArgumentPurpose::Normal => self.plain(arg)?,
-                    _ => self.pointer(arg)?.into(),
-                })
+    /// The type of an indirect call of `sig` with `args`: an argument that is an address is
+    /// passed as a pointer, which does not have it escape before the call.
+    fn indirect_type(&self, sig: &Signature, args: &[Value]) -> Lowered<FunctionType<'ctx>> {
+        let ty = Self::function_type(self.context, sig)?;
+        let pointers: Vec<u32> = std::iter::zip(&sig.params, args)
+            .enumerate()
+            .filter(|(_, (param, arg))| {
+                param.purpose == ArgumentPurpose::Normal
+                    && matches!(self.operand(**arg), Operand::Pointer(_))
             })
-            .collect()
+            .map(|(at, _)| at as u32)
+            .collect();
+        Ok(Self::with_pointers(self.context, ty, &pointers))
+    }
+
+    /// The parameters of each callee that some call of it passes an address to, by its name:
+    /// the callee is declared with pointers there.
+    fn pointer_params(&self, pointerish: &FxHashSet<Value>) -> FxHashMap<String, Vec<u32>> {
+        let dfg = &self.func.dfg;
+        let mut found: FxHashMap<String, Vec<u32>> = FxHashMap::default();
+        for block in self.func.layout.blocks() {
+            for inst in self.func.layout.block_insts(block) {
+                let func_ref = match dfg.insts[inst] {
+                    InstructionData::Call { func_ref, .. }
+                    | InstructionData::TryCall { func_ref, .. } => func_ref,
+                    _ => continue,
+                };
+                let data = &dfg.ext_funcs[func_ref];
+                let Ok(name) = self.external_name(&data.name) else { continue };
+                let sig = &dfg.signatures[data.signature];
+                let args = std::iter::zip(&sig.params, dfg.inst_args(inst)).enumerate();
+                for (at, (param, arg)) in args {
+                    if param.purpose == ArgumentPurpose::Normal
+                        && pointerish.contains(&dfg.resolve_aliases(*arg))
+                    {
+                        let positions = found.entry(name.clone()).or_default();
+                        if !positions.contains(&(at as u32)) {
+                            positions.push(at as u32);
+                        }
+                    }
+                }
+            }
+        }
+        found
     }
 
     fn returned(
@@ -1603,10 +2060,10 @@ impl<'ctx, 'f> Lowering<'ctx, 'f> {
         let payload = self.builder.build_extract_value(landed.into_struct_value(), 0, "")?;
         let payload =
             self.builder.build_ptr_to_int(payload.into_pointer_value(), context.i64_type(), "")?;
-        let Some([phi]) = self.phis.get(&pad.handler).map(Vec::as_slice) else {
+        let Some(&[phi]) = self.phis.get(&pad.handler).map(Vec::as_slice) else {
             return Err(Unhandled::Shape("a handler that takes more than the exception"));
         };
-        phi.add_incoming(&[(&payload, block)]);
+        phi.add_incoming(&[(&self.as_phi(phi, payload.into())?, block)]);
         self.builder.build_unconditional_branch(self.blocks[&pad.handler])?;
         if let Some(resume_at) = resume_at {
             self.builder.position_at_end(resume_at);
@@ -1643,8 +2100,8 @@ impl<'ctx, 'f> Lowering<'ctx, 'f> {
         }
         for (phi, arg) in std::iter::zip(&phis, args) {
             let value: BasicValueEnum<'ctx> = match arg {
-                BlockArg::Value(value) => self.plain(value)?,
-                BlockArg::TryCallExn(0) => payload.into(),
+                BlockArg::Value(value) => self.passed(*phi, value)?,
+                BlockArg::TryCallExn(0) => self.as_phi(*phi, payload.into())?,
                 _ => return Err(Unhandled::Shape("a handler that takes what a call returns")),
             };
             phi.add_incoming(&[(&value, block)]);
@@ -1671,8 +2128,8 @@ impl<'ctx, 'f> Lowering<'ctx, 'f> {
         let phis = self.phis.get(&target).map_or(&[][..], Vec::as_slice);
         for (phi, arg) in std::iter::zip(phis, destination.args(&dfg.value_lists)) {
             let value = match arg {
-                BlockArg::Value(value) => self.plain(value)?,
-                BlockArg::TryCallRet(at) => returned[at as usize],
+                BlockArg::Value(value) => self.passed(*phi, value)?,
+                BlockArg::TryCallRet(at) => self.as_phi(*phi, returned[at as usize])?,
                 BlockArg::TryCallExn(_) => {
                     return Err(Unhandled::Shape("an exception where a call returns"));
                 }
@@ -1712,7 +2169,7 @@ impl<'ctx, 'f> Lowering<'ctx, 'f> {
             let BlockArg::Value(value) = arg else {
                 return Err(Unhandled::Shape("a call's result passed by a jump"));
             };
-            phi.add_incoming(&[(&self.plain(value)?, from)]);
+            phi.add_incoming(&[(&self.passed(*phi, value)?, from)]);
         }
         Ok(self.blocks[&target])
     }
