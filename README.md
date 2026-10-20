@@ -3,8 +3,13 @@
 Hot-reload Rust in milliseconds, using rust-analyzer as the compiler front end.
 
 ```
-nix run github:indexable-inc/ra-jit -- build
+nix run github:indexable-inc/ra-jit            # the Game of Life window (demo/life); on macOS arm64 its source is editable live
+nix run github:indexable-inc/ra-jit#ra-jit -- build   # `cargo ra-jit build` in your project
 ```
+
+The daemon and the demo are built from cargo's unit graph, one nix derivation per crate, so editing
+ra-jit rebuilds ra-jit and nothing it depends on (`nix/unit_graph.py` regenerates `nix/units/*.json`
+after a change to a `Cargo.toml` or `Cargo.lock`).
 
 ![Editing the running Game of Life: rule, colours and speed change live](docs/demo.webp)
 
@@ -45,7 +50,7 @@ program while it runs, executables that keep their entitlements, and fixes for l
 
 ## Use it
 
-`nix run github:indexable-inc/ra-jit -- <cargo-ra-jit command>` runs `cargo ra-jit` with the
+`nix run github:indexable-inc/ra-jit#ra-jit -- <cargo-ra-jit command>` runs `cargo ra-jit` with the
 pinned toolchain. Without live edits that is all there is to set up. For live edits, in the
 program's crate:
 
@@ -65,7 +70,7 @@ loop {
 }
 ```
 
-Run `nix run github:indexable-inc/ra-jit -- build` once, wait for `cargo ra-jit status` to say the program is ready (the
+Run `nix run github:indexable-inc/ra-jit#ra-jit -- build` once, wait for `cargo ra-jit status` to say the program is ready (the
 daemon's own link of it), build again to get that link, and start the program. From then on,
 `cargo ra-jit build` after each edit puts the change into the running program: the program
 notices the patch within 30 ms and applies it in about a millisecond.
@@ -124,7 +129,7 @@ a bug to report. See [docs/architecture.md](docs/architecture.md).
 
 ### `cargo ra-jit`
 
-In any cargo project (`nix run github:indexable-inc/ra-jit --` stands in for `cargo ra-jit`):
+In any cargo project (`nix run github:indexable-inc/ra-jit#ra-jit --` stands in for `cargo ra-jit`):
 
     cargo ra-jit build
     cargo ra-jit run -- --some-flag
