@@ -6,6 +6,16 @@ All notable changes to ra-jit are written here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Benchmarks on real projects that keep the README current: `harness/bench.py` measures
+  ripgrep, fd, bat, hyperfine, just, axum and nushell at pinned commits (cold build, no-op,
+  four kinds of edit, and how fast ripgrep's program runs) against incremental cargo, on both
+  tiers, keeping every sample; `harness/benchreport.py` writes the README table and
+  [docs/benchmarks.md](docs/benchmarks.md) from the result; the `bench-readme` workflow runs
+  them on a dedicated Linux x86-64 machine after pushes to main and nightly, and commits the
+  numbers to main when they moved beyond noise.
+
 ### Changed
 
 - `vendor/rust-analyzer` and `vendor/rustc_abi` are git subtrees instead of submodules: a

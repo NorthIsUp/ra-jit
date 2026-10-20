@@ -44,19 +44,8 @@ Live edit to running code, Game of Life demo (median of 20 edits, one 96-core Li
 | One function | 169 ms | 7 ms | **24x** |
 | One function, 300 new functions added | 282 ms | 60 ms | 4.7x |
 
-Edit, then build (generated 200-crate workspace, Linux x86-64, 8 CPUs, both warm and
-incremental, same linker, median of three):
-
-| Edit | cargo | ra-jit | |
-|---|---:|---:|---:|
-| A function in the main crate | 1.76 s | 0.42 s | 4.2x |
-| A function in a crate everything depends on | 6.33 s | 0.60 s | 10.6x |
-| Functions in 30 crates at once | 6.26 s | 0.62 s | 10.1x |
-| A new function | 2.09 s | 0.56 s | 3.7x |
-| A signature used in every crate | 13.87 s | 10.87 s | 1.3x |
-
-Not measured yet: real projects, and a build from nothing against a fresh `cargo build`
-([#benchmarks](https://github.com/indexable-inc/ra-jit/issues?q=label%3Abenchmarks)).
+<!-- bench:start -->
+<!-- bench:end -->
 
 ## Try it on your project
 
