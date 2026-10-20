@@ -46,17 +46,17 @@
     "rust-analyzer": {
       "flake": false,
       "locked": {
-        "lastModified": 1792505574,
-        "narHash": "sha256-Y0q41tfCBLZdEKeJnuhMwkxvuJFezjpn6dA6utU6ttY=",
+        "lastModified": 1792505991,
+        "narHash": "sha256-YzElhDPnBgeEVSbqK1jcZhjhJaFXBwgHr9/skI7ynmg=",
         "owner": "indexable-inc",
         "repo": "rust-analyzer",
-        "rev": "3fc04fbe165ae6c74e61b75973c1707d6c0043ec",
+        "rev": "f68c92f264b79ea66a5266c4ad05a3f2d6d26eb4",
         "type": "github"
       },
       "original": {
         "owner": "indexable-inc",
         "repo": "rust-analyzer",
-        "rev": "3fc04fbe165ae6c74e61b75973c1707d6c0043ec",
+        "rev": "f68c92f264b79ea66a5266c4ad05a3f2d6d26eb4",
         "type": "github"
       }
     },
