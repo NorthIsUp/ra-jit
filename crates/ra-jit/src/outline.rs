@@ -86,7 +86,11 @@ impl Outlines {
         files: Vec<FileId>,
     ) -> Vec<(FileId, bool)> {
         let off = std::env::var_os("RA_JIT_NO_BODIES").is_some();
+        let start = std::time::Instant::now();
         let changed = self.types_changed(db, &files);
+        if std::env::var_os("RA_JIT_STATS").is_some() {
+            eprintln!("types-us: {}", start.elapsed().as_micros());
+        }
         if !changed.is_empty() {
             crate::live::types_changed(&changed);
         }
@@ -119,9 +123,36 @@ fn outlines(db: &RootDatabase, listed: &Listed, files: &[FileId]) -> Vec<Option<
         crates.dedup();
         crate::resolve_names(db, &crates);
     }
+    let start = std::time::Instant::now();
     let functions = listed.in_files(db, files);
-    let bodies = functions.iter().flatten().flatten().map(|&it| it.into()).collect();
+    let found = start.elapsed();
+    let bodies: Vec<_> = functions.iter().flatten().flatten().map(|&it| it.into()).collect();
+    let count = bodies.len();
     crate::lower(db, bodies);
+    let lowered = start.elapsed();
+    let one = |file: FileId, functions: &Option<Vec<FunctionId>>| {
+        let Some(functions) = functions else {
+            if stats {
+                eprintln!("outline: {file:?} has functions that are not listed");
+            }
+            return None;
+        };
+        outline(db, file, functions)
+    };
+    if let ([file], [functions]) = (files, &functions[..]) {
+        // One file, the usual edit: hashed here rather than on a thread of its own.
+        let outline = hir::attach_db(db, || one(*file, functions));
+        if stats {
+            let us = |it: std::time::Duration| it.as_micros();
+            eprintln!(
+                "outlines-us: list={} lower={} bodies={count} hash={}",
+                us(found),
+                us(lowered - found),
+                us(start.elapsed() - lowered)
+            );
+        }
+        return vec![outline];
+    }
     let threads = std::thread::available_parallelism().map_or(1, |it| it.get());
     let mut outlines = vec![None; files.len()];
     std::thread::scope(|scope| {

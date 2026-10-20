@@ -3465,9 +3465,11 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
         base: Option<&'a patch::Base>,
         hydrate: bool,
     ) -> Result<Self> {
+        let start = stdx::time::Instant::now();
         let builder = ObjectBuilder::new(target()?.clone(), "ra-jit", default_libcall_names())?;
         let mut module = ObjectModule::new(builder);
         let unwind = UnwindContext::new(&mut module).map_err(CodegenError::Backend)?;
+        let built = start.elapsed();
         // A patch is added to a program that is linked already, and is read with it.
         let apart = symbols.debug_apart().filter(|_| base.is_none());
         let debug = symbols.debug_directory().and_then(|directory| {
@@ -3475,12 +3477,27 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
                 .map(debuginfo::Describer::new)
         });
         let debugged = debug.is_some();
+        let described = start.elapsed();
         let mixed = settled::Mixed::of(db, symbols, &own_statics.crates);
+        let mixed_at = start.elapsed();
         // Without an identity for such a program, nothing of it is kept or found.
         let program = mixed.as_ref().map(|it| it.key);
         let store = store::Store::global().filter(|_| program != Some(None));
         if let Some(store) = store {
             store.settled();
+        }
+        let settled_at = start.elapsed();
+        let names = stable::StableNames::new(db, symbols, own_statics.crates.clone(), hydrate);
+        if std::env::var_os("RA_JIT_STATS").is_some() {
+            let us = |it: std::time::Duration| it.as_micros();
+            eprintln!(
+                "setup-us: module={} debug={} mixed={} settled={} names={}",
+                us(built),
+                us(described - built),
+                us(mixed_at - described),
+                us(settled_at - mixed_at),
+                us(start.elapsed() - settled_at),
+            );
         }
         Ok(ObjectCodegen {
             db,
@@ -3528,7 +3545,7 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
             source_paths: FxHashMap::default(),
             builder_ctx: FunctionBuilderContext::new(),
             location_counter: 0,
-            names: stable::StableNames::new(db, symbols, own_statics.crates.clone(), hydrate),
+            names,
             hydrate,
             stable_names: FxHashMap::default(),
             kept: Kept::default(),

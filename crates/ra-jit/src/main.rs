@@ -2530,7 +2530,20 @@ impl Declared {
 /// Lowers the bodies on all threads and hands them back. An edit to a file has every body in
 /// it lowered again, which is most of the work of looking through them.
 fn lower(db: &RootDatabase, bodies: Vec<DefWithBodyId>) -> Vec<DefWithBodyId> {
-    let threads = std::thread::available_parallelism().map_or(1, |it| it.get());
+    // A thread costs about what lowering a few small bodies does: the bodies of one edited
+    // file are lowered where they are asked for.
+    const PER_THREAD: usize = 16;
+    let threads = std::thread::available_parallelism()
+        .map_or(1, |it| it.get())
+        .min(bodies.len().div_ceil(PER_THREAD));
+    if threads <= 1 {
+        hir::attach_db(db, || {
+            for &body in &bodies {
+                Body::of(db, body);
+            }
+        });
+        return bodies;
+    }
     std::thread::scope(|scope| {
         // The bodies of one file are next to each other, and the edited file's are the slow
         // ones: each thread takes every nth, so that they are spread over all of them.
