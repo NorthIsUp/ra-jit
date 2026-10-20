@@ -20,7 +20,8 @@ A build line:
 A live line:
     {"suite": "live", "date", "commit", "machine", "battery", "run_url",
      "results": {"<program>": {"<mode>": {"n", "p50_ms", "p90_ms", "p95_ms", "p99_ms", "max_ms"}}}}
-Keys a run did not measure are left out.
+Keys a run did not measure are left out. A run's test suites (`--tests`) are two phases:
+`test-edit`, the tests after an edit, and `test`, with nothing changed.
 
 `check` compares the last line of HISTORY with the lines before it from the same machine (at
 most `--last`, default 7): a number regressed when it is above the median of those by more than
@@ -39,9 +40,9 @@ ROOT = os.path.dirname(HERE)
 BUILD_HISTORY = os.path.join(ROOT, "docs/benchmarks/history/linux-x86_64.jsonl")
 LIVE_HISTORY = os.path.join(ROOT, "docs/benchmarks/history/macos-arm64-live.jsonl")
 PHASE_FIELDS = ("wall_s", "cargo_s", "rss_mb", "built", "link", "compiled", "build_s", "warm_s",
-                "warm_store_s", "warm_store_build_s", "check_s", "edit_s", "edit_cargo_s")
+                "warm_store_s", "warm_store_build_s", "check_s")
 # What is checked, and the least change that counts.
-FLOORS = {"wall_s": 0.05, "build_s": 0.05, "warm_s": 0.05, "edit_s": 0.05, "rss_mb": 100, "store_mb": 50,
+FLOORS = {"wall_s": 0.05, "build_s": 0.05, "warm_s": 0.05, "rss_mb": 100, "store_mb": 50,
           "p50_ms": 1.0, "p90_ms": 1.0, "ra-jit": 0.005}
 
 
@@ -66,6 +67,13 @@ def build_line(result):
             if setups:
                 kept["setups"] = setups
             phases[label] = kept
+            if label == "test" and phase.get("edit_s") is not None:
+                # The tests after an edit are a phase of their own, as charted and checked.
+                edited = dict(wall_s=phase["edit_s"], cargo_s=phase["edit_cargo_s"], built=phase.get("built"))
+                edited.update(spread(phase.get("edit_samples_s")))
+                edited.update(spread(phase.get("edit_cargo_samples_s"), "cargo_"))
+                phases["test-edit"] = edited
+                kept["built"] = phase.get("built_still", phase.get("built"))
         entry = dict(tag=measured.get("tag"), phases=phases)
         if measured.get("store_mb") is not None:
             entry["store_mb"] = measured["store_mb"]
@@ -131,7 +139,7 @@ def series(line):
             if (entry.get("runtime_s") or {}).get("ra-jit") is not None:
                 numbers[(key, "runtime", "ra-jit")] = entry["runtime_s"]["ra-jit"]
             for label, phase in entry["phases"].items():
-                for field in ("wall_s", "rss_mb", "build_s", "warm_s", "edit_s"):
+                for field in ("wall_s", "rss_mb", "build_s", "warm_s"):
                     if phase.get(field) is not None:
                         numbers[(key, label, field)] = phase[field]
                 if phase.get("built"):

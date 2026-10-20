@@ -58,9 +58,11 @@ export const EDITS: Record<string, string> = {
 	newfn: 'Add a function',
 	struct: 'Add a struct field',
 	'no-op': 'Nothing changed',
+	'test-edit': 'Edit, then run the tests',
+	test: 'Run the tests, nothing changed',
 	cold: 'Cold build, until ready',
 };
-export const EDIT_ORDER = ['body', 'leaf', 'signature', 'generic', 'newfn', 'struct', 'no-op', 'cold'];
+export const EDIT_ORDER = ['body', 'leaf', 'signature', 'generic', 'newfn', 'struct', 'no-op', 'test-edit', 'test', 'cold'];
 
 /** The other cargo setups measured on the same edits: a short column name and what it is. */
 export const SETUPS: Record<string, [string, string]> = {
