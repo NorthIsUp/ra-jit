@@ -111,6 +111,7 @@ jobs:
           run stress.py
           run breakers.py
           run unwinds.py
+          if [ "$RA_JIT_BACKEND" = cranelift ]; then run growth.py; fi
           run splices.py
           # A branch reaches 128 MB on AArch64, and the splice has to get past that.
           if [ "$(uname -m)" = aarch64 ]; then RA_JIT_SPLICE=1 run farsplices.py; fi
@@ -264,6 +265,7 @@ jobs:
           run stress.py
           run breakers.py
           run unwinds.py
+          if [ "$RA_JIT_BACKEND" = cranelift ]; then run growth.py; fi
           run splices.py
           run asmedits.py
           run includes.py
@@ -323,6 +325,7 @@ jobs:
           run stress.py
           run breakers.py
           run unwinds.py
+          if [ "$RA_JIT_BACKEND" = cranelift ]; then run growth.py; fi
           run splices.py
           run asmedits.py
           run includes.py
