@@ -33,7 +33,7 @@ mod emitted;
 mod lower;
 
 /// The name of the function being compiled, in the module and in the object.
-const OWN: &str = "rustd.own";
+const OWN: &str = "ra-jit.own";
 const PERSONALITY: &str = "rust_eh_personality";
 
 pub(super) fn emit(
@@ -53,7 +53,7 @@ pub(super) fn emit(
         optimization
     };
     Machine::with(optimization, |context, machine| {
-        let module = context.create_module("rustd");
+        let module = context.create_module("ra-jit");
         let named: Vec<ir::StackSlot> = recorder.named_slots().collect();
         module.set_triple(&machine.get_triple());
         module.set_data_layout(&machine.get_target_data().get_data_layout());
@@ -61,7 +61,7 @@ pub(super) fn emit(
         tally.time(Phase::Lower, || {
             lower::Lowering::lower(context, &module, func, &named, &constants)
         })?;
-        if std::env::var_os("RUSTD_DUMP_LLVM").is_some() {
+        if std::env::var_os("RA_JIT_DUMP_LLVM").is_some() {
             eprintln!("{}", module.print_to_string().to_string_lossy());
         }
         // LLVM aborts the process on IR it does not accept, so it is checked first.
@@ -91,7 +91,7 @@ pub(super) fn emit(
 /// error, and inkwell has no way to set another.
 pub(super) fn assemble(text: &str) -> Result<Vec<u8>, String> {
     Machine::with(Optimization::NONE, |context, machine| {
-        let module = context.create_module("rustd_asm");
+        let module = context.create_module("ra_jit_asm");
         module.set_triple(&machine.get_triple());
         // What rustc wraps `global_asm!` in, where there are two syntaxes.
         let text = match super::Target::selected().map_err(Unhandled::Llvm)?.arch {
@@ -123,7 +123,7 @@ pub(super) fn assemble(text: &str) -> Result<Vec<u8>, String> {
 fn set_options(arch: Arch) {
     static SET: Once = Once::new();
     SET.call_once(|| {
-        let mut arguments = vec![c"rustd".as_ptr(), c"-vectorize-slp=false".as_ptr()];
+        let mut arguments = vec![c"ra-jit".as_ptr(), c"-vectorize-slp=false".as_ptr()];
         if arch == Arch::Aarch64 {
             arguments.push(c"-aarch64-enable-global-isel-at-O=-1".as_ptr());
         }
@@ -251,18 +251,18 @@ impl Symbol {
     }
 
     fn parse(name: &str) -> Option<Symbol> {
-        if let Some(index) = name.strip_prefix("rustd.f.") {
+        if let Some(index) = name.strip_prefix("ra-jit.f.") {
             return index.parse().ok().map(Symbol::Func);
         }
-        name.strip_prefix("rustd.d.")?.parse().ok().map(Symbol::Data)
+        name.strip_prefix("ra-jit.d.")?.parse().ok().map(Symbol::Data)
     }
 }
 
 impl fmt::Display for Symbol {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Symbol::Func(index) => write!(f, "rustd.f.{index}"),
-            Symbol::Data(index) => write!(f, "rustd.d.{index}"),
+            Symbol::Func(index) => write!(f, "ra-jit.f.{index}"),
+            Symbol::Data(index) => write!(f, "ra-jit.d.{index}"),
         }
     }
 }

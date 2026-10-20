@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""storeshared.py: several daemons and `rustd cache` commands on one store at once.
+"""storeshared.py: several daemons and `ra-jit cache` commands on one store at once.
 
 Every daemon has a checkout of its own and all of them have the same store. They are edited
 and asked for their programs at the same time, with states of the workspace that the others
@@ -8,7 +8,7 @@ seal packs side by side and read each other's.
 
 First with room for everything: afterwards a daemon that has compiled nothing has to find
 nearly all of its code in what the others sealed. Then with a store that is far too small,
-while `rustd cache gc` evicts and merges in a loop and `rustd cache verify` reads the store
+while `ra-jit cache gc` evicts and merges in a loop and `ra-jit cache verify` reads the store
 in a loop: every program has to print what cargo's does, and verify must never find a pack
 that is not what was written.
 
@@ -26,8 +26,8 @@ def option(name, default):
 
 
 DAEMONS, ROUNDS, SEED = option("--daemons", 3), option("--rounds", 30), option("--seed", int(time.time()))
-ROOMY = {"RUSTD_CACHE_SEAL_AT": "1", "RUSTD_CACHE_MAX": "off"}
-TIGHT = {"RUSTD_CACHE_SEAL_AT": "1", "RUSTD_CACHE_MAX": "1500K"}
+ROOMY = {"RA_JIT_CACHE_SEAL_AT": "1", "RA_JIT_CACHE_MAX": "off"}
+TIGHT = {"RA_JIT_CACHE_SEAL_AT": "1", "RA_JIT_CACHE_MAX": "1500K"}
 STATES = 6
 FAILURES = []
 
@@ -93,7 +93,7 @@ def found(daemon):
 
 def main():
     start = time.time()
-    work = scratch("rustd-storeshared-")
+    work = scratch("ra-jit-storeshared-")
     store = os.path.join(work, "store")
     checkouts = [Checkout(work, f"checkout{n}") for n in range(DAEMONS + 1)]
     # cargo's builds of every state, before anything runs at once.

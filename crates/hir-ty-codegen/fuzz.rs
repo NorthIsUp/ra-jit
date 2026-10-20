@@ -11,7 +11,7 @@ use std::{
     path::Path,
 };
 
-/// How many changed inputs a target is given, unless `RUSTD_FUZZ_RUNS` says.
+/// How many changed inputs a target is given, unless `RA_JIT_FUZZ_RUNS` says.
 const RUNS: usize = 20_000;
 
 /// Bytes that are a length, a tag or an index somewhere, at their edges.
@@ -21,7 +21,7 @@ const EDGES: [u8; 8] = [0, 1, 2, 0x7f, 0x80, 0xfe, 0xff, 0x40];
 pub(super) fn inputs(target: &str, seeds: Vec<Vec<u8>>) -> impl Iterator<Item = Vec<u8>> {
     let mut known = corpus(target);
     known.extend(seeds);
-    let runs = std::env::var("RUSTD_FUZZ_RUNS").ok().and_then(|it| it.parse().ok());
+    let runs = std::env::var("RA_JIT_FUZZ_RUNS").ok().and_then(|it| it.parse().ok());
     let mut random = Random(0x9e37_79b9_7f4a_7c15 ^ target.len() as u64);
     let changed: Vec<Vec<u8>> = (0..runs.unwrap_or(RUNS))
         .map(|run| {

@@ -9,11 +9,11 @@ A daemon fills a store and ends. Then:
     whoever reads the remote;
   - a pack that other users can write to has to be removed, said so, and the program
     built from the rest has to print what cargo's does;
-  - a store directory that other users can write to has to be refused by `rustd cache`
+  - a store directory that other users can write to has to be refused by `ra-jit cache`
     with the reason, and a daemon on it has to say it is not used, build the right
     program, and neither read nor write anything in it;
-  - `rustd cache pull` from a remote whose lists nobody signed has to be refused, with
-    nothing fetched, unless RUSTD_REMOTE_UNSIGNED=1; `rustd cache push` asks for nothing.
+  - `ra-jit cache pull` from a remote whose lists nobody signed has to be refused, with
+    nothing fetched, unless RA_JIT_REMOTE_UNSIGNED=1; `ra-jit cache push` asks for nothing.
 
   - a crate cargo fetched from a registry is kept under `/cargo`, not under the cargo home
     of whoever built it: a second user with another cargo home has to find what the first
@@ -29,7 +29,7 @@ sys.path.insert(0, HERE)
 from storelib import Checkout, Daemon, cache, files, run, scratch, verify
 from difftest import Fixture
 
-SEALS = {"RUSTD_CACHE_SEAL_AT": "1", "RUSTD_CACHE_MAX": "off"}
+SEALS = {"RA_JIT_CACHE_SEAL_AT": "1", "RA_JIT_CACHE_MAX": "off"}
 OTHERS_WRITE = "written to by other users"
 
 
@@ -121,21 +121,21 @@ def writable_store(checkout, store):
 
 def unsigned(store, work):
     remote, second = os.path.join(work, "remote"), os.path.join(work, "second")
-    nothing_asked = {"RUSTD_REMOTE_UNSIGNED": ""}
+    nothing_asked = {"RA_JIT_REMOTE_UNSIGNED": ""}
     status, out = cache(store, "push", remote, env=nothing_asked)
     if status != 0:
         fail(f"push: {out}")
     names_no_checkout(CHECKOUT, remote, "the remote")
     for value in ("", "0", "true"):
-        status, out = cache(second, "pull", remote, env={"RUSTD_REMOTE_UNSIGNED": value})
-        if status == 0 or "RUSTD_REMOTE_UNSIGNED=1" not in out or files(second, ".pack"):
-            fail(f"pull with RUSTD_REMOTE_UNSIGNED={value!r} was not refused: {out}")
-    status, out = cache(second, "pull", remote, env={"RUSTD_REMOTE_UNSIGNED": "1"})
+        status, out = cache(second, "pull", remote, env={"RA_JIT_REMOTE_UNSIGNED": value})
+        if status == 0 or "RA_JIT_REMOTE_UNSIGNED=1" not in out or files(second, ".pack"):
+            fail(f"pull with RA_JIT_REMOTE_UNSIGNED={value!r} was not refused: {out}")
+    status, out = cache(second, "pull", remote, env={"RA_JIT_REMOTE_UNSIGNED": "1"})
     whole, _, verified = verify(second)
     if status != 0 or not whole or len(files(second, ".pack")) != len(files(store, ".pack")):
-        fail(f"pull with RUSTD_REMOTE_UNSIGNED=1: {out}\n{verified}")
+        fail(f"pull with RA_JIT_REMOTE_UNSIGNED=1: {out}\n{verified}")
     the_users_alone(second)
-    print(f"  unsigned lists: push asks for nothing; pull refused unless RUSTD_REMOTE_UNSIGNED=1, "
+    print(f"  unsigned lists: push asks for nothing; pull refused unless RA_JIT_REMOTE_UNSIGNED=1, "
           f"then {len(files(second, '.pack'))} packs fetched")
 
 
@@ -176,15 +176,15 @@ def fetched_workspace(top):
 
 
 def built_with_home(ws, home, store):
-    """Builds the program with `home` as cargo's; returns what rustd said of the store."""
-    were = {name: os.environ.get(name) for name in ("CARGO_HOME", "RUSTD_CACHE", "PATH")}
+    """Builds the program with `home` as cargo's; returns what ra-jit said of the store."""
+    were = {name: os.environ.get(name) for name in ("CARGO_HOME", "RA_JIT_CACHE", "PATH")}
     cargo_bin = os.path.dirname(shutil.which("cargo"))
-    os.environ.update(CARGO_HOME=home, RUSTD_CACHE=store, PATH=cargo_bin + os.pathsep + os.environ["PATH"],
+    os.environ.update(CARGO_HOME=home, RA_JIT_CACHE=store, PATH=cargo_bin + os.pathsep + os.environ["PATH"],
                       **SEALS)
     try:
         fx = Fixture(ws, ["dep", "app"], ["-p", "app"])
         fx.rustc_build()
-        fx.rustd_build()
+        fx.ra_jit_build()
     finally:
         for name, value in were.items():
             os.environ.pop(name, None) if value is None else os.environ.__setitem__(name, value)
@@ -194,7 +194,7 @@ def built_with_home(ws, home, store):
     said = open(os.path.join(fx.work, "app.stderr")).read()
     counted = re.search(r"entries: (\d+) found, (\d+) added", said)
     if not counted:
-        fail(f"rustd said nothing of the entries of the crate of the registry:\n{said[-2000:]}")
+        fail(f"ra-jit said nothing of the entries of the crate of the registry:\n{said[-2000:]}")
     return int(counted[1]), int(counted[2])
 
 
@@ -229,7 +229,7 @@ def another_cargo_home(work):
 
 if os.name != "posix":
     raise SystemExit("storeguards.py: the modes of files are checked on Unix only")
-WORK = scratch("rustd-storeguards-")
+WORK = scratch("ra-jit-storeguards-")
 CHECKOUT = Checkout(WORK)
 STORE = os.path.join(WORK, "store")
 filled(CHECKOUT, STORE, "fill")

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""breakers.py: every reduction in harness/breakers on its own, rustd's binary against cargo's.
+"""breakers.py: every reduction in harness/breakers on its own, ra-jit's binary against cargo's.
 
 usage: breakers.py [case ...]
 
@@ -17,11 +17,11 @@ CRATES = ["devdep", "blanket", "edition2015", "fragment", "procmacro"]
 OPEN = {"assert_message", "raw_write_then_match", "future_unwind_flags", "fragment_edition_through_macro", "assert_long_expression"}
 # Frames that are larger than rustc's, where a program counts on rustc's: the answer is right and the room is not.
 OPEN |= {"frame_of_array", "frame_of_tables"}
-# What is reduced and not fixed either, where rustd says so: a function of these is left to rustc.
+# What is reduced and not fixed either, where ra-jit says so: a function of these is left to rustc.
 LEFT = {"caller_in_constant", "empty_array_by_impl", "macro_reads_its_spelling", "fragment_ends_statement"}
-# Crates reduced and not fixed, where rustd says so: a function of these is left to rustc.
+# Crates reduced and not fixed, where ra-jit says so: a function of these is left to rustc.
 LEFT_CRATES = []
-# Cases about the code around a function rustd has to leave to rustc: that one is meant to be.
+# Cases about the code around a function ra-jit has to leave to rustc: that one is meant to be.
 AROUND_LEFT = {"await_left_in_generic"}
 
 
@@ -29,7 +29,7 @@ def main():
     crates = ["breakers", "breakers2021", "breakers2015"]
     fx = Fixture(os.path.join(HERE, "breakers"), crates, ["-p", "breaker"])
     fx.rustc_build()
-    fx.rustd_build()
+    fx.ra_jit_build()
     skipped = [r for rows in fx.reports.values() for r in rows if r[0] == "skipped" and "no rustc symbol for function" not in r[2]]
     left = {name for name in LEFT if any(f"::{name}::" in row[1] for row in skipped)}
     skipped = [row for row in skipped if not any(f"::{name}::" in row[1] for name in LEFT | AROUND_LEFT)]
@@ -51,7 +51,7 @@ def main():
             at = max(0, next((i for i, (a, b) in enumerate(zip(ours, theirs)) if a != b), 0) - 60)
             print(f"    rustc: status {want[0]} {theirs[at:at + 300]}")
             tail = got[2].decode(errors="replace").strip().splitlines()[-1:]
-            print(f"    rustd: status {got[0]} {ours[at:at + 300]} {' '.join(tail)[:200]}")
+            print(f"    ra-jit: status {got[0]} {ours[at:at + 300]} {' '.join(tail)[:200]}")
     if not sys.argv[1:]:
         # What breaks in a crate's tests and not in a program: each a crate for cratetest.py.
         for crate in CRATES:

@@ -6,7 +6,7 @@
     "feat"
   ],
   "env": {
-    "RUSTD_RELOAD_PAUSE_MS": "3000"
+    "RA_JIT_RELOAD_PAUSE_MS": "3000"
   },
   "steps": [
     {

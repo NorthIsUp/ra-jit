@@ -1,16 +1,16 @@
 # The store on disk: what was hardened and what was measured
 
-Branch `rustd-disk-cache`, from `rustd-collate` at `b19fdfacd8`. Linux x86-64, 8 cores,
+Branch `ra-jit-disk-cache`, from `ra-jit-collate` at `b19fdfacd8`. Linux x86-64, 8 cores,
 Rust 1.99.0, LLVM 20.
 
-The store is the directory `RUSTD_CACHE` names. It holds compiled functions (and the
+The store is the directory `RA_JIT_CACHE` names. It holds compiled functions (and the
 entries that say which function a request resolves to) by a hash of what they were
-compiled from. The code is in `crates/hir-ty/src/mir/codegen/store.rs`; the `rustd cache`
-commands are in `crates/rustd/src/remote.rs`.
+compiled from. The code is in `crates/hir-ty/src/mir/codegen/store.rs`; the `ra-jit cache`
+commands are in `crates/ra-jit/src/remote.rs`.
 
 ## What is on disk now
 
-    version                 "rustd store 2"
+    version                 "ra-jit store 2"
     <sha256>.pack           a sealed pack: 8 bytes of magic, then records
     <pid>-<nanos>.open      the pack one daemon is appending to
     *.tmp                   a file on its way to another name
@@ -23,7 +23,7 @@ again.
 ## 1. Format version and identity
 
 `version` names the format of the directory, and the last byte of the pack magic repeats
-it. A daemon or a `rustd cache` command that opens the directory does one of three things:
+it. A daemon or a `ra-jit cache` command that opens the directory does one of three things:
 
 - same format: uses it;
 - older format, a `version` it cannot read, or packs with no `version` (the format before
@@ -31,7 +31,7 @@ it. A daemon or a `rustd cache` command that opens the directory does one of thr
   open packs, temporaries, `version`), writes the new `version`, and starts empty. Files
   that are not the store's are left;
 - newer format: touches nothing, says `store: not used: the store is of format N, and this
-  rustd reads format 2`, and compiles without a store. `rustd cache gc|push|pull` fail with
+  ra-jit reads format 2`, and compiles without a store. `ra-jit cache gc|push|pull` fail with
   the same reason.
 
 There is no migration: the contents are a cache, so starting empty loses time and nothing
@@ -40,7 +40,7 @@ still running and sealing into the directory, or a pull from a remote) fails the
 check and is removed, or in the case of a pull is not written.
 
 Keys on disk are not the caller's keys. Each is hashed with an identity, which is the hash
-of the format number, the SHA-256 of the running `rustd` executable, and the toolchain:
+of the format number, the SHA-256 of the running `ra-jit` executable, and the toolchain:
 the `libstd-*` file names of the sysroot the program links against (their hashes differ
 per toolchain build), rustc's commit, and the `rustc_driver-*` library name. A daemon of
 another build, or one compiling against another toolchain, computes other keys and finds
@@ -49,8 +49,8 @@ toolchain cannot be told, the daemon says so and keeps no store. The executable 
 to be mixed into the entry keys alone, in `cached.rs`; it now covers everything, in one
 place.
 
-A consequence, not new: packs are only useful to a machine with a byte-identical `rustd`
-and the same toolchain, which is also true of `rustd cache push|pull`. Records of builds
+A consequence, not new: packs are only useful to a machine with a byte-identical `ra-jit`
+and the same toolchain, which is also true of `ra-jit cache push|pull`. Records of builds
 that no longer exist stay until they are evicted as the least recently used.
 
 ## 2. Crash safety
@@ -74,7 +74,7 @@ nobody holds are removed once they are a minute old.
 the moment the answer to an edit is sent, and at the first, second or third moment the
 store directory is seen to change (an open pack growing, a pack getting its name, a
 merged pack on its way). Daemons are started with sizes that make them seal, merge and
-evict on nearly every build. After each kill `rustd cache verify` must find nothing that
+evict on nearly every build. After each kill `ra-jit cache verify` must find nothing that
 is not what was written, a new daemon on the same store must produce a program that
 prints what cargo's build prints, and verify must pass again.
 
@@ -85,7 +85,7 @@ together with the magic and the framing of every record (a pack with bytes after
 last whole record fails). The checksum of a record is checked every time its value is
 read, so damage to a pack after a daemon has indexed it is caught as well. A pack that
 fails either check is dropped from the index and unlinked, the daemon prints
-`store: NAME ...; removed`, counts it, and compiles what was in it. `rustd cache push`
+`store: NAME ...; removed`, counts it, and compiles what was in it. `ra-jit cache push`
 does not send a pack that is not what its name says.
 
 `harness/storecorrupts.py` damages one file per round: a bit flipped, the file cut
@@ -98,12 +98,12 @@ of a newer format.
 
 ## 4. Size limit and garbage collection
 
-`RUSTD_CACHE_MAX` is the most the sealed packs may take: a number of bytes or one with
-`K`, `M` or `G`, `off` for no limit, 8G when unset. `RUSTD_CACHE_SEAL_AT` (4M) is the
+`RA_JIT_CACHE_MAX` is the most the sealed packs may take: a number of bytes or one with
+`K`, `M` or `G`, `off` for no limit, 8G when unset. `RA_JIT_CACHE_SEAL_AT` (4M) is the
 size at which an open pack is sealed at the end of a build; it exists for the harnesses.
 
 A collection runs when a daemon opens the store and after it seals a pack, and on
-`rustd cache gc [--max SIZE]`. It seals open packs left by daemons that are gone, removes
+`ra-jit cache gc [--max SIZE]`. It seals open packs left by daemons that are gone, removes
 old temporaries, merges sealed packs under 4M into one when there are more than 16 of
 them (the new pack is in place before the old ones go), and then unlinks the least
 recently used packs until the rest fit. "Used" is the modification time of the pack,
@@ -114,16 +114,16 @@ Eviction is safe for readers because a daemon keeps the packs it has indexed ope
 unlinked pack stays readable to it until it exits. A daemon that starts later does not
 see the pack and compiles what was in it.
 
-    rustd cache stats      format, packs, bytes, open packs, temporaries, limit, oldest and newest use
-    rustd cache gc         collect now, to RUSTD_CACHE_MAX or --max SIZE
-    rustd cache verify     read everything; exit 1 if any pack is not what was written
+    ra-jit cache stats      format, packs, bytes, open packs, temporaries, limit, oldest and newest use
+    ra-jit cache gc         collect now, to RA_JIT_CACHE_MAX or --max SIZE
+    ra-jit cache verify     read everything; exit 1 if any pack is not what was written
 
 Full disk: any error while adding to the store (ENOSPC among them) stops the writer for
 that build. The daemon prints `store: nothing more is kept of this build: No space left
 on device ...` once, counts the values it did not keep and prints the count at
 the end of the build, and goes on compiling; the next build tries again. If the
 directory cannot even be claimed the daemon prints `store: not used: ...` and runs
-without one. `rustd cache pull` into a full store fails with the error and leaves no
+without one. `ra-jit cache pull` into a full store fails with the error and leaves no
 partial file.
 
 `harness/storefull.py` mounts an 8 MB tmpfs (it needs `sudo -n mount`), fills all but
@@ -143,7 +143,7 @@ Lock-free by construction for everything a build does, with one lock for houseke
 - Removing is unlink, which leaves the file whole for those that have it open.
 - `lock` is taken (non-blocking for collection, blocking for a change of format) so that
   two collections, or a collection and an emptying, do not run at once. A collection
-  that finds it held does nothing; `rustd cache gc` then exits with "another process is
+  that finds it held does nothing; `ra-jit cache gc` then exits with "another process is
   collecting the store".
 
 Locks are `File::lock`/`try_lock` from std (flock on Linux). On a network file system
@@ -153,15 +153,15 @@ names are hashes and writes are whole. That is reasoning, not something measured
 
 `harness/storeshared.py` runs 3 daemons with a checkout each on one store, building the
 same states at the same time and being killed and restarted every third build; first
-with room, then with a 1500K limit while `rustd cache gc` and `rustd cache verify` run in
+with room, then with a 1500K limit while `ra-jit cache gc` and `ra-jit cache verify` run in
 loops beside them.
 
 ## What was measured
 
-Binaries: `cargo build -p rustd --release` and
-`LLVM_SYS_201_PREFIX=/usr/lib/llvm-20 cargo build -p rustd --release --features llvm`.
-All commands from `harness/` with `RUSTD_BIN` set; "Cranelift" is `RUSTD_BACKEND=cranelift`,
-"LLVM" is `RUSTD_BACKEND=llvm RUSTD_OPT=2 RUSTD_EMIT=fast`.
+Binaries: `cargo build -p ra-jit --release` and
+`LLVM_SYS_201_PREFIX=/usr/lib/llvm-20 cargo build -p ra-jit --release --features llvm`.
+All commands from `harness/` with `RA_JIT_BIN` set; "Cranelift" is `RA_JIT_BACKEND=cranelift`,
+"LLVM" is `RA_JIT_BACKEND=llvm RA_JIT_OPT=2 RA_JIT_EMIT=fast`.
 
 Kills (`python3 storekills.py --kills N`, 4 workers):
 
@@ -203,9 +203,9 @@ collections, 66 evictions, 8074 verifications.
 Unit tests: 19 in `store.rs` (format, identity, a bit flipped at six places in a
 pack, a pack cut at five lengths, damage after indexing, LRU order, the limit, merging,
 shared directories, whole writes, ENOSPC on `/dev/full`).
-`cargo test --release -p hir-ty -p hir-def -p parser -p syntax -p rustd`: 928 passed,
+`cargo test --release -p hir-ty -p hir-def -p parser -p syntax -p ra-jit`: 928 passed,
 0 failed, 1 ignored. `cargo fmt --all -- --check`: clean. Clippy on `hir-ty` and
-`rustd` reports nothing in the changed files beyond the `eprintln!`/`println!` lints the
+`ra-jit` reports nothing in the changed files beyond the `eprintln!`/`println!` lints the
 daemon's code already has.
 
 Regression gate, both backends, all exit 0:
@@ -223,15 +223,15 @@ Regression gate, both backends, all exit 0:
 | `worktrees.py` | 52 of 52 (58 of 58 after the merge) | 52 of 52 (58 of 58) |
 | `keys.py` (after the merge) | 26 of 26, 4 open | 26 of 26, 4 open |
 
-Remote, by hand: a daemon with `RUSTD_REMOTE` set to a directory pushed 1 pack (1769
+Remote, by hand: a daemon with `RA_JIT_REMOTE` set to a directory pushed 1 pack (1769
 records); a second daemon with an empty store pulled it and compiled 0 functions.
 
-The four store harnesses are added to `.github/workflows/rustd.yaml` (100 kills, 4
+The four store harnesses are added to `.github/workflows/ra-jit.yaml` (100 kills, 4
 rounds of damage). On the first push of this branch (run 39025671387) all four passed
 on GitHub's runners under both backends, and so did fmt and the tests. The run as a
 whole failed on `difftest.py` and one case of `breakers.py`, because the workflow set
-`RUST_BACKTRACE` and the backtraces of rustc's program and rustd's differ; that is
-fixed on `rustd-collate` (`e64b0d2d8f`), which is merged into this branch.
+`RUST_BACKTRACE` and the backtraces of rustc's program and ra-jit's differ; that is
+fixed on `ra-jit-collate` (`e64b0d2d8f`), which is merged into this branch.
 
 The merge also brought `keys.py`, which builds with the store another build filled
 after each thing code depends on has changed. With this branch's store: 26 of 26
@@ -263,9 +263,9 @@ harness including the four for the store, under both backends.
 - Advisory locks over NFS, as said above.
 - Eviction is by pack. One recently used record keeps its whole pack (up to 64M); a
   limit smaller than a few packs evicts nearly everything.
-- Records of builds of rustd that no longer exist cannot be told from live ones and
+- Records of builds of ra-jit that no longer exist cannot be told from live ones and
   leave only by LRU.
-- A newer-format store is refused, not shared: an old and a new rustd pointed at one
+- A newer-format store is refused, not shared: an old and a new ra-jit pointed at one
   directory means the old one runs without a store.
 - The S3 remote path was not exercised (no bucket); only the directory remote was.
 - `storefull.py` needs passwordless sudo to mount a tmpfs.

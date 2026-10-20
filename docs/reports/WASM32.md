@@ -1,6 +1,6 @@
-# wasm32 as an emit target for rustd
+# wasm32 as an emit target for ra-jit
 
-This is the report for the `rustd-wasm32-target` branch: the daemon runs natively and
+This is the report for the `ra-jit-wasm32-target` branch: the daemon runs natively and
 compiles a workspace's crates to wasm32, links them ahead of what cargo built for the same
 target, and answers an edit without the linker.
 
@@ -11,14 +11,14 @@ machine was otherwise idle for the numbers in the tables, apart from where noted
 
 ## Short answers
 
-1. Codegen. `rustd-wasm` emitted wasm function bodies from Cranelift IR, not from MIR, and
+1. Codegen. `ra-jit-wasm` emitted wasm function bodies from Cranelift IR, not from MIR, and
    linked them itself. That lowering is now the wasm code producer of the main workspace,
    behind the target, and a new object writer wraps it as a relocatable wasm object with
    linking metadata that `rust-lld` links ahead of rustc's rlibs. Memory, indirect calls
    through the function table, 64-bit and 128-bit values and the C ABI work as far as the
    harnesses exercise them. Unwinding is not emitted: the wasm targets are `panic=abort`.
 2. Differential test. The corpus runs under wasmtime for `wasm32-wasip1` and matches
-   cargo's build, with 655 of 656 functions compiled by rustd (the same one function falls
+   cargo's build, with 655 of 656 functions compiled by ra-jit (the same one function falls
    back as on x86-64).
 3. The edit loop. Three options were compared; the one built rewrites the linked module
    with the patch's functions in place of its own, which takes about a millisecond for a
@@ -43,7 +43,7 @@ which are not about the target (see "Harness results"). The x86-64 numbers are u
   `--target`. Everything that differs asks it: the width of an address (`word()`), what
   writes a function's code, what an object file is, and the C ABI.
 - `crates/hir-ty/src/mir/codegen/wasm.rs`: the lowering of Cranelift IR to a wasm function
-  body, from `rustd-wasm`, changed to emit code for wasm32 that links with rustc's: direct
+  body, from `ra-jit-wasm`, changed to emit code for wasm32 that links with rustc's: direct
   `call`s by symbol (relocations instead of its own table), `__stack_pointer` as the
   linker's global, and LLVM's signatures (a function that returns more than one value or an
   `i128` takes a pointer ahead of its parameters). Its `Calls::Table` mode, where every call
@@ -59,9 +59,9 @@ which are not about the target (see "Harness results"). The x86-64 numbers are u
   address is passed last, as clang does), and `TypeId` hashes that take the target's word
   into account. `symbols.rs` in the daemon reads data symbols out of wasm rlibs, which the
   `object` crate reports without a section.
-- `crates/rustd/src/splice/wasm.rs` (new): the splice of a wasm module, described under
+- `crates/ra-jit/src/splice/wasm.rs` (new): the splice of a wasm module, described under
   "The edit loop".
-- Harnesses: `RUSTD_TARGET=wasm32-wasip1` makes every harness build cargo's side for that
+- Harnesses: `RA_JIT_TARGET=wasm32-wasip1` makes every harness build cargo's side for that
   target, capture `rust-lld`'s line instead of `cc`'s, run programs under wasmtime, use
   `wasm-tools` where they used `strip` and `readelf`, and skip valgrind. `editloop.py` is
   new and measures the times in this report.
@@ -71,14 +71,14 @@ Nothing changes for x86-64 apart from refactoring: the full set of harnesses was
 
 ## 1. Codegen
 
-### What `rustd-wasm` emitted from
+### What `ra-jit-wasm` emitted from
 
-Read from code: the `rustd-wasm` branch did not emit from MIR. It ran the same pipeline as
-native rustd up to Cranelift IR (`FunctionCx` in `codegen.rs` builds IR), and then, instead
+Read from code: the `ra-jit-wasm` branch did not emit from MIR. It ran the same pipeline as
+native ra-jit up to Cranelift IR (`FunctionCx` in `codegen.rs` builds IR), and then, instead
 of giving Cranelift the IR to compile, lowered the IR to a wasm function body itself
 (`wasm.rs`, about 2,200 lines: a stack machine over Cranelift's SSA values, locals for
 values that are live across blocks, structured control flow recovered from the CFG). Its
-own linker (`crates/rustd-wasm/src/link.rs`) put the bodies into a module with a table
+own linker (`crates/ra-jit-wasm/src/link.rs`) put the bodies into a module with a table
 where every call was `call_indirect` through the callee's slot, which is how it swapped
 functions. It compiled `core` from source for `wasm64` and had no `std`.
 
@@ -88,7 +88,7 @@ the lowering, drop its linker, and write what the linker expects from an object.
 ### What it took
 
 - Address width. The IR assumed 64-bit pointers in many places (layouts, `TypeId`, vtables,
-  slice metadata, constants). These now ask the target (`word()`); `rustd-wasm` had moved
+  slice metadata, constants). These now ask the target (`word()`); `ra-jit-wasm` had moved
   some of these already.
 - Relocatable output. `cranelift-object` still builds the ELF object (it is what holds the
   symbols, relocations and data); `wasm_object::from_elf` reads it back and writes the wasm
@@ -139,19 +139,19 @@ Measured, by the corpus and the other harnesses under wasmtime:
 
 Inferred: the function table being the linker's means the daemon's object can take the
 address of any function in any rlib (the linker allocates the slot), and rustc's code can
-take the address of a rustd function, which is what `vtables` and `fn_pointers` in the
+take the address of a ra-jit function, which is what `vtables` and `fn_pointers` in the
 corpus show for the second.
 
 ## 2. Differential test
 
-`RUSTD_TARGET=wasm32-wasip1 python3 harness/difftest.py corpus --bin runner --crate cases`:
+`RA_JIT_TARGET=wasm32-wasip1 python3 harness/difftest.py corpus --bin runner --crate cases`:
 
-    cases: 655/656 functions from rustd
+    cases: 655/656 functions from ra-jit
     MATCH
 
-Measured. The runner's output is identical between the module rustd linked and
+Measured. The runner's output is identical between the module ra-jit linked and
 the one cargo linked, both under `wasmtime run -W max-wasm-stack=8388608 -S inherit-env`.
-The one function not from rustd is the `TypeId` of a `fn(&u8) -> &u8` type, which is the one
+The one function not from ra-jit is the `TypeId` of a `fn(&u8) -> &u8` type, which is the one
 that falls back on x86-64 too (679/680 there). The fixture changes for the target are: the
 unwinding cases gated with `cfg(panic = "unwind")`, two thread cases gated with
 `cfg(not(target_family = "wasm"))`, the x86 SIMD cases gated with
@@ -165,7 +165,7 @@ defined because `object` gives them no section, so the daemon compiled fewer fun
 
 `wasm32-unknown-unknown` is not run through the corpus: there is no runtime for it that
 prints, which is what the differential test compares. It is what the Dioxus app is built
-for, and that app runs (section 5). What differs between the two targets in rustd is nothing
+for, and that app runs (section 5). What differs between the two targets in ra-jit is nothing
 (the same `Target::Wasm32`); what differs in cargo's side is `wasi-libc` and `_start`.
 
 ## 3. The edit loop
@@ -185,7 +185,7 @@ The three options, compared:
    180 ms for the Dioxus app (29 MB with debug info, 277 ms when the symbol table is kept).
    That is already far below cargo's rebuild, and it is what every harness runs when the
    splice declines.
-2. Patch the module in place. This is what was built (`crates/rustd/src/splice/wasm.rs`).
+2. Patch the module in place. This is what was built (`crates/ra-jit/src/splice/wasm.rs`).
    The daemon reads the linked module once after each full link (its symbol table, types,
    bodies, data segments, the table's element segment, the memory limits), and for each
    patch writes a new file: the code section with the patch's bodies under the indices of the
@@ -227,7 +227,7 @@ The three options, compared:
    here, and it changes the shape of the output (two modules and a runtime) rather than the
    compiler, which is why I did not start it without asking.
 
-Which fits: option 2 for the loop as rustd runs it today (the file on disk is the program,
+Which fits: option 2 for the loop as ra-jit runs it today (the file on disk is the program,
 and the harnesses run it fresh), option 3 for Dioxus's development server, where the gain is
 keeping the page's state and skipping wasm-bindgen. The two share the codegen and differ in
 the last step.
@@ -235,12 +235,12 @@ the last step.
 ### Measured, edit to a program that can be run
 
 `harness/editloop.py` starts the daemon on a program, then replaces a line and puts it back
-N times, asking the daemon after each (`rustd sync`), which compiles the change, writes the
+N times, asking the daemon after each (`ra-jit sync`), which compiles the change, writes the
 patch, and links or splices; with `--run` it runs the result and checks the output changes
 each time; with `--after CMD` it times a command on the linked program (wasm-bindgen).
 
 Small std program: the `stress` fixture's `sapp` (three crates, `std`, formatting, `Vec`,
-closures, 1,760 functions compiled by rustd), the edit changes the body of a generic
+closures, 1,760 functions compiled by ra-jit), the edit changes the body of a generic
 function with eight instances (`report::line`). 5 rounds (10 edits), the same edit on both
 targets, one after the other on an idle machine.
 
@@ -278,7 +278,7 @@ functions with their 3,248 instances is 1.1 s.
 
 ### Measured, the splice harnesses
 
-`RUSTD_SPLICE=1 RUSTD_TARGET=wasm32-wasip1 python3 harness/splices.py`: 71 of 71 right, 62 of
+`RA_JIT_SPLICE=1 RA_JIT_TARGET=wasm32-wasip1 python3 harness/splices.py`: 71 of 71 right, 62 of
 the 71 steps spliced (x86-64: 71 of 71, 61 spliced). The nine that linked in full: three
 where the whole object was written again (the set of functions changed), three after the
 harness touched the binary ("written by someone else", as intended), one where a static
@@ -288,17 +288,17 @@ dropped (that step keeps `--no-gc-sections` off). The x86-64 run has the same sh
 one "Text file busy" where an edit arrives while the binary runs, which a wasm module does
 not have since wasmtime does not map the file.
 
-`RUSTD_SPLICE=1 RUSTD_TARGET=wasm32-wasip1 python3 harness/stress.py`: 99 of 99 right, 0
+`RA_JIT_SPLICE=1 RA_JIT_TARGET=wasm32-wasip1 python3 harness/stress.py`: 99 of 99 right, 0
 restarts, 72 of 89 links spliced (x86-64: 64 of 89; the difference is the 14 patches with
 thread-local data that the x86-64 splice declines). The 17 full links on wasm: six first
 links, four after the object was rewritten, six signature changes, one reverted function.
 
-The other daemon harnesses with `RUSTD_SPLICE=1` on `wasm32-wasip1`: `worktrees.py` 52 of 52
+The other daemon harnesses with `RA_JIT_SPLICE=1` on `wasm32-wasip1`: `worktrees.py` 52 of 52
 (39 of 44 links spliced, the same as x86-64), `programs.py` 22 of 22 (13 of 17),
 `includes.py` 9 of 9 (6 of 8), `unwinds.py` 8 of 8.
 
 One thing the wasm splice has to know that the ELF one does not: when a function's
-signature changes, the full link gets a definition from rustd's object and a stale one from
+signature changes, the full link gets a definition from ra-jit's object and a stale one from
 cargo's `.rcgu.o` with different signatures, and `rust-lld` keeps both, lists neither in the
 symbol table, and routes each caller to the one of its own signature (the other gets a
 `signature_mismatch:` stub). The splice reads the `name` section for those and takes the
@@ -317,9 +317,9 @@ Two things found on the way:
 
 - wasm-bindgen 0.2.129 fails on cargo's own debug build of this app with the nightly in
   `harness/toolchain` ("index out of bounds: the len is 0 but the index is 0" in
-  `descriptor.rs`), with or without rustd. It works on the same source built with stable
+  `descriptor.rs`), with or without ra-jit. It works on the same source built with stable
   1.94, and on nightly when the dependencies are built with `opt-level = 1`
-  (`[profile.dev.package."*"]`), which is the profile the measurements use. Not rustd's
+  (`[profile.dev.package."*"]`), which is the profile the measurements use. Not ra-jit's
   bug, but anyone measuring this loop with this toolchain hits it first.
 - With `--no-gc-sections` the same failure appears on the 63 MB module, so the splice's
   "keep everything an edit may call" setting is not usable with wasm-bindgen on this app.
@@ -363,27 +363,27 @@ done.
 
 ## Harness results
 
-`wasm32-wasip1`, this branch, `RUSTD_TARGET=wasm32-wasip1`:
+`wasm32-wasip1`, this branch, `RA_JIT_TARGET=wasm32-wasip1`:
 
 | harness | result | notes |
 |---|---|---|
-| `difftest.py corpus` | MATCH, 655/656 from rustd | fixture gates for unwind, threads, x86 SIMD; `%llu` |
-| `stress.py` | 99 of 99, 0 restarts | with `RUSTD_SPLICE=1`: 99 of 99, 72 spliced |
+| `difftest.py corpus` | MATCH, 655/656 from ra-jit | fixture gates for unwind, threads, x86 SIMD; `%llu` |
+| `stress.py` | 99 of 99, 0 restarts | with `RA_JIT_SPLICE=1`: 99 of 99, 72 spliced |
 | `breakers.py` | 15 of 15, 1 open, 0 skipped | `future_size` open as on x86; `clmul`, `simd_cast` gated to x86 |
 | `unwinds.py` | 8 of 8 | both sides abort at the same point; nothing is caught |
-| `RUSTD_SPLICE=1 splices.py` | 71 of 71, 62 spliced | threads run inline on wasm; `wasm-tools` for `strip`/`readelf` |
-| `RUSTD_SPLICE=1 worktrees.py` | 52 of 52, 39 spliced | |
-| `includes.py` | 9 of 9 | 6 spliced with `RUSTD_SPLICE=1` |
-| `programs.py` | 22 of 22 | 13 spliced with `RUSTD_SPLICE=1` |
+| `RA_JIT_SPLICE=1 splices.py` | 71 of 71, 62 spliced | threads run inline on wasm; `wasm-tools` for `strip`/`readelf` |
+| `RA_JIT_SPLICE=1 worktrees.py` | 52 of 52, 39 spliced | |
+| `includes.py` | 9 of 9 | 6 spliced with `RA_JIT_SPLICE=1` |
+| `programs.py` | 22 of 22 | 13 spliced with `RA_JIT_SPLICE=1` |
 | `asmedits.py` | not run for wasm | the fixture is x86-64 `asm!` (its docstring says so); there is no wasm inline assembly in Rust to port it to |
 | `deps.py` | not run for wasm | it tests the daemon's cache of cargo's dependency builds, which has no target-specific code; it ran on x86-64 |
 
 `x86_64-unknown-linux-gnu`, this branch, every harness rerun after the last change:
-corpus MATCH with 679/680 from rustd, programs 22 of 22, stress 99 of 99 with 0 restarts
-(with `RUSTD_SPLICE=1`: 99 of 99, 64 of 89 links spliced), breakers 15 of 15 with 1 open,
-unwinds 8 of 8, `RUSTD_SPLICE=1` splices 71 of 71 with 61 spliced, `RUSTD_SPLICE=1`
+corpus MATCH with 679/680 from ra-jit, programs 22 of 22, stress 99 of 99 with 0 restarts
+(with `RA_JIT_SPLICE=1`: 99 of 99, 64 of 89 links spliced), breakers 15 of 15 with 1 open,
+unwinds 8 of 8, `RA_JIT_SPLICE=1` splices 71 of 71 with 61 spliced, `RA_JIT_SPLICE=1`
 worktrees 52 of 52, asmedits 10 of 10, deps 10 of 10, includes 9 of 9. The same as
-`rustd-spike`.
+`ra-jit-spike`.
 
 ## What is left, ranked
 
@@ -394,7 +394,7 @@ worktrees 52 of 52, asmedits 10 of 10, deps 10 of 10, includes 9 of 9. The same 
    splice into a module linked without them: 29 MB of writing per edit is most of the
    splice's 35 ms.
 3. Keep the splice from declining on signature changes by having the full link not include
-   cargo's stale `.rcgu.o` for crates rustd compiles (`RUSTD_ALONE` does this for the
+   cargo's stale `.rcgu.o` for crates ra-jit compiles (`RA_JIT_ALONE` does this for the
    differential test), which also removes the `signature_mismatch:` stubs.
 4. `wasm32-unknown-unknown` through the corpus: a tiny runtime (Node with an `env` that
    prints) would let the differential test run there too, rather than relying on the WASI
@@ -403,7 +403,7 @@ worktrees 52 of 52, asmedits 10 of 10, deps 10 of 10, includes 9 of 9. The same 
    future `panic=unwind` with exception handling. None blocked a harness.
 6. Splicing into wasm-bindgen's output for body-only edits (section 4), if option 1 is not
    taken.
-7. `RUSTD_LINK_ARGS` in the harnesses chooses between `--no-gc-sections` and wasm-bindgen
+7. `RA_JIT_LINK_ARGS` in the harnesses chooses between `--no-gc-sections` and wasm-bindgen
    working; the daemon could instead keep a list of what the linker dropped and declare the
    splice unable for those names up front, which it does today by failing the lookup.
 8. Threads (`wasm32-wasip1-threads`, `+atomics`): thread-locals become real TLS again and

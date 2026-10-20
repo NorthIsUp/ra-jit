@@ -7,7 +7,7 @@ of the harnesses, the reports under `docs/reports/` and these documents. The rep
 written in the first person by the session that did the work; "I ran" in a report means
 that session ran it.
 
-What makes that workable is the testing method. Every change is judged by comparing rustd's
+What makes that workable is the testing method. Every change is judged by comparing ra-jit's
 output with rustc's on real programs, and a change that makes a harness differ does not
 land. If you contribute with AI assistance, the expectation is the same as without: you
 understand the change, you ran the gate, and you say what you ran and what you did not.
@@ -17,35 +17,35 @@ you send them, including fixes you find here and want to upstream.
 
 ## Layout of the tree
 
-    crates/rustd/             the daemon, the cargo drop-in, the splice, the remote
-    crates/rustd/src/bin/     cargo-rustd
+    crates/ra-jit/             the daemon, the cargo drop-in, the splice, the remote
+    crates/ra-jit/src/bin/     cargo-ra-jit
     crates/hir-ty-codegen/    the code generator: MIR to Cranelift IR, the producers, the store
-    crates/rustd-wasm/        experiment: the compiler running in a web page (not in the workspace)
+    crates/ra-jit-wasm/        experiment: the compiler running in a web page (not in the workspace)
     harness/                  the test harnesses and their fixtures
     demo/                     small projects the harnesses and the scoreboard build
     docs/                     these documents
     docs/reports/             working reports, one per piece of work, as written at the time
     SECURITY.md               what to know before sharing a store, and how to report a problem
-    vendor/rust-analyzer/     rust-analyzer with rustd's changes, a git submodule
+    vendor/rust-analyzer/     rust-analyzer with ra-jit's changes, a git submodule
     vendor/rustc_abi/         rustc's layout crate, copied from the 1.99.0 tag
     vendor/source.rev         the commit of the old development branch this tree last took from
 
 `crates/hir-ty-codegen` is not a crate. It is the module `hir_ty::mir::codegen`, which uses
-private items of `hir-ty`. It is kept outside the submodule because all of it is rustd's:
+private items of `hir-ty`. It is kept outside the submodule because all of it is ra-jit's:
 `mir.rs` in the submodule declares the module with a `#[path]` that points back here. So
 the submodule builds only as part of this repository.
 
 ## rust-analyzer
 
 `vendor/rust-analyzer` is a submodule of this same repository, on its `rust-analyzer`
-branch. That branch is upstream rust-analyzer at the commit rustd forked from
-(`dd5ed69d4b`) with rustd's changes committed on top: about 160 files in 24 crates. `main`
+branch. That branch is upstream rust-analyzer at the commit ra-jit forked from
+(`dd5ed69d4b`) with ra-jit's changes committed on top: about 160 files in 24 crates. `main`
 records which commit of that branch it builds with, as git does for any submodule.
 
 After cloning:
 
     git clone --recursive https://github.com/DioxusLabs/rustd
-    cargo +1.99.0 build -p rustd --release
+    cargo +1.99.0 build -p ra-jit --release
 
 or `git submodule update --init` in a clone made without `--recursive`. There is nothing
 else to run. After a pull that moves the submodule, `git submodule update` again.
@@ -68,8 +68,8 @@ Push the submodule before `main`, or `main` names a commit nobody else can fetch
 commits of `main` name commits on it.
 
 A change to rust-analyzer should be something rust-analyzer could take: a bug fix in MIR
-lowering or inference, a missing piece of the language, an accessor rustd needs. Code that
-is only rustd's belongs in `crates/hir-ty-codegen` or `crates/rustd`, where a change is one
+lowering or inference, a missing piece of the language, an accessor ra-jit needs. Code that
+is only ra-jit's belongs in `crates/hir-ty-codegen` or `crates/ra-jit`, where a change is one
 ordinary commit. Fixes that are simply rust-analyzer bugs should be sent upstream, under
 their rules.
 
@@ -90,10 +90,10 @@ exercised.
 ### Where the history is
 
 `main` began as a tree generated from a development branch that was rust-analyzer's tree
-with rustd's changes made in place. That branch and its history are kept as
-`rustd-collate` and `rustd-spike`. `publish/split.py` there is what wrote this layout.
+with ra-jit's changes made in place. That branch and its history are kept as
+`ra-jit-collate` and `ra-jit-spike`. `publish/split.py` there is what wrote this layout.
 
-The toolchain is a separate pin. rustd is built for Rust 1.99.0 and `vendor/rustc_abi` is
+The toolchain is a separate pin. ra-jit is built for Rust 1.99.0 and `vendor/rustc_abi` is
 rustc's crate from that tag. Moving to another Rust version means taking the new
 `rustc_abi`, rechecking everything that mirrors rustc (the Rust ABI in the code generator,
 `vtable.rs`, `type_id.rs`, symbol names in `symbols.rs`), and running rustc's own test
@@ -101,7 +101,7 @@ suites through `uitest.py` and `libsuite.py` again.
 
 ## Rules for code
 
-1. **rustc is the reference.** If rustd's program behaves differently from rustc's, rustd
+1. **rustc is the reference.** If ra-jit's program behaves differently from rustc's, ra-jit
    is wrong, even where rustc's behaviour looks like an accident.
 2. **Never guess.** Input the code generator has no explicit lowering for is refused with a
    reason (`CodegenError`), not lowered on a best-effort basis. A refusal is visible and
@@ -114,7 +114,7 @@ suites through `uitest.py` and `libsuite.py` again.
 Style follows rust-analyzer's guide
 (`vendor/rust-analyzer/docs/book/src/contributing/style.md`): `cargo fmt`, no new
 dependencies without a reason, small focused changes. Comments say what the code is for and
-why, not what was changed. Messages printed to the user say what happened and what rustd
+why, not what was changed. Messages printed to the user say what happened and what ra-jit
 did about it in one line.
 
 ## What a change needs
@@ -125,7 +125,7 @@ did about it in one line.
 - The gate, under Cranelift and under LLVM, on the platform you have. Say which platforms
   you did not run. CI covers Linux x86-64, Linux AArch64, Windows and macOS.
 - `cargo fmt --all -- --check` and
-  `cargo test --release -p hir-ty -p hir-def -p parser -p syntax -p rustd`.
+  `cargo test --release -p hir-ty -p hir-def -p parser -p syntax -p ra-jit`.
 - For anything that changes numbers in [results.md](results.md): the command, the commit
   and the machine, so the entry can be replaced and not just appended to.
 
@@ -134,5 +134,5 @@ under `docs/reports/` do this and it is the reason they can be used.
 
 ## Licence
 
-rustd is MIT or Apache-2.0, like rust-analyzer. Contributions are accepted under the same
+ra-jit is MIT or Apache-2.0, like rust-analyzer. Contributions are accepted under the same
 terms.

@@ -23,7 +23,7 @@
 //!
 //! A record is the key, the length of the value, a checksum of all three and the value. The
 //! key on disk is not the caller's: it is hashed together with [`Identity`], so that a value
-//! is only ever found by the build of rustd that wrote it, for the toolchain it wrote it for.
+//! is only ever found by the build of ra-jit that wrote it, for the toolchain it wrote it for.
 //!
 //! # Why daemons that share a directory do not corrupt it
 //!
@@ -54,7 +54,7 @@ pub(super) const KEY: usize = 32;
 /// The format of the directory, of a pack and of a record. A change to any of them is
 /// another number here and another last byte of [`MAGIC`].
 pub const FORMAT: u32 = 2;
-const MAGIC: &[u8; 8] = b"rustdpk\x02";
+const MAGIC: &[u8; 8] = b"rajitpk\x02";
 const VERSION_FILE: &str = "version";
 const LOCK_FILE: &str = "lock";
 /// The key, the length of the value and the checksum of the record.
@@ -66,7 +66,7 @@ const SEAL_AT: u64 = 4 << 20;
 const ROLL_AFTER: u64 = 16;
 /// Records wait in memory until there are this many bytes of them, or the build ends.
 const WRITE_AT: usize = 64 << 10;
-/// What the packs of a store may take when `RUSTD_CACHE_MAX` does not say.
+/// What the packs of a store may take when `RA_JIT_CACHE_MAX` does not say.
 const DEFAULT_LIMIT: u64 = 8 << 30;
 /// More sealed packs than this that are smaller than [`SEAL_AT`] are made one: every daemon
 /// that ends leaves one behind.
@@ -101,13 +101,13 @@ fn program() -> Option<[u8; KEY]> {
 /// Reads the executable on a thread of its own, for the store that is opened once the
 /// workspace is loaded: it is tens of megabytes to hash.
 pub fn identify_ahead() {
-    if std::env::var_os("RUSTD_CACHE").is_some_and(|it| !is_off(&it)) {
+    if std::env::var_os("RA_JIT_CACHE").is_some_and(|it| !is_off(&it)) {
         std::thread::spawn(program);
     }
 }
 
 /// What a value depends on that its key does not say: the format it is written in, the build
-/// of rustd that made it and the toolchain it was made for.
+/// of ra-jit that made it and the toolchain it was made for.
 #[derive(Clone, Copy)]
 struct Identity([u8; KEY]);
 
@@ -150,15 +150,15 @@ pub fn parse_size(text: &str) -> Option<u64> {
     digits.parse::<u64>().ok()?.checked_mul(1 << shift)
 }
 
-/// The most the packs of a store may take, from `RUSTD_CACHE_MAX`: a size, or `off` for no
+/// The most the packs of a store may take, from `RA_JIT_CACHE_MAX`: a size, or `off` for no
 /// limit.
 pub fn limit_from_env() -> Result<Option<u64>, String> {
-    match std::env::var("RUSTD_CACHE_MAX") {
+    match std::env::var("RA_JIT_CACHE_MAX") {
         Err(_) => Ok(Some(DEFAULT_LIMIT)),
         Ok(text) if text == "off" => Ok(None),
         Ok(text) => parse_size(&text)
             .map(Some)
-            .ok_or_else(|| format!("RUSTD_CACHE_MAX=`{text}` is neither a size nor `off`")),
+            .ok_or_else(|| format!("RA_JIT_CACHE_MAX=`{text}` is neither a size nor `off`")),
     }
 }
 
@@ -170,7 +170,7 @@ pub fn pack_name(bytes: &[u8]) -> Option<String> {
 
 /// The keys of the records of the pack `name`, in the order they were added, if its bytes are
 /// what its name says and every record is as it was written. They are the keys as they are
-/// on disk, which only the build of rustd that wrote them can make.
+/// on disk, which only the build of ra-jit that wrote them can make.
 pub fn pack_keys(name: &str, bytes: &[u8]) -> Result<Vec<[u8; KEY]>, &'static str> {
     Ok(Pack::check(name, bytes)?.into_iter().map(|it| it.key).collect())
 }
@@ -482,7 +482,7 @@ impl StoreDir {
             Some(FORMAT) => return Ok(()),
             Some(newer) if newer > FORMAT => {
                 return Err(io::Error::other(format!(
-                    "the store is of format {newer}, and this rustd reads format {FORMAT}"
+                    "the store is of format {newer}, and this ra-jit reads format {FORMAT}"
                 )));
             }
             _ => {}
@@ -495,7 +495,7 @@ impl StoreDir {
         if discarded != 0 {
             eprintln!("store: {discarded} files of another format discarded");
         }
-        self.write_whole(VERSION_FILE, format!("rustd store {FORMAT}\n").as_bytes())
+        self.write_whole(VERSION_FILE, format!("ra-jit store {FORMAT}\n").as_bytes())
     }
 
     /// Refuses a directory that is another user's or that others can write to: whoever
@@ -540,7 +540,7 @@ impl StoreDir {
         if let Ok(text) = self.read(VERSION_FILE) {
             // Text that is no version is of no format this build knows how to read.
             let text = String::from_utf8_lossy(&text);
-            let format = text.trim().strip_prefix("rustd store ").and_then(|it| it.parse().ok());
+            let format = text.trim().strip_prefix("ra-jit store ").and_then(|it| it.parse().ok());
             return Some(format.unwrap_or(0));
         }
         // A daemon that ended while it was saying which format the store is of left only
@@ -888,13 +888,13 @@ struct Tuning {
 }
 
 impl Tuning {
-    /// `RUSTD_CACHE_MAX` and `RUSTD_CACHE_SEAL_AT`, a size each.
+    /// `RA_JIT_CACHE_MAX` and `RA_JIT_CACHE_SEAL_AT`, a size each.
     fn from_env() -> io::Result<Tuning> {
         let limit = limit_from_env().map_err(io::Error::other)?;
-        let seal_at = match std::env::var("RUSTD_CACHE_SEAL_AT") {
+        let seal_at = match std::env::var("RA_JIT_CACHE_SEAL_AT") {
             Err(_) => SEAL_AT,
             Ok(text) => parse_size(&text).filter(|&it| it != 0).ok_or_else(|| {
-                io::Error::other(format!("RUSTD_CACHE_SEAL_AT=`{text}` is not a size"))
+                io::Error::other(format!("RA_JIT_CACHE_SEAL_AT=`{text}` is not a size"))
             })?,
         };
         Ok(Tuning { seal_at, limit })
@@ -968,19 +968,19 @@ struct New {
     pending: Vec<u8>,
 }
 
-/// Whether a value of `RUSTD_CACHE` says there is to be no store.
+/// Whether a value of `RA_JIT_CACHE` says there is to be no store.
 pub fn is_off(value: &std::ffi::OsStr) -> bool {
     value.is_empty() || value == "off" || value == "0"
 }
 
 impl Store {
-    /// The store of this process: the directory `RUSTD_CACHE` names, when it names one. A
+    /// The store of this process: the directory `RA_JIT_CACHE` names, when it names one. A
     /// directory that cannot be used is said once, and the process compiles without one.
     pub(super) fn global() -> Option<&'static Store> {
         static STORE: OnceLock<Option<Store>> = OnceLock::new();
         STORE
             .get_or_init(|| {
-                let dir = std::env::var_os("RUSTD_CACHE").filter(|it| !is_off(it))?;
+                let dir = std::env::var_os("RA_JIT_CACHE").filter(|it| !is_off(it))?;
                 let opened = Identity::current().and_then(|identity| {
                     Store::open(Path::new(&dir), identity, Tuning::from_env()?)
                 });
@@ -1134,7 +1134,7 @@ impl Store {
     pub(super) fn settle_with(&self, settle: impl FnOnce() + Send + 'static) {
         self.settled();
         let Ok(mut settling) = self.settling.lock() else { return settle() };
-        match std::thread::Builder::new().name("rustd store settle".to_owned()).spawn(settle) {
+        match std::thread::Builder::new().name("ra-jit store settle".to_owned()).spawn(settle) {
             Ok(thread) => *settling = Some(thread),
             Err(e) => eprintln!("store: what this build added is not kept: {e}"),
         }
@@ -1509,7 +1509,7 @@ mod tests {
     const EAGER: Tuning = Tuning { seal_at: 1, limit: None };
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("rustd-store-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("ra-jit-store-{name}-{}", std::process::id()));
         _ = std::fs::remove_dir_all(&dir);
         dir
     }
@@ -1644,8 +1644,8 @@ mod tests {
         let dir = scratch("older");
         std::fs::create_dir_all(&dir).unwrap();
         let old = dir.join(named(&[3; KEY]));
-        std::fs::write(&old, b"rustdpk\x01 what the first format wrote").unwrap();
-        std::fs::write(dir.join("1-2.open"), b"rustdpk\x01").unwrap();
+        std::fs::write(&old, b"rajitpk\x01 what the first format wrote").unwrap();
+        std::fs::write(dir.join("1-2.open"), b"rajitpk\x01").unwrap();
         std::fs::write(dir.join("notes.txt"), b"not the store's").unwrap();
         assert_eq!(StoreDir::at(&dir).format(), Some(1));
         let store = open(&dir, EAGER);
@@ -1663,7 +1663,7 @@ mod tests {
         let dir = scratch("unsaid");
         std::fs::create_dir_all(&dir).unwrap();
         let begun = dir.join(format!("{VERSION_FILE}.1-2.tmp"));
-        std::fs::write(&begun, b"rustd st").unwrap();
+        std::fs::write(&begun, b"ra-jit st").unwrap();
         assert_eq!(StoreDir::at(&dir).format(), None);
         let store = open(&dir, EAGER);
         assert_eq!(StoreDir::at(&dir).format(), Some(FORMAT));
@@ -1677,8 +1677,8 @@ mod tests {
         let dir = scratch("newer");
         std::fs::create_dir_all(&dir).unwrap();
         let theirs = dir.join(named(&[3; KEY]));
-        std::fs::write(&theirs, b"rustdpk\x09 from the future").unwrap();
-        std::fs::write(dir.join(VERSION_FILE), format!("rustd store {}\n", FORMAT + 1)).unwrap();
+        std::fs::write(&theirs, b"rajitpk\x09 from the future").unwrap();
+        std::fs::write(dir.join(VERSION_FILE), format!("ra-jit store {}\n", FORMAT + 1)).unwrap();
         let refused = Store::open(&dir, identity("a toolchain"), EAGER).err().unwrap();
         assert!(refused.to_string().contains("format"), "{refused}");
         assert!(theirs.exists());
@@ -1954,8 +1954,8 @@ mod tests {
         let name = pack.file_name().unwrap().to_str().unwrap();
         let mut bytes = std::fs::read(&pack).unwrap();
         assert_eq!(pack_format(&bytes), Some(FORMAT));
-        assert_eq!(pack_format(b"rustdpk\x01 of the first format"), Some(1));
-        assert_eq!(pack_format(b"rustdpk"), None);
+        assert_eq!(pack_format(b"rajitpk\x01 of the first format"), Some(1));
+        assert_eq!(pack_format(b"rajitpk"), None);
         assert_eq!(pack_format(b"something else"), None);
         let keys = [1, 2].map(|key| identity("a toolchain").key(&[key; KEY]));
         assert_eq!(pack_keys(name, &bytes).unwrap(), keys);

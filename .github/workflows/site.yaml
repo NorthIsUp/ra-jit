@@ -8,7 +8,7 @@ on:
     branches: [main]
     paths:
       - "site/**"
-      - "crates/rustd-wasm/**"
+      - "crates/ra-jit-wasm/**"
       # What the compiler in the playground is built from.
       - "crates/hir-ty-codegen/**"
       - "vendor/rust-analyzer"
@@ -16,7 +16,7 @@ on:
   pull_request:
     paths:
       - "site/**"
-      - "crates/rustd-wasm/**"
+      - "crates/ra-jit-wasm/**"
       - "crates/hir-ty-codegen/**"
       - "vendor/rust-analyzer"
       - ".github/workflows/site.yaml"
@@ -45,13 +45,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-provider: "warpbuild"
-          workspaces: "crates/rustd-wasm -> ../../target"
+          workspaces: "crates/ra-jit-wasm -> ../../target"
       - name: Playground
-        run: crates/rustd-wasm/web/build-site.sh
+        run: crates/ra-jit-wasm/web/build-site.sh
       - name: Playground is in the site
         run: |
-          for file in manifest.json rustd_wasm.wasm.gz core.bundle.gz; do
-            test -s "site/playground/rustd/pkg/$file"
+          for file in manifest.json ra_jit_wasm.wasm.gz core.bundle.gz; do
+            test -s "site/playground/ra-jit/pkg/$file"
           done
       - uses: actions/configure-pages@v5
         if: github.event_name != 'pull_request'

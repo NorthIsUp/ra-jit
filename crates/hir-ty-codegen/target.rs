@@ -1,5 +1,5 @@
-//! What rustd emits code for. The target is an input of the process, named by its triple
-//! (`rustd --target <triple>`), and the host when nothing names one. Everything in the
+//! What ra-jit emits code for. The target is an input of the process, named by its triple
+//! (`ra-jit --target <triple>`), and the host when nothing names one. Everything in the
 //! backend that differs between platforms asks the [`Target`] for the property it depends
 //! on (architecture, object format, calling convention, unwind tables) and never asks what
 //! the daemon itself was built for.
@@ -146,7 +146,7 @@ impl Target {
             Some("x86_64") => Arch::X86_64,
             Some("aarch64") => Arch::Aarch64,
             Some("wasm32") => Arch::Wasm32,
-            _ => return Err(format!("rustd emits no code for the architecture of {triple}")),
+            _ => return Err(format!("ra-jit emits no code for the architecture of {triple}")),
         };
         let system = parts.find(|part| matches!(*part, "linux" | "darwin" | "windows"));
         // Cranelift's names for the C convention: `SystemV` is the psABI's on x86-64 and
@@ -163,7 +163,7 @@ impl Target {
             }
             // FIXME: x86-64 Mach-O and AArch64 PE have no splice written for them, and the
             // GNU flavour of Windows unwinds another way than the tables of `unwind::seh`.
-            _ => return Err(format!("rustd emits no code for the system of {triple}")),
+            _ => return Err(format!("ra-jit emits no code for the system of {triple}")),
         };
         Ok(Target { triple: triple.to_owned(), arch, object_format, call_conv, unwind })
     }

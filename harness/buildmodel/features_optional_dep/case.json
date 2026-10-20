@@ -10,7 +10,7 @@
     "--features",
     "with-opt"
   ],
-  "rustd": [
+  "ra-jit": [
     "--features",
     "with-opt"
   ]

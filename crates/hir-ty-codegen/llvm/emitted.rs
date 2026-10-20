@@ -2,7 +2,7 @@
 //!
 //! The code is the function's section. Constants LLVM put in sections of their own (jump
 //! tables, float literals) are laid out after it in the same bytes, and what the code says
-//! about where they are is filled in here, so that the rest of rustd sees one piece of code
+//! about where they are is filled in here, so that the rest of ra-jit sees one piece of code
 //! that refers to nothing but what the function asked for.
 
 use cranelift_codegen::{

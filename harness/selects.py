@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""selects.py: rustd runs no build script and no proc macro that cargo would not have.
+"""selects.py: ra-jit runs no build script and no proc macro that cargo would not have.
 
 A build script and a proc macro are programs of the checkout, and they run with the rights
-of the user under cargo and under rustd alike. What rustd must not do is run one cargo
+of the user under cargo and under ra-jit alike. What ra-jit must not do is run one cargo
 would have left alone: the script of a dev-dependency or of another member of the
 workspace for a build of one program, or a proc macro only the tests use.
 
 Every script and macro of the workspace here writes a line when it runs. The same
-selection is given to cargo and to rustd, each on a copy of the workspace nothing was
-built in, and every line rustd's build wrote has to be one cargo's wrote.
+selection is given to cargo and to ra-jit, each on a copy of the workspace nothing was
+built in, and every line ra-jit's build wrote has to be one cargo's wrote.
 
     python3 selects.py
 """
@@ -17,7 +17,7 @@ import os, shutil, subprocess, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from storelib import scratch
-from difftest import RUSTD, sysroot_rlibs
+from difftest import RA_JIT, sysroot_rlibs
 
 MARK = '''
 fn mark(what: &str) {
@@ -31,7 +31,7 @@ fn mark(what: &str) {
 '''
 PACKAGE = '[package]\nname = "%s"\nversion = "0.1.0"\nedition = "2021"\n'
 
-# What cargo is asked for, and the same said to rustd.
+# What cargo is asked for, and the same said to ra-jit.
 SELECTIONS = [
     ("one program", ["build", "-p", "app"], ["--package", "app"]),
     ("its tests", ["test", "--no-run", "-p", "app"], ["--package", "app", "--cfg-test"]),
@@ -87,23 +87,23 @@ def by_cargo(work, args):
     return ran(ws)
 
 
-def by_rustd(work, args):
-    ws = fresh(work, "rustd")
+def by_ra_jit(work, args):
+    ws = fresh(work, "ra-jit")
     symbols = [x for rlib in sysroot_rlibs() for x in ("--symbols", rlib)]
-    done = subprocess.run([RUSTD, ws, "--crate", "dep", "--crate", "app", "--out", os.path.join(work, "app.o"),
+    done = subprocess.run([RA_JIT, ws, "--crate", "dep", "--crate", "app", "--out", os.path.join(work, "app.o"),
                            *args, *symbols], capture_output=True, text=True)
     if done.returncode != 0:
-        raise SystemExit(f"rustd {' '.join(args)} failed:\n{done.stderr[-2000:]}")
+        raise SystemExit(f"ra-jit {' '.join(args)} failed:\n{done.stderr[-2000:]}")
     return ran(ws)
 
 
-WORK = scratch("rustd-selects-")
+WORK = scratch("ra-jit-selects-")
 wrong = 0
-for what, cargo_args, rustd_args in SELECTIONS:
-    cargos, rustds = by_cargo(WORK, cargo_args), by_rustd(WORK, rustd_args)
-    more = sorted(rustds - cargos)
+for what, cargo_args, ra_jit_args in SELECTIONS:
+    cargos, rajits = by_cargo(WORK, cargo_args), by_ra_jit(WORK, ra_jit_args)
+    more = sorted(rajits - cargos)
     wrong += bool(more)
-    print(f"  {what}: cargo ran {len(cargos)} ({', '.join(sorted(cargos))}); rustd ran {len(rustds)}"
+    print(f"  {what}: cargo ran {len(cargos)} ({', '.join(sorted(cargos))}); ra-jit ran {len(rajits)}"
           + (f", WRONG: cargo did not run {', '.join(more)}" if more else ", none that cargo did not"))
 shutil.rmtree(WORK, ignore_errors=True)
 if wrong:

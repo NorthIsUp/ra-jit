@@ -15,7 +15,7 @@ Each worker has a checkout of the stress workspace and a store of its own. A kil
            pack that grows, a pack that gets its name, a merged pack on its way to its name
 
 The moment is random, SIGKILL is the signal, and the daemons are started with sizes that make
-them seal, merge and evict on nearly every build. After every kill `rustd cache verify` has to
+them seal, merge and evict on nearly every build. After every kill `ra-jit cache verify` has to
 find nothing in the store that is not what was written, and a new daemon on the same store
 has to build a program that prints what cargo's does.
 
@@ -36,14 +36,14 @@ KILLS, WORKERS, SEED = option("--kills", 300), option("--workers", 4), option("-
 MODES = ["cold", "start", "start", "edit", "edit", "settle", "write", "write"]
 # What a daemon is started with: packs sealed at every build or seldom, a store with room or one
 # that evicts all the time.
-SIZES = [{"RUSTD_CACHE_SEAL_AT": "1"}, {"RUSTD_CACHE_SEAL_AT": "1", "RUSTD_CACHE_MAX": "2M"},
-         {"RUSTD_CACHE_SEAL_AT": "64K", "RUSTD_CACHE_MAX": "off"}, {}]
+SIZES = [{"RA_JIT_CACHE_SEAL_AT": "1"}, {"RA_JIT_CACHE_SEAL_AT": "1", "RA_JIT_CACHE_MAX": "2M"},
+         {"RA_JIT_CACHE_SEAL_AT": "64K", "RA_JIT_CACHE_MAX": "off"}, {}]
 
 
 class Worker:
     def __init__(self, number, kills):
         self.rng = random.Random(SEED * 1000 + number)
-        self.work = scratch(f"rustd-storekills-{number}-")
+        self.work = scratch(f"ra-jit-storekills-{number}-")
         self.store = os.path.join(self.work, "store")
         self.checkout = Checkout(self.work)
         self.kills, self.number = kills, number

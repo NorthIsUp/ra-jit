@@ -3,7 +3,7 @@
 
 usage: shapes.py [crate[,crate...]]
 
-Builds the crates of bench2 once with RUSTD_SHAPES set and folds the functions the way a linker's
+Builds the crates of bench2 once with RA_JIT_SHAPES set and folds the functions the way a linker's
 identical-code folding does: two functions are the same when their bytes and relocations are, and
 what they refer to is the same after folding. Reports how many functions, bytes and compile
 seconds are left, by kind of function and for the derives.
@@ -13,7 +13,7 @@ from collections import Counter, defaultdict
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 os.environ.setdefault("RUSTUP_TOOLCHAIN", open(os.path.join(HERE, "toolchain")).read().strip())
-from difftest import Fixture, RUSTD, sysroot_rlibs
+from difftest import Fixture, RA_JIT, sysroot_rlibs
 
 
 def load(path):
@@ -64,8 +64,8 @@ def main():
     log = os.path.join(fx.work, "shapes.tsv")
     symbols = [x for rlib in fx.rlibs + sysroot_rlibs() for x in ("--symbols", rlib)]
     args = [x for name in crates for x in ("--crate", name)]
-    subprocess.run([RUSTD, fx.ws, *args, "--out", os.path.join(fx.work, "rustd.o"), *symbols],
-                   env={**os.environ, "RUSTD_SHAPES": log}, check=True, capture_output=True)
+    subprocess.run([RA_JIT, fx.ws, *args, "--out", os.path.join(fx.work, "ra-jit.o"), *symbols],
+                   env={**os.environ, "RA_JIT_SHAPES": log}, check=True, capture_output=True)
     origins, codes = load(log)
     total = len(codes)
     size = sum(c[0] for c in codes.values())

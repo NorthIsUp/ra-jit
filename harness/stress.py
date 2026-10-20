@@ -4,7 +4,7 @@
 usage: stress.py [--only TEXT] [--from N] [--keep]
 
 Copies harness/stress (three crates) to a scratch directory, starts the daemon on all of them, and
-applies STEPS in order. The edits stay: each step builds on the ones before. After each, `rustd
+applies STEPS in order. The edits stay: each step builds on the ones before. After each, `ra-jit
 sync` is asked for a build, the program is run, and `cargo build` of the same source is run and its
 program's output compared. A step marked broken is one cargo rejects: the daemon has to say
 so and survive it. Writes STRESS.md.
@@ -14,7 +14,7 @@ import json, os, re, shlex, shutil, subprocess, sys, tempfile, time
 HERE = os.path.dirname(os.path.abspath(__file__))
 os.environ.setdefault("RUSTUP_TOOLCHAIN", open(os.path.join(HERE, "toolchain")).read().strip())
 import linkline
-from difftest import Fixture, RUSTD, sysroot_rlibs, RUNNER, TARGET_ARGS, built, toolchain
+from difftest import Fixture, RA_JIT, sysroot_rlibs, RUNNER, TARGET_ARGS, built, toolchain
 
 BASE, SHAPES, STACK = "base/src/lib.rs", "base/src/shapes.rs", "base/src/stack.rs"
 MID, TEXT, TASKS = "mid/src/lib.rs", "mid/src/text.rs", "mid/src/tasks.rs"
@@ -202,12 +202,12 @@ STEPS = [
 
 def main():
     only = sys.argv[sys.argv.index("--only") + 1] if "--only" in sys.argv else None
-    ws = tempfile.mkdtemp(prefix="rustd-stress-")
+    ws = tempfile.mkdtemp(prefix="ra-jit-stress-")
     shutil.copytree(os.path.join(HERE, "stress"), ws, dirs_exist_ok=True, ignore=shutil.ignore_patterns("target"))
     crates = ["sapp", "sbase", "smid"]
-    work = tempfile.mkdtemp(prefix="rustd-stress-out-")
-    obj, patch, binary = (os.path.join(work, n) for n in ("rustd.o", "rustd.patch.o", "bin-rustd"))
-    socket, log_path = os.path.join(work, "rustd.sock"), os.path.join(work, "daemon.log")
+    work = tempfile.mkdtemp(prefix="ra-jit-stress-out-")
+    obj, patch, binary = (os.path.join(work, n) for n in ("ra-jit.o", "ra-jit.patch.o", "bin-ra-jit"))
+    socket, log_path = os.path.join(work, "ra-jit.sock"), os.path.join(work, "daemon.log")
     # Cargo's reference build has its own directory: the daemon links against the rlibs of the
     # build it started from.
     reference = os.path.join(work, "reference")
@@ -219,15 +219,15 @@ def main():
         fx.rustc_build()
         symbols = [x for rlib in fx.rlibs + sysroot_rlibs() for x in ("--symbols", rlib)]
         link = list(fx.link_args)
-        link = linkline.with_output(linkline.ahead(link, [patch, obj], RUSTD), binary)
+        link = linkline.with_output(linkline.ahead(link, [patch, obj], RA_JIT), binary)
         for path in (socket, binary):
             if os.path.exists(path):
                 os.remove(path)
         seen = len(open(log_path).read())
-        # Edits are added to the linked binary where that can be done; RUSTD_SPLICE=0 links each in full.
+        # Edits are added to the linked binary where that can be done; RA_JIT_SPLICE=0 links each in full.
         splice = ["--binary", binary]
         daemon = subprocess.Popen(
-            [RUSTD, ws, *[x for c in crates for x in ("--crate", c)], "--out", obj, "--socket", socket,
+            [RA_JIT, ws, *[x for c in crates for x in ("--crate", c)], "--out", obj, "--socket", socket,
              "--patch", patch, "--link-cmd", linkline.join(link), *splice, *symbols], stderr=out, stdout=out)
         while "watching" not in open(log_path).read()[seen:]:
             if daemon.poll() is not None:
@@ -299,12 +299,12 @@ def main():
                     open(path, "a").write(op[2])
                 elif op[0] == "delete":
                     os.remove(path)
-        if os.environ.get("RUSTD_PATCH_FIRST"):
+        if os.environ.get("RA_JIT_PATCH_FIRST"):
             # The edit is first built for a request that does not link.
-            subprocess.run([RUSTD, "patch", socket], capture_output=True, text=True, timeout=120)
+            subprocess.run([RA_JIT, "patch", socket], capture_output=True, text=True, timeout=120)
         asked = time.time()
         try:
-            asked_for = subprocess.run([RUSTD, "sync", socket], capture_output=True, text=True, timeout=120)
+            asked_for = subprocess.run([RA_JIT, "sync", socket], capture_output=True, text=True, timeout=120)
             reply = asked_for.stdout.strip() or asked_for.stderr.strip().removeprefix("Error: daemon: ")
         except subprocess.TimeoutExpired:
             reply = "no reply in 120 s"

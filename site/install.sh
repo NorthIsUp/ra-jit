@@ -1,19 +1,19 @@
 #!/bin/sh
-# Installs rustd, cargo-rustd and rustd-rustc from a GitHub release.
+# Installs ra-jit, cargo-ra-jit and ra-jit-rustc from a GitHub release.
 #
 #   curl -fsSL https://dioxuslabs.github.io/rustd/install.sh | sh
 #
-# RUSTD_VERSION names the release: the latest numbered one unless set, or the newest build
+# RA_JIT_VERSION names the release: the latest numbered one unless set, or the newest build
 # of main (`nightly`) while there is none.
-# RUSTD_INSTALL_DIR is where the three binaries go (cargo's bin directory unless set).
+# RA_JIT_INSTALL_DIR is where the three binaries go (cargo's bin directory unless set).
 set -eu
 
 repo=https://github.com/DioxusLabs/rustd
-version=${RUSTD_VERSION:-latest}
-dir=${RUSTD_INSTALL_DIR:-${CARGO_HOME:-$HOME/.cargo}/bin}
+version=${RA_JIT_VERSION:-latest}
+dir=${RA_JIT_INSTALL_DIR:-${CARGO_HOME:-$HOME/.cargo}/bin}
 toolchain=1.99.0
 
-say() { printf 'rustd: %s\n' "$*" >&2; }
+say() { printf 'ra-jit: %s\n' "$*" >&2; }
 fail() { say "$*"; exit 1; }
 
 case "$(uname -s) $(uname -m)" in
@@ -31,7 +31,7 @@ fi
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-archive=rustd-$target.tar.gz
+archive=ra-jit-$target.tar.gz
 
 say "downloading $from/$archive"
 if ! curl -fsSL "$from/$archive" -o "$work/$archive" 2> /dev/null; then
@@ -53,22 +53,22 @@ fi
 
 tar xzf "$work/$archive" -C "$work"
 mkdir -p "$dir"
-for bin in rustd cargo-rustd rustd-rustc; do
+for bin in ra-jit cargo-ra-jit ra-jit-rustc; do
     # Moved into place, so that a daemon that is running keeps the file it started from.
-    cp "$work/rustd-$target/$bin" "$dir/.$bin.new"
+    cp "$work/ra-jit-$target/$bin" "$dir/.$bin.new"
     chmod 755 "$dir/.$bin.new"
     mv -f "$dir/.$bin.new" "$dir/$bin"
 done
-say "installed rustd, cargo-rustd and rustd-rustc in $dir"
+say "installed ra-jit, cargo-ra-jit and ra-jit-rustc in $dir"
 
 case ":$PATH:" in
     *":$dir:"*) ;;
     *) say "$dir is not on your PATH" ;;
 esac
 if ! command -v rustup > /dev/null; then
-    say "rustup was not found: rustd needs Rust $toolchain with rust-src"
+    say "rustup was not found: ra-jit needs Rust $toolchain with rust-src"
 elif ! rustup component list --toolchain "$toolchain" --installed 2> /dev/null | grep -q '^rust-src'; then
-    say "rustd needs Rust $toolchain with rust-src:"
+    say "ra-jit needs Rust $toolchain with rust-src:"
     say "    rustup toolchain install $toolchain --component rust-src"
 fi
-say "in a cargo project built with $toolchain: cargo rustd run"
+say "in a cargo project built with $toolchain: cargo ra-jit run"

@@ -5,7 +5,7 @@
 // panic: panicked at src/main.rs:353:497:
 // attempt to subtract with overflow
 // c13 0000000000000000 ok
-// rustd:
+// ra-jit:
 // panic: panicked at src/main.rs:353:495:
 // attempt to subtract with overflow
 // c13 0000000000000000 ok

@@ -1,43 +1,43 @@
 #!/usr/bin/env python3
-"""Differential test: build a binary with rustc, rebuild chosen crates with rustd, compare behaviour.
+"""Differential test: build a binary with rustc, rebuild chosen crates with ra-jit, compare behaviour.
 
 usage: difftest.py <workspace> --bin <package> --crate <name> [--crate <name> ...] [--bisect]
 
-Exit code 0 when stdout, stderr and exit status match. With --bisect, each rustd function is
+Exit code 0 when stdout, stderr and exit status match. With --bisect, each ra-jit function is
 also linked in on its own to name the ones that change behaviour.
 
-RUSTD_TARGET=wasm32-wasip1 builds both sides for that target and runs them under wasmtime
-(RUSTD_WASM_RUNNER names another runner); the other harnesses take it the same way. See
+RA_JIT_TARGET=wasm32-wasip1 builds both sides for that target and runs them under wasmtime
+(RA_JIT_WASM_RUNNER names another runner); the other harnesses take it the same way. See
 WASM32.md.
 """
 import re
 import argparse, glob, json, os, shlex, subprocess, sys, tempfile, time
 import linkline
 
-# rustd computes layouts with rust-analyzer's copy of rustc_abi, so everything it links against
+# ra-jit computes layouts with rust-analyzer's copy of rustc_abi, so everything it links against
 # has to come from the rustc that copy was taken from.
 os.environ.setdefault("RUSTUP_TOOLCHAIN", open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "toolchain")).read().strip())
 
 # rustc makes what only one codegen unit uses local to it unless it is told to keep unused code.
-# rustd needs the symbols: a private `static mut` has to be the one object for both compilers.
+# ra-jit needs the symbols: a private `static mut` has to be the one object for both compilers.
 os.environ.setdefault("RUSTFLAGS", "-C link-dead-code")
 # Incremental caches of a sweep over many crates fill the disk.
 os.environ.setdefault("CARGO_INCREMENTAL", "0")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# A sweep runs against a copy, so rebuilding rustd meanwhile does not change it under the sweep.
+# A sweep runs against a copy, so rebuilding ra-jit meanwhile does not change it under the sweep.
 WINDOWS = os.name == "nt"
-RUSTD = os.environ.get("RUSTD_BIN") or os.path.join(ROOT, "target/release/rustd" + (".exe" if WINDOWS else ""))
+RA_JIT = os.environ.get("RA_JIT_BIN") or os.path.join(ROOT, "target/release/ra-jit" + (".exe" if WINDOWS else ""))
 
 
 def host():
     return subprocess.check_output(["rustc", "-vV"], text=True).split("host: ")[1].split()[0]
 
 
-# RUSTD_TARGET names the triple to build for when it is not the host. Cargo builds for it, rustd
-# emits for it, and the binaries run under what RUSTD_RUNNER names (for aarch64 Linux on another
+# RA_JIT_TARGET names the triple to build for when it is not the host. Cargo builds for it, ra-jit
+# emits for it, and the binaries run under what RA_JIT_RUNNER names (for aarch64 Linux on another
 # machine, qemu's user mode with the sysroot the cross linker links against).
-TARGET = os.environ.get("RUSTD_TARGET") or None
+TARGET = os.environ.get("RA_JIT_TARGET") or None
 CROSS = {
     "aarch64-unknown-linux-gnu": {"linker": "aarch64-linux-gnu-gcc", "runner": "qemu-aarch64 -L /usr/aarch64-linux-gnu",
                                   "binutils": "aarch64-linux-gnu-"},
@@ -47,16 +47,16 @@ if TARGET and TARGET != host():
     if "linker" in _cross:
         os.environ.setdefault(_env + "_LINKER", _cross["linker"])
     if "runner" in _cross:
-        os.environ.setdefault("RUSTD_RUNNER", _cross["runner"])
-        os.environ.setdefault(_env + "_RUNNER", os.environ["RUSTD_RUNNER"])
+        os.environ.setdefault("RA_JIT_RUNNER", _cross["runner"])
+        os.environ.setdefault(_env + "_RUNNER", os.environ["RA_JIT_RUNNER"])
 if TARGET:
-    # Every cargo a harness runs builds for the target, and so does every rustd.
+    # Every cargo a harness runs builds for the target, and so does every ra-jit.
     os.environ["CARGO_BUILD_TARGET"] = TARGET
 # What the names of strip and the like begin with for the target.
-BINUTILS = os.environ.get("RUSTD_BINUTILS") or (CROSS.get(TARGET, {}).get("binutils", "") if TARGET and TARGET != host() else "")
+BINUTILS = os.environ.get("RA_JIT_BINUTILS") or (CROSS.get(TARGET, {}).get("binutils", "") if TARGET and TARGET != host() else "")
 # What a built binary is started with.
-RUNNER = shlex.split(os.environ.get("RUSTD_RUNNER", ""))
-# What cargo and rustd take to build for the target.
+RUNNER = shlex.split(os.environ.get("RA_JIT_RUNNER", ""))
+# What cargo and ra-jit take to build for the target.
 TARGET_ARGS = ["--target", TARGET] if TARGET else []
 
 
@@ -103,8 +103,8 @@ def linker_line(output):
 WASM = bool(TARGET) and TARGET.startswith("wasm32")
 if WASM and not RUNNER:
     # What runs a wasm program, which gets the program and its arguments after it.
-    RUNNER = shlex.split(os.environ.get("RUSTD_WASM_RUNNER", "wasmtime run -W max-wasm-stack=8388608 -S inherit-env"))
-# What a link line gets after rustd's objects, which define again what rustc's do.
+    RUNNER = shlex.split(os.environ.get("RA_JIT_WASM_RUNNER", "wasmtime run -W max-wasm-stack=8388608 -S inherit-env"))
+# What a link line gets after ra-jit's objects, which define again what rustc's do.
 AHEAD = linkline.allowing_duplicates(WASM)
 
 
@@ -133,10 +133,10 @@ class Fixture:
     def __init__(self, workspace, crates, target, touch=None):
         """`target` selects what cargo links: ["-p", "app"] or ["--test", "name"]."""
         self.ws, self.crates, self.target_args = os.path.abspath(workspace), crates, target
-        self.work = tempfile.mkdtemp(prefix="rustd-diff-")
+        self.work = tempfile.mkdtemp(prefix="ra-jit-diff-")
         self.run_args = []
-        self.rustd_args = []
-        self.rustd_timeout = None
+        self.ra_jit_args = []
+        self.ra_jit_timeout = None
         self.layout_log = os.path.join(self.work, "layouts.tsv")
         if touch is None:
             meta = json.loads(subprocess.check_output(
@@ -144,15 +144,15 @@ class Fixture:
             touch = next(t["src_path"] for p in meta["packages"] if p["name"] == target[1]
                          for t in p["targets"] if "bin" in t["kind"])
         self.touch = touch
-        # Whether rustc builds stand-ins for the workspace's crates, all of their code being rustd's.
-        self.alone = bool(os.environ.get("RUSTD_ALONE"))
+        # Whether rustc builds stand-ins for the workspace's crates, all of their code being ra-jit's.
+        self.alone = bool(os.environ.get("RA_JIT_ALONE"))
 
     def rustc_build(self):
-        """Builds with cargo and captures the linker line so rustd objects can be spliced in."""
+        """Builds with cargo and captures the linker line so ra-jit objects can be spliced in."""
         os.utime(self.touch)
         env, target = dict(os.environ), []
         if self.alone:
-            env.update(RUSTC_WORKSPACE_WRAPPER=RUSTD, RUSTD_WRAPS_RUSTC="1",
+            env.update(RUSTC_WORKSPACE_WRAPPER=RA_JIT, RA_JIT_WRAPS_RUSTC="1",
                        CARGO_TARGET_DIR=os.path.join(self.ws, "target-alone"))
             target = ["--target", TARGET or host()]
         elif TARGET:
@@ -164,11 +164,11 @@ class Fixture:
             raise SystemExit(f"cargo failed:\n{out.stderr[-3000:]}")
         self.link_args = [a for a in linker_line(out.stdout + out.stderr) if not a.endswith("symbols.o")]
         self.reference = linkline.output_of(self.link_args)
-        # The target's own objects too: a crate rustd rebuilds may be the one being linked.
+        # The target's own objects too: a crate ra_jit rebuilds may be the one being linked.
         self.rlibs = [a for a in self.link_args if a.endswith((".rlib", ".rcgu.o"))]
 
-    def rustd_build(self, deny=()):
-        """Compiles each crate with rustd and links the objects ahead of rustc's rlibs."""
+    def ra_jit_build(self, deny=()):
+        """Compiles each crate with ra-jit and links the objects ahead of rustc's rlibs."""
         deny_file = os.path.join(self.work, "deny.txt")
         open(deny_file, "w").write("\n".join(deny))
         symbols = [x for rlib in self.rlibs + sysroot_rlibs() for x in ("--symbols", rlib)]
@@ -177,17 +177,17 @@ class Fixture:
             obj, report = (os.path.join(self.work, f"{label(crate)}.{ext}") for ext in ("o", "tsv"))
             try:
                 run = subprocess.run(
-                    [RUSTD, self.ws, *(x for c in crate.split(",") for x in ("--crate", c)), "--out", obj, "--report", report,
+                    [RA_JIT, self.ws, *(x for c in crate.split(",") for x in ("--crate", c)), "--out", obj, "--report", report,
                      "--deny", deny_file, "--isolate", os.path.join(self.work, f"{label(crate)}.isolated"),
-                     *self.rustd_args, *TARGET_ARGS, *symbols],
-                    capture_output=True, text=True, timeout=self.rustd_timeout,
-                    env={**os.environ, "RUSTD_LAYOUTS": self.layout_log})
+                     *self.ra_jit_args, *TARGET_ARGS, *symbols],
+                    capture_output=True, text=True, timeout=self.ra_jit_timeout,
+                    env={**os.environ, "RA_JIT_LAYOUTS": self.layout_log})
             except subprocess.TimeoutExpired:
-                raise SystemExit(f"rustd crashed on {crate}:\nerror: no result after {self.rustd_timeout}s")
+                raise SystemExit(f"ra-jit crashed on {crate}:\nerror: no result after {self.ra_jit_timeout}s")
             open(os.path.join(self.work, f"{label(crate)}.stderr"), "w").write(run.stderr)
-            if os.environ.get("RUSTD_STDERR"): open(os.environ["RUSTD_STDERR"], "a").write(run.stderr)
+            if os.environ.get("RA_JIT_STDERR"): open(os.environ["RA_JIT_STDERR"], "a").write(run.stderr)
             if run.returncode != 0:
-                raise SystemExit(f"rustd crashed on {crate}:\n{run.stderr[-2000:]}")
+                raise SystemExit(f"ra-jit crashed on {crate}:\n{run.stderr[-2000:]}")
             objects.append(obj)
             self.reports[crate] = [l.rstrip("\n").split("\t") for l in open(report)]
         self.objects = objects
@@ -197,10 +197,10 @@ class Fixture:
         args = list(self.link_args)
         first = linkline.first_of_rustc(args)
         if self.alone:
-            # Nothing of the workspace is rustc's for rustd's to be defined a second time.
+            # Nothing of the workspace is rustc's for ra-jit's to be defined a second time.
             args[first:first] = objects
         else:
-            args = linkline.ahead(args, objects, RUSTD)
+            args = linkline.ahead(args, objects, RA_JIT)
         self.binary = self.binary_path()
         args = linkline.with_output(args, self.binary)
         run = subprocess.run(args, capture_output=True, text=True)
@@ -208,8 +208,8 @@ class Fixture:
             raise SystemExit(f"link failed:\n{(run.stderr + run.stdout)[-20000:]}")
 
     def binary_path(self):
-        """Where the binary with rustd's objects is linked."""
-        return os.path.join(self.work, "bin-rustd")
+        """Where the binary with ra-jit's objects is linked."""
+        return os.path.join(self.work, "bin-ra-jit")
 
     def compiled(self):
         return [r[1] for rows in self.reports.values() for r in rows if r[0] == "compiled"]
@@ -248,7 +248,7 @@ class Fixture:
 
 
 def isolate(fx, expected):
-    """Links each rustd function into the rustc binary on its own; returns the ones that change behaviour."""
+    """Links each ra-jit function into the rustc binary on its own; returns the ones that change behaviour."""
     culprits = []
     for crate in fx.crates:
         directory = os.path.join(fx.work, f"{label(crate)}.isolated")
@@ -304,7 +304,7 @@ def bucket(error):
 
 
 def memcheck(fx):
-    """Runs the rustd binary under valgrind: the first invalid access is usually the miscompile,
+    """Runs the ra-jit binary under valgrind: the first invalid access is usually the miscompile,
     where the crash or wrong output is only what it led to. Returns the error blocks."""
     import re, shutil
     # Valgrind runs what the machine runs, not what an emulator does.
@@ -327,7 +327,7 @@ def memcheck(fx):
 def compare(fx, name, do_bisect, do_memcheck=False, do_layouts=False, mixed=0):
     fx.rustc_build()
     expected = fx.behaviour(fx.reference)
-    fx.rustd_build()
+    fx.ra_jit_build()
     ok = fx.matches(expected)
     result = {"fixture": name, "match": ok, "crates": {}}
     for crate, rows in fx.reports.items():
@@ -342,10 +342,10 @@ def compare(fx, name, do_bisect, do_memcheck=False, do_layouts=False, mixed=0):
         result["crates"][crate] = {
             "compiled": n, "roots": total - no_symbol, "not_roots": no_symbol,
             "instances": int(rows[0][2]), "codegen_ms": int(rows[0][4]) / 1000, "skipped": reasons}
-        print(f"{label(crate)}: {n}/{total - no_symbol} functions from rustd")
+        print(f"{label(crate)}: {n}/{total - no_symbol} functions from ra-jit")
         for r in rows:
             if r[0] == "skipped" and bucket(r[2]) != "no rustc symbol for function":
-                why = r[2] if len(r[2]) < (10**6 if os.environ.get("RUSTD_WHY") else 400) else r[2][:100] + " ... " + r[2][-300:]
+                why = r[2] if len(r[2]) < (10**6 if os.environ.get("RA_JIT_WHY") else 400) else r[2][:100] + " ... " + r[2][-300:]
                 print(f"  skipped {r[1]}: {why}")
     print("MATCH" if ok else "MISMATCH")
     if not ok:
@@ -354,12 +354,12 @@ def compare(fx, name, do_bisect, do_memcheck=False, do_layouts=False, mixed=0):
         want, have = (x[1].decode(errors='replace').splitlines() for x in (expected, got))
         if len(want) + len(have) > 40:
             # Long output: only where the two part ways.
-            diff = list(difflib.unified_diff(want, have, "rustc", "rustd", lineterm="", n=1))
-            print(f"  rustc: status {expected[0]}, rustd: status {got[0]}")
+            diff = list(difflib.unified_diff(want, have, "rustc", "ra-jit", lineterm="", n=1))
+            print(f"  rustc: status {expected[0]}, ra-jit: status {got[0]}")
             print("\n".join("  " + l[:300] for l in diff[:60]))
         else:
             print(f"  rustc: status {expected[0]}\n{expected[1].decode(errors='replace')}")
-            print(f"  rustd: status {got[0]}\n{got[1].decode(errors='replace')}")
+            print(f"  ra-jit: status {got[0]}\n{got[1].decode(errors='replace')}")
         stderr = got[2].decode(errors='replace')
         print(stderr if len(stderr) < 1500 else stderr[:700] + "\n  ...\n" + stderr[-700:])
         do_memcheck = True
@@ -374,12 +374,12 @@ def compare(fx, name, do_bisect, do_memcheck=False, do_layouts=False, mixed=0):
         compiled = sorted(r[1] for rows in fx.reports.values() for r in rows if r[0] == "compiled")
         for seed in range(mixed):
             deny = random.Random(seed).sample(compiled, len(compiled) // 2)
-            fx.rustd_build(deny)
+            fx.ra_jit_build(deny)
             if not fx.matches(expected):
                 got = fx.behaviour(fx.binary)
                 print(f"  MIXED MISMATCH (seed {seed}): {symptom(expected, got)}")
-                deny = minimize(deny, lambda d: fx.rustd_build(d) or not fx.matches(expected))
-                fx.rustd_build(deny)
+                deny = minimize(deny, lambda d: fx.ra_jit_build(d) or not fx.matches(expected))
+                fx.ra_jit_build(deny)
                 print("    smallest set left to rustc that still differs:\n" + "\n".join("      " + d for d in deny))
                 result["mixed_deny"] = deny
                 result["match"] = False

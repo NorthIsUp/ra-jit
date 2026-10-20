@@ -1,10 +1,10 @@
-# rustd on macOS aarch64
+# ra-jit on macOS aarch64
 
-Branch `rustd-macos`, off `rustd-spike`. Everything below was run on one machine: an Apple M4
+Branch `ra-jit-macos`, off `ra-jit-spike`. Everything below was run on one machine: an Apple M4
 (virtual), macOS 26.5.2, `uname -m` says `arm64`, Apple ld 1267, nightly-2026-05-10. Where I
 say "measured" I ran it there. Where I say "inferred" I did not.
 
-The short version: rustd builds, the corpus matches rustc, every harness in the task list
+The short version: ra-jit builds, the corpus matches rustc, every harness in the task list
 passes, and the splice works on Mach-O arm64 for executables that use dyld info (which is
 what rustc's default deployment target of macOS 11 produces). On ripgrep the splice takes a
 link from 89 ms to 42 ms. I could not run anything on Linux, so "Linux is unchanged" is by
@@ -12,28 +12,28 @@ construction and not by test.
 
 ## What works (measured)
 
-`cargo build -p rustd --release` builds.
+`cargo build -p ra-jit --release` builds.
 
-| harness | result here | Linux on `rustd-spike` |
+| harness | result here | Linux on `ra-jit-spike` |
 |---|---|---|
-| `difftest.py corpus --bin runner --crate cases` | MATCH, 655/656 functions from rustd | 679/680 |
+| `difftest.py corpus --bin runner --crate cases` | MATCH, 655/656 functions from ra-jit | 679/680 |
 | `programs.py` | 22 of 22 | 22/22 |
 | `stress.py` | 99 of 99, 0 restarts | 99/99 |
 | `breakers.py` | 15 of 15, 1 open, 0 functions skipped | 15/15 |
 | `unwinds.py` | 8 of 8 | 8/8 |
-| `RUSTD_SPLICE=1 splices.py` | 71 of 71; 58 spliced, 13 full links | 71/71 |
-| `RUSTD_SPLICE=1 worktrees.py` | 52 of 52; 39 links spliced, 5 full | 52/52 |
+| `RA_JIT_SPLICE=1 splices.py` | 71 of 71; 58 spliced, 13 full links | 71/71 |
+| `RA_JIT_SPLICE=1 worktrees.py` | 52 of 52; 39 links spliced, 5 full | 52/52 |
 | `asmedits.py` | 10 of 10 | |
 | `deps.py` | 10 of 10 | |
 | `includes.py` | 9 of 9 | |
 
-Also run: `RUSTD_SPLICE=1 programs.py` 22 of 22, and `splices.py` with `SPLICES_SOAK=100`,
+Also run: `RA_JIT_SPLICE=1 programs.py` 22 of 22, and `splices.py` with `SPLICES_SOAK=100`,
 100 of 100 with all 100 spliced and the last binary the same as cargo's.
 
 Notes on those numbers:
 
 - The corpus has 656 functions here and not 680 because the x86 SIMD and x86 `asm!` cases are
-  behind `cfg(target_arch = "x86_64")`. The one function not from rustd is the same
+  behind `cfg(target_arch = "x86_64")`. The one function not from ra-jit is the same
   `type_id_hashes::elided` that is skipped on Linux.
 - `difftest.py corpus` has to be run from `harness/`. From the repo root it looks for
   `./corpus` and fails. I did not change that.
@@ -58,18 +58,18 @@ Notes on those numbers:
 
 Everything above ran on Cranelift, the default. The LLVM backend also builds and runs here:
 `brew install llvm@20`, then
-`LLVM_SYS_201_PREFIX=/opt/homebrew/opt/llvm@20 cargo build -p rustd --release --features llvm`
-(LLVM 20.1.8). With `RUSTD_BACKEND=llvm`, at the default `RUSTD_OPT=2`:
+`LLVM_SYS_201_PREFIX=/opt/homebrew/opt/llvm@20 cargo build -p ra-jit --release --features llvm`
+(LLVM 20.1.8). With `RA_JIT_BACKEND=llvm`, at the default `RA_JIT_OPT=2`:
 
 | harness | result |
 |---|---|
-| `difftest.py corpus --bin runner --crate cases` | MATCH, 655/656 functions from rustd |
+| `difftest.py corpus --bin runner --crate cases` | MATCH, 655/656 functions from ra-jit |
 | `programs.py` | 22 of 22 |
 | `stress.py` | 99 of 99, 0 restarts |
 | `breakers.py` | 15 of 15, 1 open |
 | `unwinds.py` | 8 of 8 |
-| `RUSTD_SPLICE=1 splices.py` | 71 of 71 (57 spliced, 14 full links) |
-| `RUSTD_SPLICE=1 worktrees.py` | 52 of 52 |
+| `RA_JIT_SPLICE=1 splices.py` | 71 of 71 (57 spliced, 14 full links) |
+| `RA_JIT_SPLICE=1 worktrees.py` | 52 of 52 |
 | `asmedits.py` / `deps.py` / `includes.py` | 10 of 10 / 10 of 10 / 9 of 9 |
 
 The daemon logs of programs, stress, unwinds, asmedits, includes, splices and worktrees have
@@ -79,9 +79,9 @@ did go through LLVM.
 `backends.py` says how much LLVM compiled itself. On the corpus, of 10770 functions, 2 are
 left to Cranelift at both levels ("more than two return values"). On ripgrep 14.1.1 (the
 `rg` crate, 14352 functions) none are, and the program prints the same as cargo's with
-Cranelift, LLVM -O0 and LLVM -O2 (`rg --sort path -n -i 'splice|unwind\b' crates/rustd/src`).
+Cranelift, LLVM -O0 and LLVM -O2 (`rg --sort path -n -i 'splice|unwind\b' crates/ra-jit/src`).
 
-| ripgrep, `rg` crate | producing code, s (all threads) | code bytes | rustd wall, s |
+| ripgrep, `rg` crate | producing code, s (all threads) | code bytes | ra-jit wall, s |
 |---|---:|---:|---:|
 | cranelift | 2.1 | 5969204 | 2.8 |
 | llvm -O0 | 7.7 | 6535252 | 3.7 |
@@ -113,7 +113,7 @@ every call, which is where a panic unwinds, and wrong inside the prologue and ep
 which only matters to something that unwinds from an arbitrary instruction (a sampling
 profiler, a debugger).
 
-Not measured for LLVM: `RUSTD_OPT` other than 0 and 2 (0 only through `backends.py`), edit
+Not measured for LLVM: `RA_JIT_OPT` other than 0 and 2 (0 only through `backends.py`), edit
 latency against Cranelift, and the x86-64 side. The x86-64 path of the feature type-checks
 (`cargo check -p hir-ty --features llvm --target x86_64-apple-darwin`) and the ELF code in
 `emitted.rs` is the old code behind a format check, but it was not run.
@@ -167,14 +167,14 @@ small structs go in register units, larger ones by pointer, and Apple's variadic
 for the personality, and the LSDA no longer goes into a section named `.gcc_except_table`,
 which Mach-O cannot name. `asm!` has an AArch64 wrapper next to the x86 one.
 
-Linking. Apple's linker has no `--allow-multiple-definition`. rustd's object has to win over
+Linking. Apple's linker has no `--allow-multiple-definition`. ra-jit's object has to win over
 rustc's definitions of the same symbols, so on Mach-O the definitions in rustc's objects and
-rlibs are made weak (`rustd weaken`, used by the harnesses through `harness/linkline.py`),
-and rustd's own objects are written the same way. Linux keeps the flag it had.
+rlibs are made weak (`ra-jit weaken`, used by the harnesses through `harness/linkline.py`),
+and ra-jit's own objects are written the same way. Linux keeps the flag it had.
 
-The splice (`crates/rustd/src/splice/macho.rs`). The loader wants `__LINKEDIT` last and the
+The splice (`crates/ra-jit/src/splice/macho.rs`). The loader wants `__LINKEDIT` last and the
 signature at the end of it, so the patch goes where `__LINKEDIT` was, in two new segments
-(`__RUSTD_TEXT` for code, constants, stubs and the unwind tables; `__RUSTD_DATA` for writable
+(`__RA_JIT_TEXT` for code, constants, stubs and the unwind tables; `__RA_JIT_DATA` for writable
 data and address slots), and `__LINKEDIT` is written again behind them. That keeps W^X and
 16 KB pages. Calls out of `b`/`bl` range go through a stub. The rebase opcodes are encoded
 again to cover the new pointers. `__unwind_info` is rebuilt with the patch's functions and
@@ -194,7 +194,7 @@ It needs two more load commands than the linker leaves room for, so the link lin
    sets a newer deployment target gets no splice until this is done or the link line gets
    `-no_fixup_chains`.
 2. Linux x86-64 was not run. There is no Linux machine in this session. `hir-ty` passes
-   `cargo check --target x86_64-unknown-linux-gnu`; the `rustd` crate could not be checked
+   `cargo check --target x86_64-unknown-linux-gnu`; the `ra-jit` crate could not be checked
    that way because `ring` needs a C cross compiler. The ELF splice path is the old code
    behind a format check, and the harness link line on Linux is the old one, but that is
    reading, not testing. Please run the list on Linux before trusting this branch there.
@@ -209,7 +209,7 @@ It needs two more load commands than the linker leaves room for, so the link lin
 6. The AArch64 `asm!` wrapper covers general and vector registers and the register classes
    `reg`, `vreg`, `vreg_low16`. Other classes and clobber-only ABIs are not handled, and the
    only test is `asmedits.py`.
-7. `rustd weaken` has only seen the objects and rlibs these harnesses produce.
+7. `ra-jit weaken` has only seen the objects and rlibs these harnesses produce.
 8. `harness/linkbench.py` still passes `--allow-multiple-definition` to `ld -r` and was not
    ported or run. `bench.py`, `agents.py`, `dxedits.py`, `invalidation.py`, `uitest.py` and
    the other harnesses outside the task list use the new link line but were not run.

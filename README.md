@@ -14,19 +14,19 @@ Edit the source and the running program changes on the next frame, with its stat
 video is the first ra-jit prototype, a Game of Life; it stays at the tag
 [`prototype`](https://github.com/indexable-inc/ra-jit/tree/prototype).)
 
-ra-jit is a newer version of [rustd](https://github.com/DioxusLabs/rustd), made specifically
-for Indexable's use cases, starting with den's native app. It keeps rustd's compiler daemon and
+ra-jit is a newer version of [ra-jit](https://github.com/DioxusLabs/rustd), made specifically
+for Indexable's use cases, starting with den's native app. It keeps ra-jit's compiler daemon and
 its code generator over rust-analyzer, and adds what those programs need: edits that go into the
 program while it runs, executables that keep their entitlements, and fixes for large workspaces.
 
 > [!NOTE]
-> **Upstream:** [rustd](https://github.com/DioxusLabs/rustd) is where this started and is the
-> general-purpose version: a drop-in `cargo rustd build/run/test` for real crates. Use it if you
+> **Upstream:** [ra-jit](https://github.com/DioxusLabs/rustd) is where this started and is the
+> general-purpose version: a drop-in `cargo ra-jit build/run/test` for real crates. Use it if you
 > don't need what is below.
 
-## What ra-jit adds to rustd
+## What ra-jit adds to ra-jit
 
-- **Live edits** ([docs/live.md](docs/live.md)). rustd answers an edit with a patch of the
+- **Live edits** ([docs/live.md](docs/live.md)). ra-jit answers an edit with a patch of the
   functions that changed and splices it into the executable on disk. A program that links
   [`ra-jit-live`](crates/ra-jit-live) and calls `Live::start` takes the same patch in memory:
   the daemon lays it out for room the program set aside next to its code, and `Live::poll`
@@ -45,7 +45,7 @@ program while it runs, executables that keep their entitlements, and fixes for l
 
 ## Use it
 
-`nix run github:indexable-inc/ra-jit -- <cargo-rustd command>` runs `cargo rustd` with the
+`nix run github:indexable-inc/ra-jit -- <cargo-ra-jit command>` runs `cargo ra-jit` with the
 pinned toolchain. Without live edits that is all there is to set up. For live edits, in the
 program's crate:
 
@@ -65,9 +65,9 @@ loop {
 }
 ```
 
-Run `nix run github:indexable-inc/ra-jit -- build` once, wait for `cargo rustd status` to say the program is ready (the
+Run `nix run github:indexable-inc/ra-jit -- build` once, wait for `cargo ra-jit status` to say the program is ready (the
 daemon's own link of it), build again to get that link, and start the program. From then on,
-`cargo rustd build` after each edit puts the change into the running program: the program
+`cargo ra-jit build` after each edit puts the change into the running program: the program
 notices the patch within 30 ms and applies it in about a millisecond.
 
 ## Status
@@ -91,7 +91,7 @@ millisecond and about a second from saving the file to the program running the n
 - Live edits are macOS on AArch64 only; elsewhere `Live::start` says so and the splice on disk
   still works.
 - Crates that disagree on overflow checks (a `[profile.dev.package]` override) share generic
-  instances rustd cannot tell apart, so it refuses them and most of what calls them. Make them
+  instances ra-jit cannot tell apart, so it refuses them and most of what calls them. Make them
   agree for the daemon's build with `--config 'profile.dev.package."<crate>".overflow-checks=true'`.
 - A future is laid out by one compiler, so what touches a future of a function left to rustc
   goes to rustc too, and edits there are not taken live. den-native has a handful of such
@@ -113,7 +113,7 @@ a program that links `ra-jit-live`, into the running process.
 - **rustc** still does the first build of a workspace and always builds its dependencies. Once
   the daemon has the workspace, rustc does not run on an edit.
 - **Diagnostics:** rust-analyzer's, as `path:line:column: message [E0308]`. There is no borrow
-  checker, so keep running `cargo check`; `cargo rustd check` is `cargo check`.
+  checker, so keep running `cargo check`; `cargo ra-jit check` is `cargo check`.
 - **Toolchain:** pinned to Rust 1.99.0, because the code it links has to agree with rustc on
   symbol names, layout and the unstable ABI.
 
@@ -122,62 +122,62 @@ a bug to report. See [docs/architecture.md](docs/architecture.md).
 
 ## Quick start
 
-### `cargo rustd`
+### `cargo ra-jit`
 
-In any cargo project (`nix run github:indexable-inc/ra-jit --` stands in for `cargo rustd`):
+In any cargo project (`nix run github:indexable-inc/ra-jit --` stands in for `cargo ra-jit`):
 
-    cargo rustd build
-    cargo rustd run -- --some-flag
-    cargo rustd test
-    cargo rustd check
+    cargo ra-jit build
+    cargo ra-jit run -- --some-flag
+    cargo ra-jit test
+    cargo ra-jit check
 
-The first build of a workspace is cargo's own, with rustd recording what rustc was asked to
+The first build of a workspace is cargo's own, with ra-jit recording what rustc was asked to
 do. It also starts the daemon, which loads the workspace in the background. Until it has,
 builds go to cargo and a line on stderr says so:
 
-    rustd: the daemon is still loading the workspace (951ms so far); building with cargo
+    ra-jit: the daemon is still loading the workspace (951ms so far); building with cargo
 
 After that an edit is compiled by the daemon and neither cargo nor rustc runs. With
-`RUSTD_FIRST_BUILD=1` the first build is shared: cargo builds the dependencies while the
-daemon compiles the workspace's crates and links the program. `cargo rustd status`
+`RA_JIT_FIRST_BUILD=1` the first build is shared: cargo builds the dependencies while the
+daemon compiles the workspace's crates and links the program. `cargo ra-jit status`
 shows what the daemon holds and how many builds it served or left to cargo, by reason.
-`cargo rustd stop` ends it; it also exits by itself after 30 minutes without a request.
-`cargo rustd check` is `cargo check`.
+`cargo ra-jit stop` ends it; it also exits by itself after 30 minutes without a request.
+`cargo ra-jit check` is `cargo check`.
 
-Compiled functions are kept on disk in `~/.cache/rustd/store` (8 GiB at most;
-`RUSTD_CACHE=off` turns it off), so a new daemon starts from what the last one built. See [docs/cache.md](docs/cache.md) for the store and the S3 remote.
+Compiled functions are kept on disk in `~/.cache/ra-jit/store` (8 GiB at most;
+`RA_JIT_CACHE=off` turns it off), so a new daemon starts from what the last one built. See [docs/cache.md](docs/cache.md) for the store and the S3 remote.
 
 ### Plain `cargo`, switched on globally
 
-Run `rustd enable` once. It adds one key to `~/.cargo/config.toml`
-(`build.rustc-workspace-wrapper`, pointing at `rustd-rustc`), and from then on ordinary
+Run `ra-jit enable` once. It adds one key to `~/.cargo/config.toml`
+(`build.rustc-workspace-wrapper`, pointing at `ra-jit-rustc`), and from then on ordinary
 `cargo build`, `cargo run`, `cargo test` and `cargo check` in any workspace go through the
-daemon. `rustd disable` puts the file back as it was. `rustd status` says whether it is on
+daemon. `ra-jit disable` puts the file back as it was. `ra-jit status` says whether it is on
 and how many programs the daemon linked or left to rustc, by reason.
 
-    $ rustd enable
+    $ ra-jit enable
     $ cargo run            # the daemon's, once it has loaded the workspace
-    $ rustd disable
+    $ ra-jit disable
 
-`rustd`, `cargo-rustd` and `rustd-rustc` have to be installed in the same directory. A
+`ra-jit`, `cargo-ra-jit` and `ra-jit-rustc` have to be installed in the same directory. A
 wrapper you already use, such as sccache, keeps running. Until the daemon has loaded a
 build, rustc links it, and one line on stderr says so. This mode is for agents and scripts that
 call cargo themselves; it has been run on Linux and on macOS arm64. On edits it is currently slower than
-`cargo rustd`, and on some projects slower than cargo alone; see
+`cargo ra-jit`, and on some projects slower than cargo alone; see
 [docs/cargo.md](docs/cargo.md).
 
 ## Results
 
-Linux x86-64, 8 CPUs, Cranelift, seconds, plain cargo first and rustd second. Both sides
+Linux x86-64, 8 CPUs, Cranelift, seconds, plain cargo first and ra-jit second. Both sides
 use the same linker, cargo is warm and incremental, the daemon is warm, and the program
 both produce is run and compared. Since these were measured no `cargo check` runs beside
-a rustd build and nothing is handed back to cargo, so numbers published earlier, which
+a ra-jit build and nothing is handed back to cargo, so numbers published earlier, which
 included a `cargo check` on every edit, no longer apply and have been removed.
 
 Edits in a generated workspace of 200 crates (`harness/genws.py`, timed by
 `harness/editrows.py`), median of three:
 
-| Edit | cargo | rustd | |
+| Edit | cargo | ra-jit | |
 |---|---:|---:|---:|
 | A function body in the program's crate | 1.76 | 0.42 | 4.2x |
 | A function body in the crate every other depends on | 6.33 | 0.60 | 10.6x |
@@ -189,7 +189,7 @@ The rows were run in that order in one daemon, and the first again after the las
 against 0.45). The last row is barely ahead: the edit changes 2,390 files and the daemon
 recompiles 6,806 functions, 3 s of it before compiling anything. That is open.
 
-Real projects, one run each, from `harness/cargo_rustd.py --small`. The edit adds a line
+Real projects, one run each, from `harness/cargo_ra_jit.py --small`. The edit adds a line
 to a function:
 
 | Project | No-change build | Build after an edit |
@@ -198,25 +198,25 @@ to a function:
 | fd 10.3.0 | 0.41 / 0.03 | 0.52 / 0.17 |
 | hyperfine 1.19.0 | 0.33 / 0.03 | 0.36 / 0.15 |
 
-Most of rustd's time in the second column is the client and the link; the daemon's own
+Most of ra-jit's time in the second column is the client and the link; the daemon's own
 time from the edit to a linked ripgrep was 0.05 s when measured alone.
 
-First build from an empty target directory with `RUSTD_FIRST_BUILD=1`, where cargo builds
-the dependencies and rustd the workspace's crates, one run each except nushell:
+First build from an empty target directory with `RA_JIT_FIRST_BUILD=1`, where cargo builds
+the dependencies and ra-jit the workspace's crates, one run each except nushell:
 
-| Project | `cargo build` | `cargo rustd build` |
+| Project | `cargo build` | `cargo ra-jit build` |
 |---|---:|---:|
 | ripgrep 15.1.0 | 5.43 | 6.05 |
 | fd 10.3.0 | 20.5 | 22.0 |
 | nushell 0.108.0 | 42.7, 42.9 | 66.4, 68.1, 89.9 |
 
-rustd is behind on all three, and far behind on nushell, where it compiles 165,000
+ra-jit is behind on all three, and far behind on nushell, where it compiles 165,000
 functions. The nushell it links answered 80 of 80 test commands as cargo's does.
 bat, just, axum and nushell edits have not been measured again since the change and are
 left out.
 
 The same step on macOS arm64 (8-CPU Apple M4 virtual machine), one run each, from
-`harness/cargo_rustd.py --small`:
+`harness/cargo_ra_jit.py --small`:
 
 | Project | No-change build | Build after an edit, Cranelift | Build after an edit, LLVM |
 |---|---:|---:|---:|
@@ -230,9 +230,9 @@ Cranelift runs); see [docs/cargo.md](docs/cargo.md#macos-arm64).
 On nushell the daemon needs 36 to 51 s to load again after a manifest or build script
 changes, and builds are cargo's for that long (measured before the change above).
 
-Correctness is measured by building the same program with rustc and with rustd and comparing
+Correctness is measured by building the same program with rustc and with ra-jit and comparing
 what they do. On the last CI run that covered all four native platforms, every function of
-the test corpus was compiled by rustd under both backends and no type layout differed from
+the test corpus was compiled by ra-jit under both backends and no type layout differed from
 rustc's (822 functions on Linux x86-64, 825 on Linux AArch64, 830 on Windows, 828 on macOS).
 Of rustc's own `tests/ui` run-pass tests, 2686 of 2690 behave the same under Cranelift; 1114
 were left out, for reasons listed in the results.
@@ -246,7 +246,7 @@ were left out, for reasons listed in the results.
 | Full link | ✅ | ✅ | ✅ | ✅ | ⚠️ older branch only |
 | Splice | ✅ | ✅ | ✅ | ✅ not with chained fixups | ⚠️ older branch only |
 | Debug info | ✅ | ✅ | ⚠️ lines only | ❓ | ❌ |
-| `cargo rustd` | ✅ | ❓ | ❌ | ✅ three projects | ❌ |
+| `cargo ra-jit` | ✅ | ❓ | ❌ | ✅ three projects | ❌ |
 | Disk store | ✅ | ✅ | ✅ | ✅ | ❓ |
 | S3 remote | ✅ not real AWS | ❓ | ❓ | ❓ | ❓ |
 
@@ -260,7 +260,7 @@ build-model features.
 These are refused with a reason before the daemon is asked, and cargo builds them instead:
 
 - `lto = true` or `"thin"`;
-- through `cargo rustd`: `--exclude`, more than one `--target`, `--message-format`, `-Z`
+- through `cargo ra-jit`: `--exclude`, more than one `--target`, `--message-format`, `-Z`
   flags, and a `RUSTC_WORKSPACE_WRAPPER` that names another wrapper;
 - test executables built without incremental compilation or above `opt-level = 0`, and unit
   tests of a library other tests link as rustc built it;
@@ -276,19 +276,19 @@ variables in Windows debug info, and targets other than the ones in the table.
 
 ## Credits
 
-ra-jit began as a fork of [rustd](https://github.com/DioxusLabs/rustd) (DioxusLabs), commit
+ra-jit began as a fork of [ra-jit](https://github.com/DioxusLabs/rustd) (DioxusLabs), commit
 `159f693`; the daemon and the code generator are theirs, and we thank them. The section
 below says what else it stands on.
 
 ## rust-analyzer
 
 ra-jit's front end is rust-analyzer: its parser, name resolution, type inference, MIR,
-monomorphisation, layout and const evaluation, and its cargo workspace loading. rustd adds a
+monomorphisation, layout and const evaluation, and its cargo workspace loading. ra-jit adds a
 code generator on top of rust-analyzer's MIR and the daemon around it. rust-analyzer is
 included as a submodule. It points at the `rust-analyzer` branch of this repository, which is
-upstream rust-analyzer at the commit rustd forked from with rustd's changes committed on top. None of this would exist without the rust-analyzer team's work.
-rustd is not part of the rust-analyzer project and is not endorsed by it; please do not
-report rustd problems there.
+upstream rust-analyzer at the commit ra-jit forked from with ra-jit's changes committed on top. None of this would exist without the rust-analyzer team's work.
+ra-jit is not part of the rust-analyzer project and is not endorsed by it; please do not
+report ra-jit problems there.
 
 Type layout is computed with rustc's own `rustc_abi` crate, copied unchanged from the 1.99.0
 tag into `vendor/rustc_abi`.
@@ -300,7 +300,7 @@ MIT or Apache-2.0, at your option, the same as rust-analyzer and rustc. See
 
 ## Documentation
 
-- [docs/cargo.md](docs/cargo.md): using `cargo rustd`
+- [docs/cargo.md](docs/cargo.md): using `cargo ra-jit`
 - [docs/support.md](docs/support.md): the support matrix
 - [docs/platforms.md](docs/platforms.md): the state of each platform
 - [docs/cache.md](docs/cache.md): the disk store and the S3 remote

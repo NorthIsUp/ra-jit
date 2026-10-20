@@ -1,6 +1,6 @@
 # Security review of the store, the remote and the daemon's boundaries
 
-Branch `rustd-security`, on top of `rustd-collate` at ce52276cf5, which has the S3 remote
+Branch `ra-jit-security`, on top of `ra-jit-collate` at ce52276cf5, which has the S3 remote
 with its signed lists, compressed packs and `cache gc --remote`, and the platform ABI merge. Everything below was
 measured on Linux x86-64 with Rust 1.99.0 and LLVM 20. Where something is an argument and
 not a measurement it says so. The Windows code in this round was compiled for Windows and
@@ -8,25 +8,25 @@ never run; that is said again where it matters.
 
 ## Threat model
 
-rustd compiles a user's code and keeps the result, on that user's disk and optionally on
+ra-jit compiles a user's code and keeps the result, on that user's disk and optionally on
 a remote that other machines read. What it keeps is machine code that later builds link
 and run. So the question for every party is the same: can they decide what ends up in a
 program the user builds, and can they read what the user built?
 
 ### Who is trusted
 
-**The user.** rustd runs as the user and can do nothing the user cannot. Every process
+**The user.** ra-jit runs as the user and can do nothing the user cannot. Every process
 running as the same user is inside the boundary: it can write the store, the `target`
-directory and the sources, and talk to the daemon. rustd does not defend against it and
+directory and the sources, and talk to the daemon. ra-jit does not defend against it and
 does not claim to. In particular there is no isolation between two checkouts of the same
 user: one can find what the other stored, by design.
 
 **The user's checkouts, with their build scripts and proc macros.** A build script and a
 proc macro are programs that the checkout, or a crate it depends on, has cargo compile and
 run during a build. They run with the user's full rights under cargo, and they run with
-exactly the same rights under rustd. rustd adds no sandbox and removes none. Building a
-checkout with rustd is as much an act of trust in it as building it with cargo, and no
-more. What rustd guarantees is narrower and is checked (see "Build scripts and proc
+exactly the same rights under ra-jit. ra-jit adds no sandbox and removes none. Building a
+checkout with ra-jit is as much an act of trust in it as building it with cargo, and no
+more. What ra-jit guarantees is narrower and is checked (see "Build scripts and proc
 macros" below): it does not run a build script or a proc macro that cargo, given the same
 selection of packages, features, profile and target, would not have run. It also does
 not run them with different arguments, a different environment or a different working
@@ -34,11 +34,11 @@ directory: either cargo itself runs them, or the daemon repeats cargo's own run 
 record of it.
 
 **The signer of a remote.** A machine that pulls names the public keys it trusts
-(`RUSTD_REMOTE_TRUST`). A holder of one of those keys can make every
+(`RA_JIT_REMOTE_TRUST`). A holder of one of those keys can make every
 machine that trusts it run any code, by signing a list that names a pack of their making.
 That is what the trust means. A signer vouches that its packs were compiled by an honest
-rustd from the sources their keys name, on a machine whose store nobody else could write
-to. rustd guarantees that nothing reaches a build from a signed remote unless a trusted
+ra-jit from the sources their keys name, on a machine whose store nobody else could write
+to. ra-jit guarantees that nothing reaches a build from a signed remote unless a trusted
 key signed the list naming it, for the project it was signed for, and that a machine
 never goes back to an older list than one it has already taken. A machine that has taken
 none can be given any list a trusted key ever signed; see "Rollback protection for signed
@@ -47,7 +47,7 @@ lists".
 ### Who is not trusted
 
 **Other users of the machine.** They must not be able to change what the user's builds
-run, nor read what the user built. rustd guarantees: the store directory is created for
+run, nor read what the user built. ra-jit guarantees: the store directory is created for
 the user alone (0700, files 0600; on Windows it has the access list of the directory it
 is made in), and a
 store or a file in it that belongs to someone else, or that someone else could write to,
@@ -55,16 +55,16 @@ is refused with the reason and the build goes on without it. On Unix this is the
 the mode, read from the open handle. On Windows it is the owner and every entry of the
 access control list, written this round and not yet run. The daemon's socket is in a 0700
 directory, is 0600, and the daemon checks that the peer is the same user (that code is
-`crates/rustd/src/socket.rs`, reviewed and not changed here). What rustd does not
+`crates/ra-jit/src/socket.rs`, reviewed and not changed here). What ra-jit does not
 guarantee: that timing tells another user nothing (they cannot reach the daemon or the
 store, so they would have to infer it from machine load), and anything at all against
 root or, on Windows, the system and the administrators.
 
 **An unsigned remote, and anyone who can write to a remote without a trusted key.** They
-decide the bytes of every object and every list. rustd guarantees:
+decide the bytes of every object and every list. ra-jit guarantees:
 
 - Nothing is pulled from a remote whose lists nobody trusted signed, unless the user sets
-  `RUSTD_REMOTE_UNSIGNED=1`, which is the user saying that everyone who can write there
+  `RA_JIT_REMOTE_UNSIGNED=1`, which is the user saying that everyone who can write there
   is trusted as the signer would be.
 - With signed lists, a writer without a key can delete or withhold, which costs cache
   hits. It cannot add or change, because every pack is named by the SHA-256 of its bytes
@@ -72,12 +72,12 @@ decide the bytes of every object and every list. rustd guarantees:
   put back an older signed list only for a machine that has not yet taken a newer one.
 - No answer of a remote is read past a bound, and no pull writes more than a bound,
   whatever the remote sends (see "Bounds on what a remote sends").
-- No bytes from a remote make rustd panic, index out of range or write outside the place
+- No bytes from a remote make ra-jit panic, index out of range or write outside the place
   they belong: the parsers are fuzzed and dependency archives are unpacked only as plain
   files and directories of their own unit.
 
 **Readers of a remote.** Whoever can read a remote learns what was pushed: machine code,
-names of functions and crates, source lines in debug info. rustd guarantees that the
+names of functions and crates, source lines in debug info. ra-jit guarantees that the
 paths of the pusher's machine are not among it: files of the checkout are named relative
 to it, the standard library's as `/rustc/<commit>/...`, and, from this round, files cargo
 fetched as `/cargo/registry/...` and `/cargo/git/...`. `storeguards.py` looks through
@@ -85,7 +85,7 @@ every byte of a store and of the remote it was pushed to for the checkout, the h
 directory and the cargo home.
 
 **A damaged disk.** Bytes that are not what was written: a torn write, a truncated file,
-flipped bits, a file from another version. rustd guarantees that damaged bytes are
+flipped bits, a file from another version. ra-jit guarantees that damaged bytes are
 detected (SHA-256 per pack on first read, CRC per record on every read, a format version
 in the store and in each pack), discarded and recompiled, never linked. Stored entries
 that pass the checksum are still validated structurally before use. A disk that is
@@ -96,7 +96,7 @@ is covered by the paragraphs above.
 
 The local store is as sensitive as `target/`: whoever writes it owns the user's builds.
 The remote is as sensitive as its signing keys. Everything else, including the content of
-any file rustd reads from a store or a remote, is treated as hostile input.
+any file ra-jit reads from a store or a remote, is treated as hostile input.
 
 ## This round
 
@@ -108,7 +108,7 @@ Each with its test. The findings list below has them under the numbers given her
 | H5 | A signed list that was put back is not taken again | eight tests in `signed::tests` and `remote::tests`; `remote.py` |
 | M6 | Files cargo fetched are stored under `/cargo`, not the pusher's cargo home | `cached::tests::a_fetched_file_is_stored_under_the_same_name_from_every_cargo_home` and two more; `storeguards.py` |
 | M7 | Every read from a remote is bounded, and so is what a pull writes | eleven tests in `remote::tests` and `deps::tests`; fuzz loops; `remote.py` |
-| M8 | rustd ran build scripts of dev-dependencies that cargo would not have | `harness/selects.py` |
+| M8 | ra-jit ran build scripts of dev-dependencies that cargo would not have | `harness/selects.py` |
 | L6 | Windows: owner and access list checked | compiled for `x86_64-pc-windows-msvc`; three tests for the Windows session |
 
 ## Findings, by severity
@@ -122,7 +122,7 @@ that is a birthday bound of about 2^32 crates for an accidental wrong-code hit, 
 chosen collision is within reach of someone who wants to plant code for a crate they do
 not control. The id is now `ContentId`, all 32 bytes, printed in full into the name. The
 hashes that feed it were also changed to hash their dependencies' full ids, and the entry
-key now length-prefixes each field (`rustd entry 6`) so that no two field lists are the
+key now length-prefixes each field (`ra-jit entry 6`) so that no two field lists are the
 same bytes. Test: `cached::tests::a_crate_is_named_by_all_of_its_hash_and_a_key_by_all_of_a_name`
 builds two ids that agree in every byte the old id kept and checks the names and keys
 differ, and that debug, overflow checks and a trailing byte each change the key.
@@ -132,8 +132,8 @@ store or what its mode was, and files were created with the process umask (typic
 0644 in a 0755 directory). Now: created 0700/0600; an existing directory that is readable
 by others is closed to them; one that is another user's or group/world-writable is refused
 by the daemon (`store: not used`, with the reason, and the build succeeds uncached) and by
-`rustd cache stats`, `gc` and `verify`. Files are checked with `fstat` on the handle that
-is then read, so there is no window between check and use. `rustd cache verify` lists a
+`ra-jit cache stats`, `gc` and `verify`. Files are checked with `fstat` on the handle that
+is then read, so there is no window between check and use. `ra-jit cache verify` lists a
 pack others can write to as corrupt; a daemon removes it. Tests in `store::tests`:
 `the_store_and_its_files_are_the_users_alone`, `a_store_others_could_read_is_closed_to_them`,
 `a_store_others_can_write_to_is_refused`, `a_pack_others_can_write_to_is_not_read`,
@@ -142,17 +142,17 @@ only does anything as root; I ran it with `sudo` and it passed). End to end:
 `harness/storeguards.py`.
 
 **H3. Unsigned remotes were pulled from without asking. Fixed.** A machine that names no
-key in `RUSTD_REMOTE_TRUST` takes no list from a remote, and so fetches nothing, unless
-`RUSTD_REMOTE_UNSIGNED=1`. Only the exact value `1` counts, and it does not undo naming
-keys. The refusal is in `Trust::open` (`crates/rustd/src/remote/signed.rs`), which every
-list a pull reads goes through: `rustd cache pull`, `rustd deps pull`, the daemon's pull
+key in `RA_JIT_REMOTE_TRUST` takes no list from a remote, and so fetches nothing, unless
+`RA_JIT_REMOTE_UNSIGNED=1`. Only the exact value `1` counts, and it does not undo naming
+keys. The refusal is in `Trust::open` (`crates/ra-jit/src/remote/signed.rs`), which every
+list a pull reads goes through: `ra-jit cache pull`, `ra-jit deps pull`, the daemon's pull
 before a build and its lazy fetching. Pushing asks for nothing; it reads the list it adds
 to through `open_to_extend`, which takes nothing from it. Tests:
 `signed::tests::a_list_nobody_signed_is_taken_only_when_asked_for`, `harness/remote.py`
 (refused with empty, `0` and `true`, nothing fetched; taken with `1`; a push with nothing
 set goes through), `harness/storeguards.py`, `harness/deps.py`, `harness/storefull.py`.
 
-**H4. A dependency archive could write outside its unit. Fixed.** `rustd deps pull`
+**H4. A dependency archive could write outside its unit. Fixed.** `ra-jit deps pull`
 unpacked tar archives from the remote. Entries were only checked by path prefix, so a
 symlink entry followed by a file through it, or a hard link, could place files elsewhere,
 and the boolean `unpack_in` returns for a skipped `..` path was ignored. Now only plain
@@ -211,7 +211,7 @@ read from the environment, so it is what cargo actually used), and:
 
 - stable names, and so store keys, are made from the path with `/cargo` in place of the
   home (`StableNames::stored`);
-- the content id of an outside crate hashes its root the same way (`rustd library 4`);
+- the content id of an outside crate hashes its root the same way (`ra-jit library 4`);
 - an entry on its way to the store has every path it carries rewritten (`Entry::leave`):
   panic locations, `file!()` strings and the file table of its debug info;
 - an entry on its way out of the store has them rewritten to the cargo home of the
@@ -248,7 +248,7 @@ code that names them stays local as before.
 read whole into memory whatever their size, and a pack or an archive was written to disk
 for as long as the remote kept sending. See "Bounds on what a remote sends".
 
-**M8. rustd ran build scripts cargo would not have. Fixed.** See "Build scripts and proc
+**M8. ra-jit ran build scripts cargo would not have. Fixed.** See "Build scripts and proc
 macros".
 
 ### Low, not changed
@@ -264,7 +264,7 @@ there already owns the build. Inside the hashes of checkout crates the id is mix
 to the name and version, under SHA-256. This is an argument, not a test.
 
 **L2. `own_crate_id` is 64 bits of a SHA-256.** It stands for a checkout crate that rustc
-built nothing of, in two places: linker symbol names (`rustd.<id>.<path>`) and `TypeId`s,
+built nothing of, in two places: linker symbol names (`ra-jit.<id>.<path>`) and `TypeId`s,
 where it sits in the slot rustc's 64-bit id would. Neither decides which stored code is
 used: stable names of checkout crates use the full `ContentId`. A collision needs two
 crates of one checkout with the same name hash and would be a duplicate symbol at link
@@ -294,10 +294,10 @@ by others.
 With write access to the local store directory: anything. They compute the key of any
 function (names are derivable from public sources), write a pack with their code under it,
 and the next build links it. This is by design the same as write access to `target/`. The
-fix is H2: rustd refuses to be in that position.
+fix is H2: ra-jit refuses to be in that position.
 
 With write access to an unsigned remote, before this round: the same, for every machine
-that pulls. After: nothing, unless the user set `RUSTD_REMOTE_UNSIGNED=1`.
+that pulls. After: nothing, unless the user set `RA_JIT_REMOTE_UNSIGNED=1`.
 
 With write access to a signed remote but no trusted key: they can delete or withhold,
 which costs cache hits but never gives wrong code, since every pack is named by its hash
@@ -329,7 +329,7 @@ Default run (20,000 mutations each, part of `cargo test`):
 | manifest | 20,000 inputs | | 0 |
 | dependency key list | 20,000 inputs | | 0 |
 
-Long run, `RUSTD_FUZZ_RUNS=2000000 cargo test --release -p hir-ty --features llvm --lib no_`:
+Long run, `RA_JIT_FUZZ_RUNS=2000000 cargo test --release -p hir-ty --features llvm --lib no_`:
 entry 83,573 accepted and 1,916,430 refused; stored code 193,184 and 1,806,818; pack
 11,759 and 1,988,245; 0 panics, 0 allocations over the bound, 4.7 seconds. Every accepted
 entry is then walked the way the linker walks it (`follow`) to show that no offset or index
@@ -338,14 +338,14 @@ in it is out of range.
 What fell out: M1, M2, M3 and M5 above. Accepted manifest lines are checked to be exactly
 64 hex digits and `.pack`, with no path separator.
 
-The remote-facing parsers have the same loops, in `crates/rustd`, with the same mutator:
+The remote-facing parsers have the same loops, in `crates/ra-jit`, with the same mutator:
 
 | Target | Test | Inputs | What is asserted of every input |
 |---|---|---|---|
 | A manifest | `remote::tests::no_bytes_break_the_reading_of_a_manifest` | 20,000 | no panic; every pack and key list it names is 64 hex digits; what is found to fit under a limit sums to no more than it |
 | A list of units | `deps::tests::no_bytes_break_the_reading_of_a_list_of_units` | 20,000 | no panic; every unit is a crate name and a hash with no separator, every archive 64 hex digits |
 | A signed list | `signed::tests::no_bytes_are_taken_for_a_list_that_was_signed` | 20,000 | no panic; whatever verifies is the body that was signed, at the turn it was signed at |
-| An archive of a unit | `deps::tests::no_bytes_of_an_archive_write_outside_of_its_unit_or_past_the_bound` | 3,000 (`RUSTD_FUZZ_RUNS`), each zstd-packed and bare | nothing is written outside `deps/` and `build/` of the target directory, and no more than the 64 KiB bound |
+| An archive of a unit | `deps::tests::no_bytes_of_an_archive_write_outside_of_its_unit_or_past_the_bound` | 3,000 (`RA_JIT_FUZZ_RUNS`), each zstd-packed and bare | nothing is written outside `deps/` and `build/` of the target directory, and no more than the 64 KiB bound |
 
 Packs pulled from a remote are read by the pack reader and `Entry::decode`, which are the
 first two rows of the first table.
@@ -362,12 +362,12 @@ how much. Now:
 | A manifest, or a list of units | 16 MiB | fixed (`LIST_MAX`); a line is under 200 bytes |
 | A pack as it is sent (zstd) | the compressed size its manifest lists | the manifest |
 | A pack as it unpacks | the size its manifest lists | the manifest |
-| All the packs one pull writes | the store's limit, 8 GiB | `RUSTD_CACHE_MAX`; a pull fetches only what its listed sizes say fits |
-| The keys of one pack | the pack's listed size, and 512 MiB | `RUSTD_REMOTE_MAX` |
-| All the keys a lazy daemon holds in memory | 512 MiB | `RUSTD_REMOTE_MAX` |
-| A pack a lazy daemon fetches | its listed size, and the store's limit | `RUSTD_CACHE_MAX` |
-| The archive of one unit | 512 MiB | `RUSTD_REMOTE_MAX` |
-| All that one `rustd deps pull` unpacks | 64 GiB | `RUSTD_DEPS_MAX` (`off` for none) |
+| All the packs one pull writes | the store's limit, 8 GiB | `RA_JIT_CACHE_MAX`; a pull fetches only what its listed sizes say fits |
+| The keys of one pack | the pack's listed size, and 512 MiB | `RA_JIT_REMOTE_MAX` |
+| All the keys a lazy daemon holds in memory | 512 MiB | `RA_JIT_REMOTE_MAX` |
+| A pack a lazy daemon fetches | its listed size, and the store's limit | `RA_JIT_CACHE_MAX` |
+| The archive of one unit | 512 MiB | `RA_JIT_REMOTE_MAX` |
+| All that one `ra-jit deps pull` unpacks | 64 GiB | `RA_JIT_DEPS_MAX` (`off` for none) |
 
 How each is held:
 
@@ -388,7 +388,7 @@ How each is held:
   store.
 - A pack's bound is the size in its manifest line, which with signed lists is a number
   the signer wrote. The existing `fitting` already left out packs whose listed sizes do
-  not fit under `RUSTD_CACHE_MAX`; with each pack held to its listed size, that sum is
+  not fit under `RA_JIT_CACHE_MAX`; with each pack held to its listed size, that sum is
   now a bound on what is written and not a hope.
 - The keys of a pack are 32 of every 40 or more bytes of it, so their list is never
   longer than the pack.
@@ -411,16 +411,16 @@ pull and for a push, and the list not overwritten),
 `an_archive_longer_than_is_taken_is_refused`,
 `a_list_of_units_longer_than_is_read_is_refused` and
 `an_archive_that_unpacks_to_more_than_is_taken_is_refused`. Against MinIO, `remote.py`
-does, through `rustd cache pull`: a pack listed as 0, 1 and one byte short unpacked, and
-as 0 and one byte short as sent; 2,115 bytes that `rustd cache push` made of a 64 MiB
+does, through `ra-jit cache pull`: a pack listed as 0, 1 and one byte short unpacked, and
+as 0 and one byte short as sent; 2,115 bytes that `ra-jit cache push` made of a 64 MiB
 pack, listed as 1 MiB; and the manifest of 16 MiB and of one byte more.
 
-Not covered: with `RUSTD_CACHE_MAX=off` the sum of what a pull writes has no bound, which
+Not covered: with `RA_JIT_CACHE_MAX=off` the sum of what a pull writes has no bound, which
 is what the setting says. The lazy path's two bounds have no test of their own.
 
 ## What was applied on top of the S3 remote
 
-`rustd-collate` has `rustd-s3`, in two merges while this round ran (526f2963ba, then
+`ra-jit-collate` has `ra-jit-s3`, in two merges while this round ran (526f2963ba, then
 2da3d6a792 with compressed packs, `cache gc --remote` and the daemon that stays). The
 first replaced `remote.rs` and
 `deps.rs` wholesale (the remote is now asynchronous, streams packs to files and has
@@ -440,7 +440,7 @@ to the old remote was done again on the new one, not merged:
   (`remote::tests::a_pack_longer_than_its_list_says_is_not_written` checks the mode of
   what arrives).
 - **A machine that signs takes only signed lists,** also when it names no keys to trust
-  and has `RUSTD_REMOTE_UNSIGNED=1`: what it pulls it later pushes under its own
+  and has `RA_JIT_REMOTE_UNSIGNED=1`: what it pulls it later pushes under its own
   signature, so an unsigned list would be laundered into a signed one.
 - **`Kind::of` in `store.rs`** takes `<pack>.fetch.tmp` for a temporary file of the
   store. The stricter names of M5 did not know the name S3 gives a pack on its way, so
@@ -451,12 +451,12 @@ to the old remote was done again on the new one, not merged:
   and it removes only objects that no list names, reading every list for that whoever
   signed it. What was wrong, and older than `gc`: a machine with no key and no keys to
   trust that wrote a list back (a push, or a collection with
-  `RUSTD_REMOTE_UNSIGNED=1`) wrote it without a signature, over a signed one. Every
+  `RA_JIT_REMOTE_UNSIGNED=1`) wrote it without a signature, over a signed one. Every
   machine that trusts the signer then takes nothing, and the signer's next push starts
   the list again from what it sends. That is a writer to the remote doing through
-  rustd what it could do with the bucket's own tools, so no new power, but rustd should
+  ra-jit what it could do with the bucket's own tools, so no new power, but ra-jit should
   not do it by accident. Now `rewrite_list` refuses: "is signed, and this machine has no
-  key in RUSTD_REMOTE_SIGN: it is left as it is". A collection counts such a manifest
+  key in RA_JIT_REMOTE_SIGN: it is left as it is". A collection counts such a manifest
   with the ones it does not trust and goes on. A signer that collects signs what is
   left at a later turn, and does not shrink a list that was put back under it. The
   bounds hold in `gc` too: lists to 16 MiB, key lists to their pack's size. Tests:
@@ -464,10 +464,10 @@ to the old remote was done again on the new one, not merged:
   `remote.py`, `gc --remote --older-than 0s` by a keyless machine with and without the
   unsigned setting leaves the list and every object as they were, its push is refused,
   and the signer's collection is signed at a later turn and taken by the reader.
-  `gc --remote` without `RUSTD_CACHE` remembers the signer's turn in the daemon's home.
+  `gc --remote` without `RA_JIT_CACHE` remembers the signer's turn in the daemon's home.
 - **Temporary names.** `Kind::of` also takes `<pack>.zst.tmp` and `<pack>.send.tmp`,
   the two names the compressed transfer leaves, for the store's.
-- **`harness/remote.py`** runs its machines with `RUSTD_REMOTE_UNSIGNED=1` where they
+- **`harness/remote.py`** runs its machines with `RA_JIT_REMOTE_UNSIGNED=1` where they
   name no keys, and has a new section, "unsigned lists, old lists, long objects",
   25 checks. `harness/deps.py` expects the new remote's wording for a changed archive
   ("rejected units/...").
@@ -475,19 +475,19 @@ to the old remote was done again on the new one, not merged:
 ## Rollback protection for signed lists
 
 Designed before the signed lists were on this branch, and applied when they arrived. The
-code is in `crates/rustd/src/remote/signed.rs` (`Turns`, and the turn in `seal` and
+code is in `crates/ra-jit/src/remote/signed.rs` (`Turns`, and the turn in `seal` and
 `verify`) and in `Remote::read_list` and `Remote::extend_list` in `remote.rs`.
 
 **What it is for.** A list is signed, so a remote cannot invent one. It could serve an
 old one. Every pack an old list names was vouched for once, so this never gave code
 nobody signed. It matters when a signer has taken something back: a pack built by a
-rustd with a miscompilation, or pushed from a machine later found to be compromised,
+ra-jit with a miscompilation, or pushed from a machine later found to be compromised,
 removed from the list by signing a new one. Without this the remote, or anyone who can
 write to it, could keep handing out the old list for ever.
 
 **The signed body.** Every signed list has a number, its turn. The last line is
 `signed <key> <turn> <signature>`, and the signature is over
-`rustd list 2\n<name>\n<turn>\n<body>`. The domain line was `rustd list 1`, so a
+`ra-jit list 2\n<name>\n<turn>\n<body>`. The domain line was `ra-jit list 1`, so a
 signature of the old kind verifies under no key, and a list signed without a turn is
 "not signed". The turn is a decimal `u64` written the one way there is to write it (no
 sign, no leading zero); anything else is "not signed". It is inside the signed bytes, so
@@ -511,11 +511,11 @@ one second must still be ordered, and over a plain counter because of the reset 
 and a newline. It is written like every file of the store (temporary file, fsync,
 rename, directory fsync), in a directory made 0700. Where:
 
-- For `rustd cache` and the daemon, in the store (`RUSTD_CACHE`). The store is what the
+- For `ra-jit cache` and the daemon, in the store (`RA_JIT_CACHE`). The store is what the
   list fills, it is already private to the user and checked for that, and removing the
   store forgets the turns together with the packs they protected. The store's own code
   leaves a name it does not know alone, which `turns` is.
-- For `rustd deps`, in the store when `RUSTD_CACHE` is set, and otherwise in `.rustd/`
+- For `ra-jit deps`, in the store when `RA_JIT_CACHE` is set, and otherwise in `.ra-jit/`
   of the target directory the units are unpacked into. `cargo clean` forgets them with
   the units.
 
@@ -535,10 +535,10 @@ processes cannot interleave a read and a write:
 | Equal | Taken. Two machines that push at once can sign the same turn over different lines; both are signed by trusted keys, and a remote choosing between them gains nothing it could not by withholding. |
 | Lower | Refused: "`manifests/default` is turn N, and this machine has taken turn M of it: an older list is not taken". Nothing is fetched, and the list is counted as rejected. |
 | Signed without a turn, or under the old domain | Refused as not signed. There is no released version to stay compatible with. |
-| The remembered file cannot be read, or does not hold a turn | Refused, naming the file and `rustd cache forget REMOTE`. It is not taken for nothing remembered: what keeps an old list out must not be something damage removes quietly. The file is left as it is. |
+| The remembered file cannot be read, or does not hold a turn | Refused, naming the file and `ra-jit cache forget REMOTE`. It is not taken for nothing remembered: what keeps an old list out must not be something damage removes quietly. The file is left as it is. |
 | The turn cannot be written (full disk, read-only store) | The pull fails before fetching. |
 
-`rustd cache forget REMOTE` (new) removes what is remembered of one remote. It is for a
+`ra-jit cache forget REMOTE` (new) removes what is remembered of one remote. It is for a
 damaged memory, and for a remote that was deliberately started again by a signer whose
 clock is behind the old lists.
 
@@ -547,8 +547,8 @@ so it does not put its name under a list that was rolled back. Such a list gets 
 untrusted list already got: "it is written anew", with only what this push sent, at a
 turn above everything the signer remembers. After a write goes through, the signer
 remembers its own turn. A damaged memory stops a push as it stops a pull, and the list
-on the remote is not touched. A machine with `RUSTD_REMOTE_UNSIGNED=1` and no keys has
-no turns and no protection; that is the meaning of the setting. The lists of `rustd
+on the remote is not touched. A machine with `RA_JIT_REMOTE_UNSIGNED=1` and no keys has
+no turns and no protection; that is the meaning of the setting. The lists of `ra-jit
 deps` go through the same code.
 
 **What it does not do.** A machine that has never pulled remembers nothing, so it can be
@@ -557,7 +557,7 @@ it. A remote can also freeze a machine at the newest list that machine has seen,
 never showing a newer one. Both are the same gap, freshness, and need an expiry to
 close. The turn makes one possible without another field: a turn is never below the
 signing time, so a list whose turn is older than a chosen age was certainly signed
-before it. An optional `RUSTD_REMOTE_FRESH=<duration>`, refusing lists with
+before it. An optional `RA_JIT_REMOTE_FRESH=<duration>`, refusing lists with
 `turn < now - duration`, would close it for machines that start from an empty store
 (CI), at the price of a signer having to re-sign at least that often and of the reader's
 clock mattering. It is not implemented, and I would not make it the default.
@@ -580,20 +580,20 @@ through `Remote` on a directory with one machine that signs and one that trusts 
 `a_list_that_was_put_back_is_not_taken`,
 `a_signer_does_not_add_to_a_list_that_was_put_back`,
 `a_memory_that_is_damaged_stops_a_push_and_a_pull`. In `harness/remote.py`, against
-MinIO, through the `rustd` binary: A signs and pushes twice, C takes both, the first
+MinIO, through the `ra-jit` binary: A signs and pushes twice, C takes both, the first
 manifest is put back in the bucket and C's pull is refused with nothing fetched; a
 machine that never pulled takes it; `cache forget` has C take it; A, pushing over it,
 writes a new list with a later turn; C takes that and then refuses the second list.
 
 ## Build scripts and proc macros
 
-They are the checkout's programs and run as the user, under rustd exactly as under cargo;
-rustd neither confines them nor gives them anything cargo would not. The thing to check
-was that rustd never runs one cargo would not have. I read every place rustd starts a
-process (`grep -n "Command::new" crates/rustd/src`) and every place a build script or a
+They are the checkout's programs and run as the user, under ra-jit exactly as under cargo;
+ra-jit neither confines them nor gives them anything cargo would not. The thing to check
+was that ra-jit never runs one cargo would not have. I read every place ra-jit starts a
+process (`grep -n "Command::new" crates/ra-jit/src`) and every place a build script or a
 proc macro can come to run. There are three.
 
-1. **`rustd DIR ...` loading a workspace** (`main.rs`, through `project-model`). rustd
+1. **`ra-jit DIR ...` loading a workspace** (`main.rs`, through `project-model`). ra-jit
    does not run build scripts or compile proc macros itself here. It has cargo do it:
    `cargo check --compile-time-deps` with the profile, packages, features and target the
    build was asked for. Proc macros are then expanded by the toolchain's own proc-macro
@@ -605,22 +605,22 @@ proc macro can come to run. There are three.
    examples, those bring in dev-dependencies, and cargo then runs the build scripts of
    dev-dependencies and builds their proc macros. Measured on a workspace where every
    script and macro writes a line when it runs: `cargo build -p app` ran one build script
-   (of `dep`); the command rustd gave cargo for the same selection ran two (of `dep` and
+   (of `dep`); the command ra-jit gave cargo for the same selection ran two (of `dep` and
    of the dev-dependency `devdep`). A crate that is only a dev-dependency is exactly what
    someone building a release binary does not expect to execute. Fixed in
    `project-model`: `--all-targets` is passed with `--compile-time-deps` only when the
-   configuration asks for all targets, and rustd asks only when the build has tests in it
+   configuration asks for all targets, and ra-jit asks only when the build has tests in it
    (`--cfg-test` or `--dev-deps`).
 
-2. **`cargo rustd ...`** (`crates/rustd/src/cargo`). Cargo is run as itself with rustd as
+2. **`cargo ra-jit ...`** (`crates/ra-jit/src/cargo`). Cargo is run as itself with ra-jit as
    `RUSTC_WORKSPACE_WRAPPER` (`cargo/state.rs`), so cargo decides what is compiled and
    run. The wrapper renames a linked build script to `<script>.real` and leaves a
-   two-line shell script in its place that runs `rustd build-script`, which writes down
+   two-line shell script in its place that runs `ra-jit build-script`, which writes down
    the environment and directory cargo gave it and then `exec`s the real script with the
    same arguments. Nothing runs that cargo did not start.
 
 3. **The daemon running a build script again** (`cargo/script.rs`, `rerun_is_same`, called
-   from `Guard::broken` in `state.rs`). This is the one place rustd starts a build script
+   from `Guard::broken` in `state.rs`). This is the one place ra-jit starts a build script
    itself. It does so only for a script cargo has already run in this target directory,
    only when one of the files the script named with `rerun-if-changed` has changed (or
    any file of the package, if it named none), which is when cargo would run it again,
@@ -628,29 +628,29 @@ proc macro can come to run. There are three.
    and executable. If its output differs the build is handed back to cargo. A change to
    a `rerun-if-env-changed` variable is never handled this way; that is cargo's.
 
-   The record (`rustd-ran.json`) is in the target directory and names the executable to
+   The record (`ra-jit-ran.json`) is in the target directory and names the executable to
    run. Whoever can write there can already replace the script itself, or any rlib, so it
    is no new way in; the target directory is as trusted as the checkout.
 
-The other processes rustd starts are cargo, rustc (as the wrapper, with cargo's
-arguments), the linker line cargo's rustc printed, the built program for `cargo rustd
+The other processes ra-jit starts are cargo, rustc (as the wrapper, with cargo's
+arguments), the linker line cargo's rustc printed, the built program for `cargo ra-jit
 run` and `test`, and itself as daemon or worker.
 
 **The test** is `harness/selects.py`, new and in the workflow. A workspace has an `app`
 with a dependency, a dev-dependency and a dev-only proc macro, and another member nothing
 depends on; each build script and the macro append a line to a file when they run. For
-three selections the same thing is asked of cargo and of rustd, each on a fresh copy, and
-every line rustd's build wrote has to be one cargo's wrote:
+three selections the same thing is asked of cargo and of ra-jit, each on a fresh copy, and
+every line ra-jit's build wrote has to be one cargo's wrote:
 
-| Selection | cargo ran | rustd ran |
+| Selection | cargo ran | ra-jit ran |
 |---|---|---|
 | `build -p app` / `--package app` | script of `dep` | the same 1 |
 | `test --no-run -p app` / `--package app --cfg-test` | scripts of `dep`, `devdep`; macro `devmacro` | the same 3 |
 | `build --workspace` / `--workspace` | scripts of `dep`, `devdep`, `other` | the same 3 |
 
 Before the fix the first row fails, by the measurement above. Not covered by the harness:
-the `cargo rustd` path, where the argument is that cargo is the one running; and a
-`rustd DIR` with no package selected at the root of a workspace, which builds every
+the `cargo ra-jit` path, where the argument is that cargo is the one running; and a
+`ra-jit DIR` with no package selected at the root of a workspace, which builds every
 member as `cargo build` there does.
 
 ## Windows
@@ -700,15 +700,15 @@ rights in `WRITES` is from the documentation.
 elevated) shell, then the first line again in an elevated one:
 
     cargo test --release -p hir-ty --lib -- store::tests
-    cargo build -p rustd --release
-    mkdir C:\rustd-store-check
-    set RUSTD_CACHE=C:\rustd-store-check
-    target\release\rustd.exe cache stats
-    icacls C:\rustd-store-check /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F"
-    target\release\rustd.exe cache stats
-    mkdir %LOCALAPPDATA%\rustd-store-check
-    set RUSTD_CACHE=%LOCALAPPDATA%\rustd-store-check
-    target\release\rustd.exe cache stats
+    cargo build -p ra-jit --release
+    mkdir C:\ra-jit-store-check
+    set RA_JIT_CACHE=C:\ra-jit-store-check
+    target\release\ra-jit.exe cache stats
+    icacls C:\ra-jit-store-check /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F"
+    target\release\ra-jit.exe cache stats
+    mkdir %LOCALAPPDATA%\ra-jit-store-check
+    set RA_JIT_CACHE=%LOCALAPPDATA%\ra-jit-store-check
+    target\release\ra-jit.exe cache stats
 
 Expected: the tests pass, among them the three written for Windows
 (`a_store_under_the_users_profile_is_taken`,
@@ -727,7 +727,7 @@ and making the store private on creation.
 
 ## The daemon socket: findings to forward
 
-Read at `origin/rustd-cargo` 13054e50d6 (`socket.rs`, `cargo/daemon.rs`, `cargo/client.rs`,
+Read at `origin/ra-jit-cargo` 13054e50d6 (`socket.rs`, `cargo/daemon.rs`, `cargo/client.rs`,
 and the socket parts of `main.rs`). Nothing was edited. What is already right: the
 directory is made 0700 and refused if it is not a directory, is another user's, or has any
 group/other bit, using `symlink_metadata` so a link is not followed; the socket is 0600;
@@ -736,8 +736,8 @@ is read; the lock is taken before a stale socket is removed, so two daemons star
 together cannot unlink each other's socket; requests are capped at 16 MiB and 10 seconds;
 each connection has its own thread so a slow one blocks nobody.
 
-Read again this round at `rustd-collate` 1547078a30, where the file is now
-`crates/rustd/src/socket.rs`; still not edited. The list below was forwarded last round.
+Read again this round at `ra-jit-collate` 1547078a30, where the file is now
+`crates/ra-jit/src/socket.rs`; still not edited. The list below was forwarded last round.
 Of it, finding 1 still stands as written (`main.rs` calls `Served::bind(path)` on a
 `--socket` path with no `private_dir`; the daemon's home and the worker directories do
 call it, in `cargo/daemon.rs` and `cargo/client.rs`), and so do 2, 3 (no
@@ -748,9 +748,9 @@ Findings:
 
 1. **Medium. A daemon started with `--socket PATH` does not check PATH's directory.**
    `private_dir` is only called for the daemon's home and the worker directories. The
-   plain `rustd … --socket /tmp/x.sock` path (`main.rs`, `Served::bind(path)`) binds
+   plain `ra-jit … --socket /tmp/x.sock` path (`main.rs`, `Served::bind(path)`) binds
    wherever it is told. The server side is still safe on Unix because of the peer check.
-   The client side is not: `rustd sync SOCKET` connects to whatever is at that path and
+   The client side is not: `ra-jit sync SOCKET` connects to whatever is at that path and
    sends its request and, for workers, the whole environment of the client process
    (`read_request_and_env`). In a shared directory another user can be listening there
    first. Either call `private_dir` on the socket's parent in both the daemon and the
@@ -795,7 +795,7 @@ Findings:
 Across users, after this round, I found nothing:
 
 - The store is 0700/0600 and refused otherwise, so another user cannot read it, list it,
-  time it or run `rustd cache stats` on it. Before H2 they could do all four, and from the
+  time it or run `ra-jit cache stats` on it. Before H2 they could do all four, and from the
   names in a pack learn the relative paths of the source files, item positions and the
   types functions were instantiated with.
 - The socket turns away other users (on Unix), so status, diagnostics and build timing are
@@ -820,7 +820,7 @@ Across machines, through a remote, for anyone who can read it:
 Between two checkouts of the same user, which is inside the trust boundary and was not
 changed:
 
-- `rustd cache stats` gives counts, sizes and how long ago the store was used, not
+- `ra-jit cache stats` gives counts, sizes and how long ago the store was used, not
   contents.
 - A cache hit is faster than a miss, so one checkout can tell that another built the same
   function from the same source.
@@ -831,7 +831,7 @@ changed:
 
 - **Freshness.** A machine with an empty store can be given any list ever signed, and a
   remote can keep a machine at the newest list it has seen. See the end of the rollback
-  section; `RUSTD_REMOTE_FRESH` is a sketch, not code.
+  section; `RA_JIT_REMOTE_FRESH` is a sketch, not code.
 - **Windows was compiled, not run.** The store check needs the commands above run on a
   Windows machine. The socket there has no peer check, and the store is not made private
   on creation. The directory of turns is made 0700 on Unix and with what it inherits on
@@ -840,7 +840,7 @@ changed:
   depend on the service, but that is an argument.
 - **The two bounds of the lazy path** (keys held in memory, a pack over the store's
   limit) have no test of their own.
-- **With `RUSTD_CACHE_MAX=off`** a pull writes as much as the lists name.
+- **With `RA_JIT_CACHE_MAX=off`** a pull writes as much as the lists name.
 - **A writer to the remote can still delete a signed list with the bucket's own tools,**
   or anything else in it. Signing protects what is taken, not that there is something
   to take.
@@ -852,7 +852,7 @@ changed:
 - **Private registry names** are in the remapped path (`/cargo/registry/src/<index>/`).
 - **`a_store_of_another_user_is_refused` needs root** to do anything, so CI as a normal
   user does not exercise it.
-- **L1 and L4** are arguments. If rustd ever names an outside crate without its path, L1
+- **L1 and L4** are arguments. If ra-jit ever names an outside crate without its path, L1
   stops holding.
 - **Same-user isolation** (one checkout's daemon against another's) is not a goal and
   nothing here provides it.
@@ -861,29 +861,29 @@ changed:
 ## Validation
 
 All of this is on Linux x86-64, with stable 1.99.0, LLVM 20.1.8 and MinIO
-RELEASE.2026-09-22T19-25-18Z, on the head of this branch after the merge of `rustd-collate`
+RELEASE.2026-09-22T19-25-18Z, on the head of this branch after the merge of `ra-jit-collate`
 at ce52276cf5. Nothing else was run.
 
 Builds and checks:
 
     cargo fmt --all -- --check                                      clean
-    cargo build -p rustd --release                                  builds
+    cargo build -p ra-jit --release                                  builds
     LLVM_SYS_201_PREFIX=/usr/lib/llvm-20 CARGO_TARGET_DIR=target-llvm \
-      cargo build -p rustd --release --features llvm                builds
-    cargo test --release -p hir-ty -p hir-def -p parser -p syntax -p rustd -p project-model
+      cargo build -p ra-jit --release --features llvm                builds
+    cargo test --release -p hir-ty -p hir-def -p parser -p syntax -p ra-jit -p project-model
                                                                     1022 passed, 0 failed, 1 ignored
-    cargo test --release -p rustd -- remote:: deps::                33 passed
+    cargo test --release -p ra-jit -- remote:: deps::                33 passed
     cargo check -p hir-ty --tests --target x86_64-pc-windows-msvc   checks
 
 `cargo xtask tidy` fails, and not from this branch: it objects to two `#[should_panic]`
-tests in `crates/rustd/src/main.rs` that came with the build model merge and are on
-`rustd-collate` as it is. `cargo clippy -p rustd --all-targets` has no warning in
-`remote.rs`, `remote/` or `deps.rs` that `rustd-collate` does not have (the prints, an
+tests in `crates/ra-jit/src/main.rs` that came with the build model merge and are on
+`ra-jit-collate` as it is. `cargo clippy -p ra-jit --all-targets` has no warning in
+`remote.rs`, `remote/` or `deps.rs` that `ra-jit-collate` does not have (the prints, an
 `Arc<Vec<u8>>` and two `chunks_exact`).
 
-The harnesses, from `harness/`, one backend after the other, with `RUSTD_BIN` at the
-release binary and `RUSTD_BACKEND=cranelift`, then `RUSTD_BACKEND=llvm RUSTD_OPT=2
-RUSTD_EMIT=fast`:
+The harnesses, from `harness/`, one backend after the other, with `RA_JIT_BIN` at the
+release binary and `RA_JIT_BACKEND=cranelift`, then `RA_JIT_BACKEND=llvm RA_JIT_OPT=2
+RA_JIT_EMIT=fast`:
 
 | Harness | Cranelift | LLVM |
 |---|---|---|
@@ -909,7 +909,7 @@ RUSTD_EMIT=fast`:
 | `backends.py corpus runner cases --bin runner --levels 2f` | | exit 0 |
 | `buildmodel.py` (runs both backends itself) | | 194 of 194, 0 WRONG |
 
-The 5 open of `breakers.py` are the ones it lists as open on `rustd-collate`. Of the 117
+The 5 open of `breakers.py` are the ones it lists as open on `ra-jit-collate`. Of the 117
 checks of `remote.py`, 25 are new here.
 
 Things in the gate that changed because of this branch, said here so they are not taken

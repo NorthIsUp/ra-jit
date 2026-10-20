@@ -9,7 +9,7 @@
     "--features",
     "fancy"
   ],
-  "rustd": [
+  "ra-jit": [
     "--features",
     "fancy"
   ]

@@ -8,7 +8,7 @@
     "--lib"
   ],
   "verb": "test",
-  "rustd": [
+  "ra-jit": [
     "--cfg-test",
     "--profile",
     "test"

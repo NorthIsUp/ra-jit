@@ -552,11 +552,11 @@ impl Dwarf {
             LineEncoding::default(),
             LineString::String(self.directory.clone()),
             None,
-            LineString::String(b"<rustd>".to_vec()),
+            LineString::String(b"<ra-jit>".to_vec()),
             None,
         );
-        let producer = self.text(concat!("rustd ", env!("CARGO_PKG_VERSION")).as_bytes());
-        let name = self.text(b"<rustd>");
+        let producer = self.text(concat!("ra-jit ", env!("CARGO_PKG_VERSION")).as_bytes());
+        let name = self.text(b"<ra-jit>");
         let directory = self.text(&self.directory.clone());
         let unit = &mut self.dwarf.unit;
         let root = unit.get_mut(unit.root());

@@ -6,5 +6,5 @@
     "dep"
   ],
   "cargo": [],
-  "rustd": []
+  "ra-jit": []
 }

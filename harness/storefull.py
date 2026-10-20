@@ -9,11 +9,11 @@ middle of the records, and when it seals. Each time:
   - the daemon has to build a program that prints what cargo's does, on its first build and
     after an edit;
   - it has to say that it keeps nothing, and why;
-  - `rustd cache verify` has to find nothing in the store that is not what was written.
+  - `ra-jit cache verify` has to find nothing in the store that is not what was written.
 
 Then room is made under a running daemon, and what the next daemon compiles has to be kept
-again. `rustd cache pull` into the full store has to fail with the reason and leave no part
-of a pack behind, and `rustd cache gc` has to make room.
+again. `ra-jit cache pull` into the full store has to fail with the reason and leave no part
+of a pack behind, and `ra-jit cache gc` has to make room.
 
     python3 storefull.py
 """
@@ -29,7 +29,7 @@ SIZE = (64 if WINDOWS else 8) << 20
 # How much room the store has, in bytes. A cold build of the workspace writes about 1.5 MB
 # with Cranelift on Linux and under 1 MB with LLVM on Windows, so the last room is measured.
 ROOMS = [0, 4096, 16 << 10, 128 << 10, 512 << 10]
-SEALS = {"RUSTD_CACHE_SEAL_AT": "1", "RUSTD_CACHE_MAX": "off"}
+SEALS = {"RA_JIT_CACHE_SEAL_AT": "1", "RA_JIT_CACHE_MAX": "off"}
 NO_ROOM = "There is not enough space on the disk" if WINDOWS else "No space left on device"
 
 
@@ -53,7 +53,7 @@ class Disk:
 
     def empty_store(self):
         """The store's directory, empty and the user's alone. A volume just formatted lets
-        every user of a Windows machine write to what is made at its top, and rustd takes
+        every user of a Windows machine write to what is made at its top, and ra-jit takes
         no store that others can write to."""
         shutil.rmtree(self.store, ignore_errors=True)
         os.mkdir(self.store)
@@ -172,11 +172,11 @@ def kept_again(checkout, disk):
 
 
 # The remote is a directory of this user's, whose lists nobody signs.
-UNSIGNED = {"RUSTD_REMOTE_UNSIGNED": "1"}
+UNSIGNED = {"RA_JIT_REMOTE_UNSIGNED": "1"}
 
 
 def commands(checkout, disk, work):
-    """`rustd cache` on a full disk: pull fails cleanly, gc makes room."""
+    """`ra-jit cache` on a full disk: pull fails cleanly, gc makes room."""
     remote = os.path.join(work, "remote")
     status, out = cache(disk.store, "push", remote)
     if status != 0:
@@ -185,8 +185,8 @@ def commands(checkout, disk, work):
     status, out = cache(disk.store, "gc", "--max", "0")
     if status != 0 or files(disk.store, ".pack"):
         fail(f"gc --max 0: {out}")
-    status, out = cache(disk.store, "pull", remote, env={"RUSTD_REMOTE_UNSIGNED": ""})
-    if status == 0 or "RUSTD_REMOTE_UNSIGNED=1" not in out or files(disk.store, ".pack"):
+    status, out = cache(disk.store, "pull", remote, env={"RA_JIT_REMOTE_UNSIGNED": ""})
+    if status == 0 or "RA_JIT_REMOTE_UNSIGNED=1" not in out or files(disk.store, ".pack"):
         fail(f"pull from lists nobody signed was not refused: {out}")
     disk.leave(64 << 10)
     status, out = cache(disk.store, "pull", remote, env=UNSIGNED)
@@ -212,7 +212,7 @@ def commands(checkout, disk, work):
 
 def main():
     start = time.time()
-    work = scratch("rustd-storefull-")
+    work = scratch("ra-jit-storefull-")
     checkout = Checkout(work)
     disk = Disk(work)
     try:

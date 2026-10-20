@@ -161,7 +161,7 @@ pub struct CompiledFunction {
     pub(super) closure: Option<ExprId>,
     /// The named locals of the body a debugger can be told of, whose types are of `.0`.
     pub(super) variables: Option<(StoredParamEnvAndCrate, Vec<Variable>)>,
-    /// Size and alignment of every type laid out, collected when `RUSTD_LAYOUTS` is set.
+    /// Size and alignment of every type laid out, collected when `RA_JIT_LAYOUTS` is set.
     pub(super) layouts: Vec<(String, u64, u64)>,
 }
 
@@ -306,7 +306,7 @@ impl<'db> Recorder<'db> {
             shared: FxHashMap::default(),
             vtables: FxHashMap::default(),
             statics: FxHashMap::default(),
-            layouts: std::env::var_os("RUSTD_LAYOUTS").map(|_| Default::default()),
+            layouts: std::env::var_os("RA_JIT_LAYOUTS").map(|_| Default::default()),
             builder_ctx: FunctionBuilderContext::new(),
             naked: None,
             spans: Vec::new(),

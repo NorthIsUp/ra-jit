@@ -20,14 +20,14 @@ use stdx::time::Instant;
 use super::{CodegenError, Result, debuginfo::SlotPlaces, fragment::Code, fragment::Recorder};
 
 /// Names the producer: `cranelift` (the default) or `llvm`.
-const BACKEND: &str = "RUSTD_BACKEND";
+const BACKEND: &str = "RA_JIT_BACKEND";
 /// How hard LLVM optimizes each function, `0` to `3`. Functions are compiled alone at any
 /// level: nothing is inlined across them.
-const OPTIMIZATION: &str = "RUSTD_OPT";
+const OPTIMIZATION: &str = "RA_JIT_OPT";
 /// How LLVM turns the optimized function into machine code: `optimized` (the default) or
 /// `fast`, its quick instruction selection and register allocation. Most of LLVM's time on a
 /// function is here, not in the passes before it.
-const SELECTION: &str = "RUSTD_EMIT";
+const SELECTION: &str = "RA_JIT_EMIT";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
@@ -90,7 +90,7 @@ impl Backend {
         match std::env::var(BACKEND).as_deref() {
             Ok("cranelift") | Err(_) => Ok(Backend::Cranelift),
             Ok("llvm") if cfg!(feature = "llvm") => Ok(Backend::Llvm(optimization)),
-            Ok("llvm") => Err(format!("{BACKEND}=llvm: rustd was built without `--features llvm`")),
+            Ok("llvm") => Err(format!("{BACKEND}=llvm: ra-jit was built without `--features llvm`")),
             Ok(other) => Err(format!("{BACKEND}={other}: expected `cranelift` or `llvm`")),
         }
     }
@@ -341,7 +341,7 @@ impl Tally {
             format!("{name} {took:.1?}")
         });
         let selected = Self::selected_llvm();
-        let stats = std::env::var_os("RUSTD_STATS").is_some();
+        let stats = std::env::var_os("RA_JIT_STATS").is_some();
         if !selected && !stats {
             return;
         }

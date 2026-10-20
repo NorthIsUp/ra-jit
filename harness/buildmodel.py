@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""buildmodel.py: which parts of cargo's build model rustd honours.
+"""buildmodel.py: which parts of cargo's build model ra-jit honours.
 
 usage: buildmodel.py [case ...] [--backend cranelift|llvm] [--table FILE] [--keep]
 
 Each directory under `harness/buildmodel/` is a small cargo project that depends on one feature
 of the build model, with a `case.json` that says how cargo is asked to build it and which
-crates are rustd's. The project is built twice: by cargo and rustc alone, which is the
-reference, and by cargo with rustd's code for the named crates linked in front of rustc's.
+crates are ra-jit's. The project is built twice: by cargo and rustc alone, which is the
+reference, and by cargo with ra-jit's code for the named crates linked in front of rustc's.
 Both programs run and what they print and return is compared. A case may then change one of
 its inputs a step at a time under one daemon, and each step is compared with cargo the same way.
 
 A row is one of
-  supported  the same output, every function of the named crates compiled by rustd
-  refused    rustd said why it does not build this, and built nothing that runs differently
+  supported  the same output, every function of the named crates compiled by ra-jit
+  refused    ra-jit said why it does not build this, and built nothing that runs differently
   WRONG      different output, a crash, or a refusal without a reason
   skipped    the case is of another host: a Linux cross target has its linker and runner there
 and the run fails on any WRONG row and on any row that is not what its `case.json` expects.
@@ -23,25 +23,25 @@ and the run fails on any WRONG row and on any row that is not what its `case.jso
   select    what of the package is built when not its one program: ["--example", "demo"]
   verb      "build" (the default), "test" or "bench": what cargo is asked to do with it
   artifact  the name of the target that is run, when it is not the selected one or the package
-  archive   the build is an archive and has no link line: rustd's objects are given to `run`
-  unbuilt   why nothing of rustd can be asked to build this at all: the row is that refusal
-  doctests  the case is `cargo test --doc` of the package: once with rustdoc, once with rustd
+  archive   the build is an archive and has no link line: ra-jit's objects are given to `run`
+  unbuilt   why nothing of ra-jit can be asked to build this at all: the row is that refusal
+  doctests  the case is `cargo test --doc` of the package: once with rustdoc, once with ra-jit
             as cargo's RUSTDOC, and what the test harness prints and returns is compared
-  link      more arguments to cargo for the build rustd links against, which the reference
+  link      more arguments to cargo for the build ra-jit links against, which the reference
             is built without
-  says      what rustd has to say on stderr as it builds
-  crates    the crates rustd compiles
+  says      what ra-jit has to say on stderr as it builds
+  crates    the crates ra-jit compiles
   cargo     more arguments to cargo: ["--release"], ["--features", "x"]
-  rustd     more arguments to rustd
+  ra-jit     more arguments to ra-jit
   target    the triple to build for when it is not the host
   on        the architecture of the only hosts the case is of: it is not run on another
   env       the environment of both builds
   run       a script of the case that runs what was built in place of running it directly;
-            it is given ARTIFACT, and RUSTD_OBJECTS with rustd's objects for the second build
+            it is given ARTIFACT, and RA_JIT_OBJECTS with ra-jit's objects for the second build
   args      what the program is run with
   expect    "supported" (the default) or "refused"
-  handed    rustd is given the link line of the build and links by itself
-  fails     cargo itself turns the project down, and so must rustd
+  handed    ra-jit is given the link line of the build and links by itself
+  fails     cargo itself turns the project down, and so must ra-jit
   steps     [{"what": .., "edit": [[file, old, new]], "write": {file: text}, "env": {..},
               "run": [shell commands in the project], "clients": how many ask at once,
               "paused": the clients ask while the daemon is held in the middle of the reload,
@@ -55,15 +55,15 @@ import errno, argparse, glob, json, os, re, shlex, shutil, subprocess, sys, temp
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-os.environ.pop("RUSTD_TARGET", None)
+os.environ.pop("RA_JIT_TARGET", None)
 import linkline
-from difftest import RUSTD, host, linker_line
+from difftest import RA_JIT, host, linker_line
 
 # A case names its own flags: difftest's default would replace the ones of its configuration.
 os.environ.pop("RUSTFLAGS", None)
 
 CASES = os.path.join(HERE, "buildmodel")
-# rustd needs the symbols of what only one codegen unit uses: see difftest.py.
+# ra-jit needs the symbols of what only one codegen unit uses: see difftest.py.
 KEEP = ["-C", "link-dead-code"]
 CROSS = {
     "aarch64-unknown-linux-gnu": {"linker": "aarch64-linux-gnu-gcc", "runner": ["qemu-aarch64", "-L", "/usr/aarch64-linux-gnu"]},
@@ -72,11 +72,11 @@ CROSS = {
 
 
 class Refused(Exception):
-    """rustd turned the build down and said why."""
+    """ra-jit turned the build down and said why."""
 
 
 class Wrong(Exception):
-    """rustd's build is not cargo's, or it failed without a reason."""
+    """ra-jit's build is not cargo's, or it failed without a reason."""
 
 
 def sysroot_rlibs(triple, env):
@@ -85,12 +85,12 @@ def sysroot_rlibs(triple, env):
 
 
 def reason_of(stderr):
-    """What rustd gave as the reason it stopped: its last line, unless it crashed."""
+    """What ra-jit gave as the reason it stopped: its last line, unless it crashed."""
     lines = [l for l in stderr.strip().splitlines() if l.strip()]
     if not lines:
-        raise Wrong("rustd failed and said nothing")
+        raise Wrong("ra-jit failed and said nothing")
     if any("panicked at" in l for l in lines) or "stack backtrace" in stderr:
-        raise Wrong("rustd crashed: " + next(l for l in lines if "panicked at" in l or "backtrace" in l)[:200])
+        raise Wrong("ra-jit crashed: " + next(l for l in lines if "panicked at" in l or "backtrace" in l)[:200])
     return re.sub(r"^Error: ", "", lines[-1])[:300]
 
 
@@ -107,20 +107,20 @@ class Case:
         if "linker" in cross:
             self.env["CARGO_TARGET_" + self.target.upper().replace("-", "_") + "_LINKER"] = cross["linker"]
         if backend == "llvm":
-            self.env.update(RUSTD_BACKEND="llvm", RUSTD_OPT="2", RUSTD_EMIT="fast")
+            self.env.update(RA_JIT_BACKEND="llvm", RA_JIT_OPT="2", RA_JIT_EMIT="fast")
         else:
-            self.env["RUSTD_BACKEND"] = "cranelift"
+            self.env["RA_JIT_BACKEND"] = "cranelift"
         self.select = ["-p", self.spec["package"], *self.spec.get("select", [])]
         self.cargo_args = [*self.spec.get("cargo", []), *(["--target", self.target] if self.target else [])]
-        self.rustd_args = ["--package", self.spec["package"], *self.spec.get("rustd", []), *(["--target", self.target] if self.target else [])]
+        self.ra_jit_args = ["--package", self.spec["package"], *self.spec.get("ra-jit", []), *(["--target", self.target] if self.target else [])]
         self.crates = self.spec["crates"]
         self.verb = self.spec.get("verb", "build")
 
     def prepare(self):
         # By its long name: the temporary directory of a Windows runner is named by a short one.
-        self.ws = os.path.realpath(tempfile.mkdtemp(prefix=f"rustd-bm-{self.name}-"))
+        self.ws = os.path.realpath(tempfile.mkdtemp(prefix=f"ra-jit-bm-{self.name}-"))
         shutil.copytree(self.source, self.ws, dirs_exist_ok=True, ignore=shutil.ignore_patterns("target*", "case.json"))
-        self.work = os.path.join(self.ws, "target-rustd-out")
+        self.work = os.path.join(self.ws, "target-ra-jit-out")
         os.makedirs(self.work)
         if os.path.exists(os.path.join(self.ws, "setup.sh")):
             # Where the copy is as a `file://` URL has it, which on Windows is not what `sh` calls it.
@@ -155,7 +155,7 @@ class Case:
         """What running the build prints and returns."""
         if "run" in self.spec:
             command = ["sh", self.spec["run"]]
-            env = {**env, "ARTIFACT": artifact, "RUSTD_OBJECTS": " ".join(objects)}
+            env = {**env, "ARTIFACT": artifact, "RA_JIT_OBJECTS": " ".join(objects)}
         else:
             command = [*self.runner, artifact, *self.spec.get("args", [])]
         # A program linked to a `dylib` finds it where cargo left it, as `cargo run` has it.
@@ -170,10 +170,10 @@ class Case:
         clean = lambda out: re.sub(rb"finished in [0-9.]+s", b"finished", re.sub(rb"' \(\d+\) panicked", b"' panicked", out))
         return (run.returncode, clean(run.stdout), clean(run.stderr))
 
-    # rustd's build.
+    # ra-jit's build.
 
     def link_line(self, env):
-        """cargo's build of what rustd links against, and the line that links it."""
+        """cargo's build of what ra-jit links against, and the line that links it."""
         env = dict(env)
         # A build of the whole workspace has no one rustc to hand arguments: every one prints.
         whole = "--workspace" in self.cargo_args
@@ -191,7 +191,7 @@ class Case:
             ["cargo", "rustc", *config, *self.select, *profile, *self.cargo_args, "--", *ask]
         run = subprocess.run(command, cwd=self.ws, capture_output=True, text=True, env=env)
         if run.returncode != 0:
-            raise Wrong("cargo failed with what rustd needs of it: " + run.stderr[-600:])
+            raise Wrong("cargo failed with what ra-jit needs of it: " + run.stderr[-600:])
         printed = run.stdout + run.stderr
         if whole:
             printed = "\n".join(l for l in printed.splitlines() if re.search(rf"[/\\]{re.escape(self.artifact_name())}-", l))
@@ -211,7 +211,7 @@ class Case:
         """cargo's archive of the package with every symbol kept, in place of a link line."""
         built = self.cargo({**env, "RUSTFLAGS": " ".join([env.get("RUSTFLAGS", ""), *KEEP]).strip()}, "target")
         if built is None:
-            raise Wrong("cargo failed with what rustd needs of it: " + self.cargo_error[-600:])
+            raise Wrong("cargo failed with what ra-jit needs of it: " + self.cargo_error[-600:])
         return [built]
 
     def link_dir(self):
@@ -229,40 +229,40 @@ class Case:
         return compiled, skipped
 
     def batch(self, env):
-        """Builds once with rustd, not as a daemon: the artifact and how many functions are rustd's."""
+        """Builds once with ra-jit, not as a daemon: the artifact and how many functions are ra-jit's."""
         link = self.link = self.archive(env) if self.spec.get("archive") else self.link_line(env)
         if link is None:
-            raise Wrong("cargo printed no link line for rustd's objects to go on")
-        obj, report = os.path.join(self.work, "rustd.o"), os.path.join(self.work, "report.tsv")
+            raise Wrong("cargo printed no link line for ra-jit's objects to go on")
+        obj, report = os.path.join(self.work, "ra-jit.o"), os.path.join(self.work, "report.tsv")
         out = os.path.join(self.work, "out")
         os.makedirs(out, exist_ok=True)
         binary = os.path.join(out, os.path.basename(linkline.output_of(link))) if not self.spec.get("archive") else None
         handed = []
         if self.spec.get("handed"):
-            handed = ["--link-cmd", linkline.join(linkline.with_output(linkline.ahead(link, [obj], RUSTD), binary))]
+            handed = ["--link-cmd", linkline.join(linkline.with_output(linkline.ahead(link, [obj], RA_JIT), binary))]
         run = subprocess.run(
-            [RUSTD, self.ws, *(x for c in self.crates for x in ("--crate", c)), "--out", obj, "--report", report,
-             *self.rustd_args, *handed, *self.symbols(link, env)],
+            [RA_JIT, self.ws, *(x for c in self.crates for x in ("--crate", c)), "--out", obj, "--report", report,
+             *self.ra_jit_args, *handed, *self.symbols(link, env)],
             cwd=self.link_dir(), capture_output=True, text=True, env=env, timeout=600)
-        open(os.path.join(self.work, "rustd.stderr"), "w").write(run.stderr)
+        open(os.path.join(self.work, "ra-jit.stderr"), "w").write(run.stderr)
         if run.returncode < 0:
-            raise Wrong(f"rustd died of signal {-run.returncode}: " + run.stderr[-300:])
+            raise Wrong(f"ra-jit died of signal {-run.returncode}: " + run.stderr[-300:])
         if run.returncode != 0:
             raise Refused(reason_of(run.stderr))
         if self.spec.get("says", "") not in run.stderr:
-            raise Wrong(f"rustd did not say `{self.spec['says']}`")
+            raise Wrong(f"ra-jit did not say `{self.spec['says']}`")
         compiled, skipped = self.left_to_rustc(report)
         if skipped:
             raise Refused(f"{len(skipped)} functions left to rustc: {skipped[0][1]}: {skipped[0][2][:160]}")
         if not compiled:
-            raise Wrong("rustd compiled nothing, so nothing was compared")
+            raise Wrong("ra-jit compiled nothing, so nothing was compared")
         if self.spec.get("archive"):
             return link[0], [obj], compiled
         if handed:
             return binary, [], compiled
-        linked = subprocess.run(linkline.with_output(linkline.ahead(link, [obj], RUSTD), binary), cwd=self.link_dir(), capture_output=True, text=True, env=env)
+        linked = subprocess.run(linkline.with_output(linkline.ahead(link, [obj], RA_JIT), binary), cwd=self.link_dir(), capture_output=True, text=True, env=env)
         if linked.returncode != 0:
-            raise Wrong("the link with rustd's objects failed: " + (linked.stderr + linked.stdout)[-400:])
+            raise Wrong("the link with ra-jit's objects failed: " + (linked.stderr + linked.stdout)[-400:])
         return binary, [], compiled
 
     # One input changed at a time under one daemon.
@@ -277,7 +277,7 @@ class Case:
         ask = self.ask(link, env)
         log = open(log_path, "a")
         daemon = subprocess.Popen(
-            [RUSTD, self.ws, *(x for c in self.crates for x in ("--crate", c)), *self.rustd_args, "--socket", socket, *ask],
+            [RA_JIT, self.ws, *(x for c in self.crates for x in ("--crate", c)), *self.ra_jit_args, "--socket", socket, *ask],
             stderr=log, stdout=log, env=env)
         try:
             while "watching" not in open(log_path).read():
@@ -293,7 +293,7 @@ class Case:
     def ask(self, link, env):
         """What a client names the program by, and how it is linked with what cargo built."""
         obj, patch, binary = self.daemon_files
-        line = linkline.join(linkline.with_output(linkline.ahead(link, [patch, obj], RUSTD), binary))
+        line = linkline.join(linkline.with_output(linkline.ahead(link, [patch, obj], RA_JIT), binary))
         return ["--out", obj, "--patch", patch, "--link-cmd", line, "--binary", binary, *self.symbols(link, env)]
 
     def asked(self, env):
@@ -324,7 +324,7 @@ class Case:
         before = self.behaviour(binary, env) if step.get("paused") else None
         if not step.get("stale"):
             self.last_asked = self.asked(env)
-        ask = [RUSTD, "sync", socket, *self.last_asked]
+        ask = [RA_JIT, "sync", socket, *self.last_asked]
         if step.get("paused"):
             return self.mid_reload(step, env, daemon, ask, binary, before)
         # Clients that ask at once race the reload: each is answered from one model.
@@ -341,7 +341,7 @@ class Case:
         if daemon.poll() is not None:
             return (step["what"], "WRONG", "the daemon died")
         if artifact is None:
-            verdict = ("refused", reply) if not reply.startswith("ok") else ("WRONG", "cargo turns it down, rustd answered ok")
+            verdict = ("refused", reply) if not reply.startswith("ok") else ("WRONG", "cargo turns it down, ra-jit answered ok")
         elif not reply.startswith("ok"):
             verdict = ("refused", reply)
         else:
@@ -353,7 +353,7 @@ class Case:
 
     def mid_reload(self, step, env, daemon, ask, binary, before):
         """Catches the daemon in the middle of loading the checkout again (it waits there for
-        RUSTD_RELOAD_PAUSE_MS and says so) and has clients ask meanwhile. Each runs the program
+        RA_JIT_RELOAD_PAUSE_MS and says so) and has clients ask meanwhile. Each runs the program
         it is answered with: that is the one from before the change or cargo's of after it."""
         log = os.path.join(self.work, "daemon.log")
         pauses = lambda: open(log).read().count("reload: paused")
@@ -402,23 +402,23 @@ class Case:
         return (step["what"], "same", f"{len(answers)} clients mid-reload: {len(answers) - new} old, {new} new")
 
     def doctests(self, env):
-        """`cargo test --doc` with rustdoc and with rustd in its place."""
+        """`cargo test --doc` with rustdoc and with ra-jit in its place."""
         def tested(target_dir, **more):
             run = subprocess.run(["cargo", "test", "--doc", *self.select[:2], *self.cargo_args, "--", *self.spec.get("args", [])],
                                  cwd=self.ws, capture_output=True, text=True, timeout=900,
                                  env={**env, "CARGO_TARGET_DIR": os.path.join(self.ws, target_dir), **more})
             return run.returncode, doctest_report(run.stdout), run.stderr
         want = tested("target-ref")
-        got = tested("target", RUSTDOC=RUSTD, RUSTD_RUSTDOC="rustdoc")
-        left = re.search(r"rustd: the doctests are left to rustdoc: (.*)", got[2])
+        got = tested("target", RUSTDOC=RA_JIT, RA_JIT_RUSTDOC="rustdoc")
+        left = re.search(r"ra-jit: the doctests are left to rustdoc: (.*)", got[2])
         if left:
             raise Refused(left.group(1))
         if want[:2] != got[:2]:
-            lines = [f"cargo's `{w}`, rustd's `{g}`" for w, g in zip(want[1], got[1]) if w != g]
-            raise Wrong((lines[0] if lines else f"cargo's ends with {want[0]} after {len(want[1])} lines, rustd's with {got[0]} after {len(got[1])}")[:300])
+            lines = [f"cargo's `{w}`, ra-jit's `{g}`" for w, g in zip(want[1], got[1]) if w != g]
+            raise Wrong((lines[0] if lines else f"cargo's ends with {want[0]} after {len(want[1])} lines, ra-jit's with {got[0]} after {len(got[1])}")[:300])
         built = re.findall(r"doctests: compiled (\d+) of (\d+) fns", got[2])
         if not built:
-            raise Wrong("rustd did not say what it built for the doctests")
+            raise Wrong("ra-jit did not say what it built for the doctests")
         tests = sum(l.startswith("test ") and not l.startswith("test result") for l in want[1])
         return ("supported", f"{tests} doctests the same, {sum(int(n) for n, _ in built)} of {sum(int(n) for _, n in built)} functions of the library", [])
 
@@ -444,7 +444,7 @@ class Case:
                     return ("refused", "cargo turns it down too", steps)
                 raise
             if artifact is None:
-                return ("WRONG", "cargo turns the project down, rustd built it", steps)
+                return ("WRONG", "cargo turns the project down, ra-jit built it", steps)
             want, got = self.behaviour(artifact, env), self.behaviour(built, env, objects)
             if want != got:
                 return ("WRONG", differ(want, got), steps)
@@ -467,7 +467,7 @@ def doctest_report(stdout):
     tests finished in, how long they took, and the numbers of the threads."""
     out = re.sub(r"finished in [0-9.]+s", "finished", stdout)
     # rustdoc builds the examples of an edition 2024 crate as one program and says how long
-    # that took; rustd builds each alone.
+    # that took; ra-jit builds each alone.
     out = re.sub(r"\nall doctests ran in [0-9.]+s; merged doctests compilation took [0-9.]+s\n", "\n", out)
     out = re.sub(r"thread '(.*?)' \(\d+\) panicked", r"thread '\1' panicked", out)
     blocks = re.split(r"\n(?=---- )", out)
@@ -484,21 +484,21 @@ def doctest_report(stdout):
 
 def differ(want, got):
     if want[0] != got[0]:
-        return f"cargo's exits with {want[0]}, rustd's with {got[0]}: {got[2].decode(errors='replace').strip()[-160:]}"
+        return f"cargo's exits with {want[0]}, ra-jit's with {got[0]}: {got[2].decode(errors='replace').strip()[-160:]}"
     for stream in (1, 2):
         a, b = (x[stream].decode(errors="replace").splitlines() for x in (want, got))
         for w, g in zip(a, b):
             if w != g:
-                return f"cargo's prints `{w[:120]}`, rustd's `{g[:120]}`"
+                return f"cargo's prints `{w[:120]}`, ra-jit's `{g[:120]}`"
         if len(a) != len(b):
-            return f"cargo's prints {len(a)} lines, rustd's {len(b)}"
+            return f"cargo's prints {len(a)} lines, ra-jit's {len(b)}"
     return "differs"
 
 
 def said(why):
     """A reason as the table has it: without the scratch directory, which is another each run."""
     why = re.sub(r"^(Error: )?(daemon: )?(error: )?", "", why)
-    return re.sub(r"/tmp/rustd-bm-[^/ ]*/", "", why).replace("|", "/")[:240]
+    return re.sub(r"/tmp/ra-jit-bm-[^/ ]*/", "", why).replace("|", "/")[:240]
 
 
 def main():

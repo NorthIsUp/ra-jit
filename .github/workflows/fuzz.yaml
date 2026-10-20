@@ -1,4 +1,4 @@
-# A long differential fuzz run every night: generated programs built by rustc and by rustd
+# A long differential fuzz run every night: generated programs built by rustc and by ra-jit
 # under both producers, outputs compared. The seed is the run number, so every night covers
 # new programs and a failing night can be repeated with `fuzz.py run --seed N`.
 name: fuzz
@@ -34,11 +34,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-provider: "warpbuild"
-      - run: cargo build -p rustd --release --features llvm --locked
+      - run: cargo build -p ra-jit --release --features llvm --locked
       - name: Fuzz
         working-directory: harness
         run: |
-          export RUSTD_BIN="$GITHUB_WORKSPACE/target/release/rustd"
+          export RA_JIT_BIN="$GITHUB_WORKSPACE/target/release/ra-jit"
           python3 fuzz/fuzz.py run --seed "${{ inputs.seed || github.run_number }}" \
             --rounds "${{ inputs.rounds || '200' }}" --backends cranelift,llvm \
             --out "$RUNNER_TEMP/fuzz-out" || status=$?

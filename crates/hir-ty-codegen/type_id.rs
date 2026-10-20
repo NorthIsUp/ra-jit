@@ -156,7 +156,7 @@ impl<'a, 'db> TypeIdHasher<'a, 'db> {
             self.binders.clear();
             self.signatures = 0;
             hasher = StableSipHasher128::new();
-            hasher.write(b"rustd type");
+            hasher.write(b"ra-jit type");
             self.ty(&mut hasher, ty)?;
             if !self.unbuilt {
                 return None;
@@ -379,7 +379,7 @@ impl<'a, 'db> TypeIdHasher<'a, 'db> {
             }
             ItemContainerId::ExternBlockId(_) => return None,
         };
-        hasher.write(b"rustd closure");
+        hasher.write(b"ra-jit closure");
         parent.hash(hasher);
         hash_str(hasher, FunctionSignature::of(db, func).name.as_str());
         hasher.write_u32(expr.into_raw().into_u32());

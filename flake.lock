@@ -48,13 +48,13 @@
         "lastModified": 1792450129,
         "narHash": "sha256-9k89wLkL9wL0lJPO5WiCW31VVzK+qD2+jdGc3BBFN3Q=",
         "owner": "DioxusLabs",
-        "repo": "rustd",
+        "repo": "ra-jit",
         "rev": "6b1940be0e68cb8004301d6c2dcbdf3f71257fca",
         "type": "github"
       },
       "original": {
         "owner": "DioxusLabs",
-        "repo": "rustd",
+        "repo": "ra-jit",
         "rev": "6b1940be0e68cb8004301d6c2dcbdf3f71257fca",
         "type": "github"
       }

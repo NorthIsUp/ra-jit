@@ -1,6 +1,6 @@
-# Where rustd's time goes
+# Where ra-jit's time goes
 
-Measurements of `cargo rustd` against plain cargo on three pinned workspaces, what the daemon
+Measurements of `cargo ra-jit` against plain cargo on three pinned workspaces, what the daemon
 says about its own time, profiles of the slow cases, and what was changed because of them.
 Everything here was run on one machine: x86-64 Linux, 8 cores, 31 GB, Rust 1.99.0, LLVM 20.
 What was measured and what is inferred from it are kept apart; inferences are marked.
@@ -11,10 +11,10 @@ What was measured and what is inferred from it are kept apart; inferences are ma
 pinned checkout of ripgrep 15.1.0, cargo 0.92.0 or nushell 0.108.0, copies it, and under each
 backend, with a store, a daemon and a home of its own, runs:
 
-- **cold**: `cargo rustd build` from nothing, then the wait until `cargo rustd status` says the
+- **cold**: `cargo ra-jit build` from nothing, then the wait until `cargo ra-jit status` says the
   workspace is ready. Cargo's own cold build is started only after that, so the two do not
   share the cores.
-- **no-op**: `cargo rustd build` with nothing changed.
+- **no-op**: `cargo ra-jit build` with nothing changed.
 - **body**: a statement is added to one function of the program's own crate.
 - **signature**: a method gets another parameter and every caller the argument.
 - **leaf**: a statement is added to a function in a crate of the workspace that the others
@@ -27,7 +27,7 @@ has to print what cargo's prints. For each phase the JSON has the wall time of t
 (the median for edits, with each sample and the slowest), cargo's time, the most memory the
 daemon's workers held (`VmHWM` summed), who built it (the daemon, or cargo with the daemon's
 stated reason), whether the edit was spliced or linked in full and why, how many functions
-were compiled, and the daemon's own timings from `RUSTD_STATS`. An edit the daemon turns down
+were compiled, and the daemon's own timings from `RA_JIT_STATS`. An edit the daemon turns down
 is measured once and reported as built by cargo; it is not retried, since each refusal has the
 daemon load the workspace again.
 
@@ -54,7 +54,7 @@ why CI has ripgrep alone.
 
 ## What the harness measured
 
-Seconds, `cargo rustd` then plain cargo, on the branch before any fix. Edits are the median of
+Seconds, `cargo ra-jit` then plain cargo, on the branch before any fix. Edits are the median of
 three; "first" is the first of the three where it differed much from the others.
 
 | Cranelift | ripgrep | cargo | nushell |
@@ -67,7 +67,7 @@ three; "first" is the first of the three where it differed much from the others.
 | generic | 0.08 / 0.82, spliced | 35.7 / 7.8, full link | 1.27 / 10.3 (first 30.6, full link) |
 | peak RSS | 2.1 GB | 8.4 GB | 10.2 GB |
 
-| LLVM (`RUSTD_OPT=2 RUSTD_EMIT=fast`) | ripgrep | cargo | nushell |
+| LLVM (`RA_JIT_OPT=2 RA_JIT_EMIT=fast`) | ripgrep | cargo | nushell |
 |---|---|---|---|
 | cold | 20.1 / 5.3 | 225.6 / 52.8 | 311.4 / 66.6 |
 | no-op | 0.04 / 0.03 | 0.07 / 0.18 | 0.05 / 0.30 |
@@ -87,7 +87,7 @@ What these say, before any profile:
 - A "refused" edit is one the daemon turned down with a reason and cargo built. The time is
   cargo's build plus the daemon's attempt, and after it the daemon loads the workspace again
   from the start, because what cargo linked is no longer what the daemon's objects are of
-  (`Daemon::warm` in `crates/rustd/src/cargo/daemon.rs` replaces the worker when the
+  (`Daemon::warm` in `crates/ra-jit/src/cargo/daemon.rs` replaces the worker when the
   generation differs). On cargo that reload is about 150 s during which every build is cargo's.
 - Cargo's signature edit (`GlobalContext::cli_unstable`, 113 places in 49 files) is refused
   with "`publish` has errors: frontend: mir: HasErrors". Nushell's signature and leaf edits are
@@ -105,7 +105,7 @@ The sections below take these one at a time.
 
 ## What the daemon says about its own time
 
-With `RUSTD_STATS=1` the daemon already printed, for every build, `timeline-us:` (the steps
+With `RA_JIT_STATS=1` the daemon already printed, for every build, `timeline-us:` (the steps
 of an edit one after another: settle, read, apply, roots, check, reach, resolve, define,
 object, write, link, and what is left between them), `phases:`, `backend:` (the producer's
 time summed over threads; LLVM's split into lower, verify, optimize, emit, read), `store:`,
@@ -134,18 +134,18 @@ nushell, and the profiles, are not in this file yet.
 
 ## Cargo's cold build, taken apart
 
-All of this is cargo 0.92.0 under Cranelift, built by `rustd DIR --crate … --out … --link-cmd …`
-as `harness/remote.py` does it (one process, no daemon, so that nothing but rustd is timed),
-with cargo's own artifacts built beforehand. Seconds are rustd's alone.
+All of this is cargo 0.92.0 under Cranelift, built by `ra-jit DIR --crate … --out … --link-cmd …`
+as `harness/remote.py` does it (one process, no daemon, so that nothing but ra-jit is timed),
+with cargo's own artifacts built beforehand. Seconds are ra-jit's alone.
 
 ### The store and debug info, each on and off
 
 | | this head | before format 2 and debug info (27315323cb) |
 | --- | --- | --- |
 | store, debug info | 102.7 s (compiling 92.3 s) | 81.2 s (71.1 s), no debug info yet |
-| store, `RUSTD_DEBUGINFO=0` | 88.2 s (77.7 s) | |
+| store, `RA_JIT_DEBUGINFO=0` | 88.2 s (77.7 s) | |
 | no store, debug info | 74.6 s (64.7 s) | |
-| no store, `RUSTD_DEBUGINFO=0` | 61.0 s (51.2 s) | 65.0 s (54.9 s) |
+| no store, `RA_JIT_DEBUGINFO=0` | 61.0 s (51.2 s) | 65.0 s (54.9 s) |
 
 One run each after a run that is thrown away. The same four in the opposite order gave 109.9,
 97.2, 77.6 and 65.0 s, and the old binary gave 81.2 and 89.7 s for the same thing twice, so a
@@ -198,7 +198,7 @@ describing 180,000 instances, done three times, on one thread.
 - SHA-256, 23.3 s, none of it without the store: the key of an entry is a hash of its name,
   and the names of instances are long (9.1 s, half of it on the one thread, since the key is
   computed when a compiling thread looks the entry up and again when the entry is kept);
-  Cranelift's own cache of compiled functions, which rustd also points at the store, hashes
+  Cranelift's own cache of compiled functions, which ra-jit also points at the store, hashes
   every function's IR (7.4 s with what is hashed besides); a sealed pack is hashed for its
   name (3.1 s) and read back and checked (2.9 s).
 - Finding which function of the program an entry's names stand for
@@ -210,7 +210,7 @@ describing 180,000 instances, done three times, on one thread.
 The checksums of the records do not show (0.3 s).
 
 **Elsewhere:** Cranelift's verifier is 9.6 s of processor time (4%). It is what turns IR
-that rustd got wrong into a function left to rustc instead of a crash or wrong code, so it
+that ra-jit got wrong into a function left to rustc instead of a crash or wrong code, so it
 stays. Register allocation is 27 s, types 37 s, MIR 21 s; those are the work.
 
 ### What follows from it

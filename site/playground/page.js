@@ -1,7 +1,7 @@
 // The playground: the editor, the compiler in a worker, and the program it builds.
 //
-// Everything of the compiler is under `rustd/` next to this file, put there by
-// `crates/rustd-wasm/web/build-site.sh`. Nothing of it is asked for until the page is shown.
+// Everything of the compiler is under `ra-jit/` next to this file, put there by
+// `crates/ra-jit-wasm/web/build-site.sh`. Nothing of it is asked for until the page is shown.
 // The front page has the same editor without the list of builds and without a program in its
 // address, which is what `log` being absent means here.
 
@@ -20,7 +20,7 @@ const DELAY = 150;
 const $ = (id) => document.getElementById(id);
 const [source, painted, canvas, cover, coverText, bar, state, log, picker] =
   ["source", "paint", "canvas", "cover", "cover-text", "progress", "state", "log", "demo"].map($);
-const at = (path) => new URL(`rustd/${path}`, import.meta.url);
+const at = (path) => new URL(`ra-jit/${path}`, import.meta.url);
 const context = canvas.getContext("2d");
 
 const ms = (value) => (value < 1000 ? `${value.toFixed(0)} ms` : `${(value / 1000).toFixed(1)} s`);
@@ -78,7 +78,7 @@ let Program;
 try {
   const response = await fetch(at("pkg/manifest.json"), { cache: "no-cache" });
   if (!response.ok) {
-    throw new Error(`rustd/pkg/manifest.json: ${response.status}`);
+    throw new Error(`ra-jit/pkg/manifest.json: ${response.status}`);
   }
   manifest = await response.json();
   ({ Program } = await import(at(`program.js?${manifest.build}`)));
@@ -100,7 +100,7 @@ async function original(name) {
   if (!(name in originals)) {
     const response = await fetch(at(`demos/${name}.rs?${manifest.build}`));
     if (!response.ok) {
-      throw new Error(`rustd/demos/${name}.rs: ${response.status}`);
+      throw new Error(`ra-jit/demos/${name}.rs: ${response.status}`);
     }
     originals[name] = await response.text();
   }
