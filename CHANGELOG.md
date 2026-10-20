@@ -39,6 +39,12 @@ All notable changes to ra-jit are written here. The format follows
 - `vendor/rust-analyzer` and `vendor/rustc_abi` are git subtrees instead of submodules: a
   plain `git clone` builds, and the flake builds from its own tree with no second pin of the
   forks.
+- `vendor/subtree.py` replaces `vendor/subtree.sh`. `push` sends what main changed under
+  `vendor/` to the fork, one fork commit per commit of main, and only fast-forwards the fork;
+  the `fork sync` workflow runs it on every push to main, so the forks no longer fall behind
+  (rust-analyzer's had: "warm edits" never reached it). `upstream` merges an upstream
+  rust-analyzer release into `vendor/rust-analyzer` in one command, with conflicts left in
+  the tree as `git merge` leaves them; before, that took a clone of the fork and a pull.
 
 ### Fixed
 
