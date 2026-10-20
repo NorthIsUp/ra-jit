@@ -318,6 +318,9 @@ pub(super) struct Base {
     /// The symbols of the functions built from entries of the store, by their stable names.
     /// No edit reaches what those are compiled from.
     pub(super) found: FxHashMap<Arc<str>, String>,
+    /// What each of those is an instance of, by its symbol, for tiering to build it into the
+    /// hot functions that call it.
+    pub(super) found_instances: FxHashMap<String, (Instance, StoredParamEnvAndCrate)>,
     /// Some of `found` is code of the checkout, which an edit does reach, and nothing here
     /// tells what of it: the first edit takes a full build without any.
     hydrated: bool,
@@ -646,6 +649,13 @@ impl Base {
                 .iter()
                 .map(|(name, id)| {
                     (name.clone(), decls.get_function_decl(*id).linkage_name(*id).into_owned())
+                })
+                .collect(),
+            found_instances: cg
+                .found_instances
+                .iter()
+                .map(|(&id, it)| {
+                    (decls.get_function_decl(id).linkage_name(id).into_owned(), it.clone())
                 })
                 .collect(),
             hydrated: cg
