@@ -2,3 +2,6 @@
 	path = vendor/rust-analyzer
 	url = https://github.com/DioxusLabs/rustd.git
 	branch = rust-analyzer
+[submodule "vendor/rustc_abi"]
+	path = vendor/rustc_abi
+	url = https://github.com/indexable-inc/rustc_abi.git
