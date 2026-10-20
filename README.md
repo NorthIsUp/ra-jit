@@ -16,16 +16,16 @@ That opens a Game of Life window you can edit while it runs (live on macOS Apple
 
 ![Editing the running Game of Life: rule, colours and speed change live](docs/demo.webp)
 
-[mp4](docs/demo.mp4)
+<p align="center">
+  <a href="https://ra-jit.ix.dev/updates?src=readme">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="docs/brand/signup-on-dark.svg">
+      <img alt="Tell us you use ra-jit" src="docs/brand/signup-on-light.svg" height="36">
+    </picture>
+  </a>
+</p>
 
-<a href="https://ra-jit.ix.dev/updates?src=readme">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/signup-on-dark.svg">
-    <img alt="Tell us you use ra-jit" src="docs/brand/signup-on-light.svg" height="36">
-  </picture>
-</a>
-
-For release news: Watch → Custom → Releases on GitHub.
+<p align="center">For release news: Watch → Custom → Releases on GitHub.</p>
 
 ## What you get
 
