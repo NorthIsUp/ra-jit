@@ -4,6 +4,11 @@
     bench.py [PROJECT...] [--backend cranelift|llvm]... [--runs N] [--out FILE] [--work DIR]
              [--reference DIR] [--keep]
     bench.py --compare BASELINE RESULT [--threshold PERCENT]
+    bench.py --runtime [NAME...] [--runs N] [--out FILE]
+
+`--runtime` is how fast programs run rather than how fast they build: it runs runbench.py on
+its programs (NAME..., its defaults without), `--runs` rounds each (default 5), and writes its
+result with the machine, the commit and the date, for benchreport.py's runtime table.
 
 Each project is one pinned checkout (cloned into `RA_JIT_PROJECTS` as cargo_ra_jit.py does, and
 copied; the clone is never written to). Under each backend, with a store, a daemon and a home
@@ -393,7 +398,9 @@ def runtime(name, spec, theirs, ws, build, runs, wrong):
             if turn >= 2:
                 times[label].append(took)
     for label, said in outputs.items():
-        if said != outputs["cargo debug"]:
+        if said[0] != 0:
+            wrong.append(f"runtime: {label} exited with {said[0]}")
+        elif said != outputs["cargo debug"]:
             wrong.append(f"runtime: the program ra-jit linked ({label}) says something else than cargo's")
     result = {label: dict(median_s=round(statistics.median(t), 4), min_s=round(min(t), 4), max_s=round(max(t), 4), runs=len(t))
               for label, t in times.items()}
@@ -418,12 +425,16 @@ def machine():
             return None
 
     memory = read("/proc/meminfo", r"^MemTotal:\s+(\d+) kB")
+    cpu = read("/proc/cpuinfo", r"^model name\s*:\s*(.*)$")
+    if platform.system() == "Darwin":
+        cpu = first_line("sysctl", "-n", "machdep.cpu.brand_string")
+        memory = str(int(first_line("sysctl", "-n", "hw.memsize") or 0) // 1024) or None
     # A run pinned to some of the cores (taskset) has those, and cargo's jobs follow them.
     cores = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count()
     return dict(
         # Named by whoever runs it (the workflow names the instance type).
         name=os.environ.get("RA_JIT_BENCH_MACHINE"),
-        cpu=read("/proc/cpuinfo", r"^model name\s*:\s*(.*)$"), cores=cores, machine_cores=os.cpu_count(),
+        cpu=cpu, cores=cores, machine_cores=os.cpu_count(),
         memory_gib=round(int(memory) / 1024 / 1024) if memory else None,
         os=platform.system(), arch=platform.machine(), kernel=platform.release(),
         rustc=first_line("rustc", "-V"), cc=first_line("cc", "--version"), ld=first_line("ld", "--version"),
@@ -477,8 +488,28 @@ def options(argv, name, default=None):
     return found or ([default] if default is not None else [])
 
 
+def runtime_bench(argv):
+    """`--runtime`: runbench.py's programs, built by ra-jit's LLVM and by cargo, timed against
+    `cargo build --release`, in a result that names the machine, commit and date as the rest."""
+    rounds = options(argv, "--runs", "5")[0]
+    out = options(argv, "--out", os.path.join(HERE, "runtime.json"))[0]
+    names = [a for a in argv if not a.startswith("--")]
+    measured = os.path.join(tempfile.mkdtemp(prefix="ra-jit-runbench-"), "runbench.json")
+    ran = subprocess.run([sys.executable, os.path.join(HERE, "runbench.py"), *names, "--rounds", rounds, "--json", measured])
+    result = dict(toolchain=TOOLCHAIN, commit=ra_jit_commit(), date=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                  host=machine(), runbench=json.load(open(measured)) if os.path.exists(measured) else None)
+    if os.environ.get("GITHUB_RUN_ID"):
+        result["run_url"] = f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+    json.dump(result, open(out, "w"), indent=1)
+    print(f"wrote {out}")
+    sys.exit(ran.returncode or (0 if result["runbench"] else 1))
+
+
 def main():
     argv = sys.argv[1:]
+    if "--runtime" in argv:
+        argv.remove("--runtime")
+        runtime_bench(argv)
     threshold = float(options(argv, "--threshold", "25")[0])
     if "--compare" in argv:
         argv.remove("--compare")
