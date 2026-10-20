@@ -361,6 +361,16 @@ impl<'db> Recorder<'db> {
         })
     }
 
+    /// The places among the requests of the data objects that are statics. Two of them can be
+    /// one object: an `extern` static and the `#[no_mangle]` one it names.
+    #[cfg(feature = "llvm")]
+    pub(super) fn statics(&self) -> impl Iterator<Item = u32> + '_ {
+        let statics = self.requests.datas.iter().enumerate();
+        statics.filter_map(|(index, data)| {
+            matches!(data, DataRequest::Static(_)).then_some(index as u32)
+        })
+    }
+
     #[cfg(feature = "llvm")]
     pub(super) fn mark(&self) -> Mark {
         Mark { funcs: self.requests.funcs.len(), datas: self.requests.datas.len() }
