@@ -11368,6 +11368,12 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                 let value = self.builder.ins().iadd(ptr, bytes);
                 self.builder.ins().store(MEM, value, dst, 0);
             }
+            ("ptr_mask", [ptr, mask]) => {
+                let (ptr, _) = self.load_scalar(ptr)?;
+                let (mask, _) = self.load_scalar(mask)?;
+                let value = self.builder.ins().band(ptr, mask);
+                self.builder.ins().store(MEM, value, dst, 0);
+            }
             ("ptr_offset_from" | "ptr_offset_from_unsigned", [a, b]) => {
                 let size = self.layout(generic_args.type_at(0))?.size.bytes() as i64;
                 let (a, _) = self.load_scalar(a)?;
