@@ -17,6 +17,12 @@ CRATES = ["devdep", "blanket", "edition2015", "fragment", "procmacro"]
 OPEN = {"assert_message", "raw_write_then_match", "future_unwind_flags", "fragment_edition_through_macro", "assert_long_expression"}
 # Frames that are larger than rustc's, where a program counts on rustc's: the answer is right and the room is not.
 OPEN |= {"frame_of_array", "frame_of_tables"}
+# On macOS std's backtrace finds a frame's file and line through the debug map: the N_OSO stabs ld64 writes
+# for each object with a __DWARF,__debug_info section, then that object's DWARF. ra-jit writes DWARF for ELF
+# and COFF only (Cranelift's DebugContext and LLVM's line marks are off for Mach-O), so ld64 writes no stabs
+# for its objects and the frame has a name and no line. Fixing it is DWARF in Mach-O from both backends.
+if sys.platform == "darwin":
+    OPEN |= {"backtrace_line"}
 # What is reduced and not fixed either, where ra-jit says so: a function of these is left to rustc.
 LEFT = {"caller_in_constant", "empty_array_by_impl", "macro_reads_its_spelling", "fragment_ends_statement"}
 # Crates reduced and not fixed, where ra-jit says so: a function of these is left to rustc.
