@@ -246,16 +246,16 @@ class Side:
     """One of the builds of a checkout: `cargo ra-jit` (`True`), plain cargo once `ra-jit
     enable` was run (`"plain"`), or cargo alone into `target-ref` (`False`)."""
 
-    def __init__(self, ws, env, ra-jit):
-        self.ws, self.ra-jit, self.plain = ws, bool(ra-jit), ra-jit == "plain"
-        self.env = env if ra-jit else dict(env, CARGO_TARGET_DIR=os.path.join(ws, "target-ref"))
+    def __init__(self, ws, env, ra_jit):
+        self.ws, self.ra_jit, self.plain = ws, bool(ra_jit), ra_jit == "plain"
+        self.env = env if ra_jit else dict(env, CARGO_TARGET_DIR=os.path.join(ws, "target-ref"))
         self.tally = os.path.join(env["RA_JIT_HOME"], "plain-cargo.log")
         self.read = 0
 
     def argv(self, command, *args):
         if self.plain:
             return [RA_JIT, command] if command in ("status", "stop") else ["cargo", command, *args]
-        return ["cargo", *(["ra-jit"] if self.ra-jit else []), command, *args]
+        return ["cargo", *(["ra-jit"] if self.ra_jit else []), command, *args]
 
     def cargo(self, command, *args, env=None, timeout=7200):
         return timed(self.argv(command, *args), self.ws, dict(self.env, **(env or {})), timeout)
@@ -943,7 +943,7 @@ DOCTEST = '/// ```\n/// assert_eq!(util::doubled(2), 4);\n/// ```\npub fn double
 
 def switches(work, env, check):
     """`ra-jit enable` and `ra-jit disable` over the cargo configurations a user may have."""
-    ra-jit = lambda home, *args, cwd=None, **more: subprocess.run([RA_JIT, *args], env=dict(env, CARGO_HOME=home, **more), cwd=cwd or work, capture_output=True, text=True)
+    ra_jit = lambda home, *args, cwd=None, **more: subprocess.run([RA_JIT, *args], env=dict(env, CARGO_HOME=home, **more), cwd=cwd or work, capture_output=True, text=True)
     cases = [
         ("no configuration", "config.toml", None),
         ("a configuration with other settings", "config.toml", '# mine\n[net]\noffline = false\n\n[build]\njobs = 4 # all of them\n'),
@@ -957,11 +957,11 @@ def switches(work, env, check):
         config = os.path.join(home, file)
         if text is not None:
             open(config, "w").write(text)
-        on = ra-jit(home, "enable")
+        on = ra_jit(home, "enable")
         named = os.path.exists(config) and "ra-jit-rustc" in open(config).read()
-        again = ra-jit(home, "enable")
-        seen = ra-jit(home, "status").stdout.splitlines()[0]
-        off = ra-jit(home, "disable")
+        again = ra_jit(home, "enable")
+        seen = ra_jit(home, "status").stdout.splitlines()[0]
+        off = ra_jit(home, "disable")
         same = (open(config).read() if os.path.exists(config) else None) == text
         left = sorted(os.listdir(home)) == ([file] if text is not None else [])
         check(f"enable and disable over {name} leave it as it was", on.returncode == 0 and named and again.returncode == 0 and "through ra-jit" in seen and off.returncode == 0 and same and left, f"{seen[:70]}; {'same bytes' if same else 'DIFFERENT'}")
@@ -970,21 +970,21 @@ def switches(work, env, check):
     os.makedirs(home)
     config = os.path.join(home, "config.toml")
     open(config, "w").write('[build]\njobs = 2\n')
-    ra-jit(home, "enable")
+    ra_jit(home, "enable")
     open(config, "a").write('\n[net]\noffline = false\n')
-    off = ra-jit(home, "disable")
+    off = ra_jit(home, "disable")
     text = open(config).read()
     check("disable after the user edited the file takes ra-jit's line out and keeps the edit", off.returncode == 0 and "ra-jit" not in text and "offline = false" in text and "jobs = 2" in text, repr(text))
 
-    ra-jit(home, "enable")
+    ra_jit(home, "enable")
     project = os.path.join(work, "switch-project")
     os.makedirs(os.path.join(project, ".cargo"))
     open(os.path.join(project, ".cargo/config.toml"), "w").write('[build]\nrustc-workspace-wrapper = "/usr/bin/env"\n')
-    below = ra-jit(home, "status", cwd=project).stdout
+    below = ra_jit(home, "status", cwd=project).stdout
     check("status says a project's own configuration has cargo not run ra-jit there", "not below " + project in below, below.splitlines()[1] if below.count("\n") > 1 else below)
-    shell = ra-jit(home, "status", RUSTC_WORKSPACE_WRAPPER="/usr/bin/env").stdout
+    shell = ra_jit(home, "status", RUSTC_WORKSPACE_WRAPPER="/usr/bin/env").stdout
     check("status says a RUSTC_WORKSPACE_WRAPPER of the shell has cargo not run ra-jit", "not in this shell" in shell)
-    ra-jit(home, "disable")
+    ra_jit(home, "disable")
 
 
 def plain(work):
@@ -1027,8 +1027,8 @@ def plain(work):
     edit = lambda text, root=ws: rewrite(os.path.join(root, "util/src/lib.rs"), 'format!("', f'format!("{text} ')
     touch = lambda text, root=ws: open(os.path.join(root, "app/src/main.rs"), "a").write(f"\n// {text}\n")
 
-    def status(ra-jit=RA_JIT):
-        text = subprocess.run([ra-jit, "status"], env=env, cwd=ws, capture_output=True, text=True).stdout
+    def status(ra_jit=RA_JIT):
+        text = subprocess.run([ra_jit, "status"], env=env, cwd=ws, capture_output=True, text=True).stdout
         pid = re.search(r"^daemon: pid (\d+)", text, re.M)
         return (int(pid[1]) if pid else None), [int(p) for p in re.findall(r"worker: pid (\d+)", text)], text
 
@@ -1039,8 +1039,10 @@ def plain(work):
         compare = test_results if command == "test" else program_output
         wrong = difference(compare(mine), compare(other))
         if wrong and mine.returncode != other.returncode:
-            # How it ended is in what it said last: a signal has no other word.
-            wrong += f"; {mine.stderr.strip()[-600:]!r}"
+            # How it ended is in what it said last: a signal has no other word. Cargo's line
+            # with the whole command of a compiler that failed would leave no room for why.
+            said = "\n".join(line for line in mine.stderr.splitlines() if "process didn't exit successfully" not in line)
+            wrong += f"; {said.strip()[-1500:]!r}"
         return mine, here.how_built(mine.stderr), wrong
 
     first, how, wrong = same("run")
@@ -1257,7 +1259,7 @@ def main():
     # The path of a socket is at most 104 bytes on macOS, and its temporary directory is long.
     work = os.path.realpath(tempfile.mkdtemp(prefix="ra-jit-cargo-", dir="/tmp" if sys.platform == "darwin" else None))
     print(f"work {work}; ra-jit {RA_JIT}", flush=True)
-    result = dict(ra-jit=RA_JIT, toolchain=TOOLCHAIN, projects=[], flags=[], daemon=[], wrong=[])
+    result = dict(ra_jit=RA_JIT, toolchain=TOOLCHAIN, projects=[], flags=[], daemon=[], wrong=[])
     if "--only-checks" not in argv:
         for name in names:
             for mode in modes:

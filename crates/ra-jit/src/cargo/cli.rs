@@ -126,6 +126,7 @@ pub(crate) enum Asked {
     Enable,
     Disable,
     Help,
+    Version,
 }
 
 /// A build command and its arguments, split into what is cargo's to read and what is the
@@ -178,6 +179,7 @@ impl Asked {
         };
         match (first.as_str(), Subcommand::named(first)) {
             ("--help" | "-h" | "help", _) => Asked::Help,
+            ("--version" | "-V", _) => Asked::Version,
             (_, Some(subcommand)) => Asked::Build(Box::new(Invocation::parse(subcommand, rest))),
             ("status", _) => Asked::Status,
             ("stop", _) => Asked::Stop,

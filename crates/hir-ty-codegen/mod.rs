@@ -119,6 +119,9 @@ pub use store::{
     name_file_whole, pack_format, pack_keys, pack_name, parse_size, seal_open, settled,
     write_file_whole,
 };
+/// For `crates/ra-jit-bench` alone.
+#[doc(hidden)]
+pub use store::bench;
 mod type_id;
 mod unwind;
 mod vtable;
