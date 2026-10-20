@@ -21,7 +21,7 @@ use inkwell::{
         CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine, TargetTriple,
     },
 };
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::{
     Arch,
@@ -58,8 +58,9 @@ pub(super) fn emit(
         module.set_triple(&machine.get_triple());
         module.set_data_layout(&machine.get_target_data().get_data_layout());
         let constants: FxHashMap<u32, &[u8]> = recorder.constants().collect();
+        let statics: FxHashSet<u32> = recorder.statics().collect();
         tally.time(Phase::Lower, || {
-            lower::Lowering::lower(context, &module, func, &named, &constants)
+            lower::Lowering::lower(context, &module, func, &named, &constants, &statics)
         })?;
         if std::env::var_os("RA_JIT_DUMP_LLVM").is_some() {
             eprintln!("{}", module.print_to_string().to_string_lossy());

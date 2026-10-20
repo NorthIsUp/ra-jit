@@ -35,7 +35,7 @@ use inkwell::{
         FunctionValue, InstructionValue, IntValue, PhiValue, PointerValue, VectorValue,
     },
 };
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::{OWN, Unhandled};
 use crate::mir::codegen::{
@@ -98,6 +98,8 @@ pub(super) struct Lowering<'ctx, 'f> {
     /// The bytes of the data objects that a load from is known to give, by the number in
     /// their names.
     constants: &'f FxHashMap<u32, &'f [u8]>,
+    /// The numbers in the names of the data objects that are statics.
+    statics: &'f FxHashSet<u32>,
     pads: FxHashMap<Pad, BasicBlock<'ctx>>,
     /// The block the allocas are in.
     frame: Option<BasicBlock<'ctx>>,
@@ -106,6 +108,10 @@ pub(super) struct Lowering<'ctx, 'f> {
     /// What the line table LLVM writes is told through, where one is read back.
     marks: Option<Marks<'ctx>>,
 }
+
+/// The type of a static's global: one without a size, which LLVM does not take to be at an
+/// address of its own.
+const STATIC: &str = "ra-jit.static";
 
 /// The source locations of the IR as lines of a file that is not there, for LLVM to say
 /// in its line table which instructions became which code, and the stack slots of named
@@ -172,6 +178,7 @@ impl<'ctx, 'f> Lowering<'ctx, 'f> {
         func: &'f ir::Function,
         named: &[ir::StackSlot],
         constants: &'f FxHashMap<u32, &'f [u8]>,
+        statics: &'f FxHashSet<u32>,
     ) -> Lowered<()> {
         let ty = Self::function_type(context, &func.signature)?;
         let function = module.add_function(OWN, ty, Some(Linkage::External));
@@ -202,6 +209,7 @@ impl<'ctx, 'f> Lowering<'ctx, 'f> {
             callees: FxHashMap::default(),
             globals: FxHashMap::default(),
             constants,
+            statics,
             pads: FxHashMap::default(),
             frame: None,
             arrival: None,
@@ -1291,7 +1299,23 @@ impl<'ctx, 'f> Lowering<'ctx, 'f> {
         let data = match self.module.get_global(&name) {
             Some(known) => known,
             None => {
-                let data = self.module.add_global(self.context.i8_type(), None, &name);
+                // Two statics can be one object, when one is an `extern` static that links to
+                // the other: LLVM takes two globals for two objects and folds a comparison of
+                // their addresses to false. One of a type without a size may be at any
+                // address, another's too.
+                let is_static = matches!(
+                    super::Symbol::parse(&name),
+                    Some(super::Symbol::Data(index)) if self.statics.contains(&index)
+                );
+                let data = if is_static {
+                    let ty = self
+                        .context
+                        .get_struct_type(STATIC)
+                        .unwrap_or_else(|| self.context.opaque_struct_type(STATIC));
+                    self.module.add_global(ty, None, &name)
+                } else {
+                    self.module.add_global(self.context.i8_type(), None, &name)
+                };
                 data.set_linkage(Linkage::External);
                 // Hidden is how LLVM is told the object is in this program, and so reached
                 // without the GOT, as Cranelift reaches it.
