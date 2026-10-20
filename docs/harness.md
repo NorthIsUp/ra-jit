@@ -132,7 +132,9 @@ with reasons. The daemon's log says `backend: llvm -O2 fast emit` when LLVM is i
 ### Timing
 
 `bench.py`, `editloop.py`, `edittimes.py`, `scaling.py`, `dxedits.py`, `linkbench.py`,
-`shapes.py` and `heap.py` measure and do not gate. Their docstrings say how to run them.
+`shapes.py`, `heap.py` and `realbench.py` measure and do not gate. `realbench.py` times
+`cargo ra-jit build` against `cargo build` on ripgrep, just and nushell (cold, no-op and
+three kinds of edit); the numbers are in [results.md](results.md#11-real-projects). Their docstrings say how to run them.
 
 ## The fuzzer
 
