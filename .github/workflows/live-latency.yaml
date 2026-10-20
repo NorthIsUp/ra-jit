@@ -1,0 +1,61 @@
+# Save-to-running latency of live edits on macOS arm64, step by step (harness/live_latency.py).
+# Runs on a push to a live-latency* branch, or by hand.
+name: live edit latency
+on:
+  push:
+    branches: ["live-latency*"]
+  workflow_dispatch:
+    inputs:
+      modes:
+        description: "cargo, socket or both, space separated"
+        default: "cargo socket"
+      edits:
+        description: edits timed per mode
+        default: "10"
+
+concurrency:
+  group: live-latency-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+
+jobs:
+  latency:
+    name: live edit latency (macOS arm64)
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+      - run: rustup toolchain install 1.99.0 --profile minimal -c rust-src && rustup default 1.99.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: live-debug
+      - run: cargo build --release -p ra-jit
+      - name: time edits of a running program
+        env:
+          LATENCY_EDITS: ${{ inputs.edits || '10' }}
+          LATENCY_JSON: ${{ runner.temp }}/latency.json
+          RA_JIT_IDLE_SECS: "0"
+        run: RA_JIT_BIN="$GITHUB_WORKSPACE/target/release/ra-jit" python3 harness/live_latency.py ${{ inputs.modes || 'cargo' }}
+      - name: what the workers said
+        if: always()
+        run: |
+          for log in "$HOME"/.cache/ra-jit/workers/*/log; do
+            [ -f "$log" ] || continue
+            echo "::group::$log (filtered)"
+            grep -E "request:|timeline-us|edit-to-binary|link:|live:|panicked|error" "$log" | cut -c1-300 | tail -200 || true
+            echo "::endgroup::"
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: latency
+          path: |
+            ${{ runner.temp }}/latency.json
+            ~/.cache/ra-jit/daemon.log
+            ~/.cache/ra-jit/workers/*/log
+          if-no-files-found: warn

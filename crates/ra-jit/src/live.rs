@@ -85,7 +85,11 @@ pub(crate) fn publish(baseline: &Baseline, patch: &std::path::Path) {
     let sequence = next_sequence(last);
     match write(&uuid, &Patch { uuid, sequence, body }) {
         Ok(()) => {
-            eprintln!("live: edit {sequence} for process {}: {shown}", process.pid);
+            eprintln!(
+                "live: edit {sequence} for process {}: {shown} at_us={}",
+                process.pid,
+                epoch_us()
+            );
             published.insert(uuid, Published { pid: process.pid, end, sequence });
         }
         Err(why) => eprintln!("live: cannot leave the edit for process {}: {why:#}", process.pid),
@@ -142,6 +146,11 @@ fn tell_restart(uuid: [u8; 16], why: &str) {
         let end = last.map_or(process.next, |it| it.end);
         published.insert(uuid, Published { pid: process.pid, end, sequence });
     }
+}
+
+/// Microseconds since the epoch, for lining up a worker's log with the program's.
+pub(crate) fn epoch_us() -> u128 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |it| it.as_micros())
 }
 
 /// A number above any the program has seen, also from a daemon that ran before this one.
