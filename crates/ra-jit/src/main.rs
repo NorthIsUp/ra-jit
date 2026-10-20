@@ -5162,7 +5162,10 @@ fn run_holding(
         let sender = sender.clone();
         tier::watch(move |ask| _ = sender.send(Event::Tier(ask)));
     } else if serving {
-        eprintln!("tier: off (RA_JIT_TIER=off, or ra-jit built without `--features llvm`)");
+        eprintln!(
+            "tier: off (RA_JIT_TIER=off, ra-jit built without `--features llvm`, or not macOS \
+             on AArch64)"
+        );
     }
     // The first is the program asked for when a request names none.
     let (wrote, whole) = (Some(args.out.clone()), Some(args.out.clone()));

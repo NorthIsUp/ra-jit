@@ -46,9 +46,11 @@ const AT_ONCE: usize = 4;
 /// How many events the program is told of.
 const EVENTS: usize = 12;
 
-/// Whether tiering is on: it is unless `RA_JIT_TIER=off`, where ra-jit has LLVM.
+/// Whether tiering is on: it is unless `RA_JIT_TIER=off`, where ra-jit has LLVM and programs
+/// take edits while they run (macOS on AArch64).
 pub(crate) fn enabled() -> bool {
-    cfg!(feature = "llvm") && std::env::var("RA_JIT_TIER").as_deref() != Ok("off")
+    cfg!(all(feature = "llvm", target_os = "macos", target_arch = "aarch64"))
+        && std::env::var("RA_JIT_TIER").as_deref() != Ok("off")
 }
 
 /// The highest level a function is compiled at: 3, or 2 with `RA_JIT_TIER=2`, where level 2
