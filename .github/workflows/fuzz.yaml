@@ -20,7 +20,7 @@ env:
 
 jobs:
   fuzz:
-    runs-on: warp-ubuntu-latest-x64-8x
+    runs-on: ubuntu-24.04
     timeout-minutes: 300
     steps:
       - uses: actions/checkout@v6
@@ -32,8 +32,6 @@ jobs:
           wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 20
           sudo apt-get install -y llvm-20-dev libpolly-20-dev
       - uses: Swatinem/rust-cache@v2
-        with:
-          cache-provider: "warpbuild"
       - run: cargo build -p ra-jit --release --features llvm --locked
       - name: Fuzz
         working-directory: harness
