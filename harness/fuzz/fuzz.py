@@ -91,7 +91,7 @@ class Project:
         self.expected = run(self.fx.reference)
         return None
 
-    def ra-jit(self, backend):
+    def ra_jit(self, backend):
         """Builds with ra-jit under a backend and compares. Returns the findings and the functions compiled."""
         os.environ.update(BACKENDS[backend])
         # ra-jit appends the layouts of every build to this, and nothing here reads it.
@@ -202,7 +202,7 @@ class Reducer:
             return False
         if self.project.expected[0] != 0:
             return False
-        findings, _ = self.project.ra-jit(self.backend)
+        findings, _ = self.project.ra_jit(self.backend)
         same = [f for f in findings if f.kind == self.finding.kind and f.key == self.finding.key]
         # What the smaller program shows is what gets filed with it.
         self.shown = same[0] if same else self.shown
@@ -308,7 +308,7 @@ def round_of(project, seed, cases, backends, seen, budget, only=()):
     if project.expected[0] != 0:
         record["reference_failed"] = str(project.expected[0])
         return record
-    results = {backend: project.ra-jit(backend) for backend in backends}
+    results = {backend: project.ra_jit(backend) for backend in backends}
     for backend, (findings, compiled) in results.items():
         entry = record["backends"][backend] = {"compiled": compiled, "findings": [f.record() for f in findings]}
         for finding in findings:
@@ -425,7 +425,7 @@ def check(args):
             wrong += 1
             continue
         for backend in args.backends:
-            findings, _ = project.ra-jit(backend)
+            findings, _ = project.ra_jit(backend)
             wrong += bool(findings)
             said = "; ".join(f"{f.kind}: {f.key}" for f in findings)
             print(f"{'DIFFERENT' if findings else 'same     '} {os.path.basename(path)} ({backend}) {said}", flush=True)
