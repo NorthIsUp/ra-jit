@@ -24,6 +24,8 @@ The first release.
 - A nix flake: `nix run github:indexable-inc/ra-jit` opens a Game of Life you can edit
   while it runs; `#ra-jit` is the cargo wrapper.
 - Prebuilt binaries for Linux (x86_64, aarch64) and macOS (aarch64).
+- `cargo install ra-jit` from crates.io (Cranelift; `--features llvm` needs LLVM 20). The
+  rust-analyzer and rustc_abi forks it builds on are published as `ra-jit-<name>`.
 
 ### Known limits
 

@@ -1,7 +1,8 @@
 [package]
 name = "ra-jit"
 description = "Rust compiler daemon over rust-analyzer's MIR: incremental builds and live edits through cargo"
-# Depends on the vendored rust-analyzer crates by path, which are not on crates.io.
+# Published by .github/scripts/publish_crates.py, which publishes the vendored crates it
+# depends on by path as `ra-jit-<name>` and rewrites this manifest to name them.
 publish = false
 
 version.workspace = true
