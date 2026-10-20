@@ -27,7 +27,7 @@ concurrency:
 
 jobs:
   site:
-    runs-on: warp-ubuntu-latest-x64-8x
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: site
