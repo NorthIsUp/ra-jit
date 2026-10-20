@@ -134,14 +134,17 @@ def daemon_home() -> Path:
 
 
 def show_daemon_log(lines: int = 80) -> None:
-    log = daemon_home() / "daemon.log"
-    try:
-        tail = log.read_text(errors="replace").splitlines()[-lines:]
-    except OSError as why:
-        print(f"no daemon log at {log}: {why}", file=sys.stderr)
-        return
-    print(f"--- the last {len(tail)} lines of {log}", file=sys.stderr)
-    print("\n".join(tail), file=sys.stderr)
+    """The daemon's log, and those of its workers: a worker that died says why in its own."""
+    home = daemon_home()
+    logs = [home / "daemon.log", *sorted(home.glob("workers/*/log")), *sorted(home.glob("spares/*/log"))]
+    for log in logs:
+        try:
+            tail = log.read_text(errors="replace").splitlines()[-lines:]
+        except OSError as why:
+            print(f"no log at {log}: {why}", file=sys.stderr)
+            continue
+        print(f"--- the last {len(tail)} lines of {log}", file=sys.stderr)
+        print("\n".join(tail), file=sys.stderr)
 
 
 if __name__ == "__main__":
