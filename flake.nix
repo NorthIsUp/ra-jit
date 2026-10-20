@@ -8,21 +8,9 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     flake-utils.url = "github:numtide/flake-utils";
-    # vendor/rust-analyzer is a submodule, which a github: flake does not fetch: the same
-    # commit comes in as an input and is put in place below.
-    rust-analyzer = {
-      url = "github:indexable-inc/rust-analyzer/41a93cb1ca9c76af9ab7db030b4e9303c88998c3";
-      flake = false;
-    };
-
-    # vendor/rustc_abi, the same way (a submodule of indexable-inc/rustc_abi).
-    rustc-abi = {
-      url = "github:indexable-inc/rustc_abi/8f6db283fd604ef63978def1e13dfaaf7f3376db";
-      flake = false;
-    };
   };
 
-  outputs = { self, nixpkgs, rust-overlay, flake-utils, rust-analyzer, rustc-abi }:
+  outputs = { self, nixpkgs, rust-overlay, flake-utils }:
     flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ] (system:
       let
         pkgs = import nixpkgs {
@@ -38,13 +26,7 @@
           cargo = rust;
           rustc = rust;
         };
-        src = pkgs.runCommand "ra-jit-src" { } ''
-          cp -r ${self} $out
-          chmod -R u+w $out
-          rmdir $out/vendor/rust-analyzer $out/vendor/rustc_abi 2>/dev/null || true
-          cp -r ${rust-analyzer} $out/vendor/rust-analyzer
-          cp -r ${rustc-abi} $out/vendor/rustc_abi
-        '';
+        src = self;
         # The one version, from the workspace's Cargo.toml.
         version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.package.version;
         daemon = rustPlatform.buildRustPackage {
@@ -89,8 +71,6 @@
         units = json: import ./nix/units.nix {
           inherit pkgs rust guiLibs json;
           repo = ./.;
-          rustAnalyzer = rust-analyzer;
-          rustcAbi = rustc-abi;
         };
         daemonUnits = units ./nix/units/daemon.json;
         lifeUnits = units ./nix/units/life.json;
