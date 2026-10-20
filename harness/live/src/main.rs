@@ -28,7 +28,8 @@ fn main() {
     loop {
         let now = answer();
         if now != seen {
-            println!("answer {now}");
+            let at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_micros();
+            println!("answer {now} at_us={at}");
             seen = now;
         }
         std::io::stdout().flush().unwrap();

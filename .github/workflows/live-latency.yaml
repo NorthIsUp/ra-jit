@@ -7,8 +7,8 @@ on:
   workflow_dispatch:
     inputs:
       modes:
-        description: "cargo, socket or both, space separated"
-        default: "cargo socket"
+        description: "cargo, socket, burst, space separated"
+        default: "socket burst"
       edits:
         description: edits timed per mode
         default: "10"
@@ -23,9 +23,13 @@ env:
 
 jobs:
   latency:
-    name: live edit latency (macOS arm64)
+    name: live edit latency, ${{ matrix.program }} (macOS arm64)
     runs-on: macos-15
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        program: [probe, life]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -40,20 +44,20 @@ jobs:
           LATENCY_EDITS: ${{ inputs.edits || '10' }}
           LATENCY_JSON: ${{ runner.temp }}/latency.json
           RA_JIT_IDLE_SECS: "0"
-        run: RA_JIT_BIN="$GITHUB_WORKSPACE/target/release/ra-jit" python3 harness/live_latency.py ${{ inputs.modes || 'cargo socket' }}
+        run: RA_JIT_BIN="$GITHUB_WORKSPACE/target/release/ra-jit" python3 harness/live_latency.py --program ${{ matrix.program }} ${{ inputs.modes || 'socket burst' }}
       - name: what the workers said
         if: always()
         run: |
           for log in "$HOME"/.cache/ra-jit/workers/*/log "$HOME"/.cache/ra-jit/spares/*/log; do
             [ -f "$log" ] || continue
             echo "::group::$log (filtered)"
-            grep -E "request:|timeline-us|apply-us|steps:|asked:|edit-to-binary|link:|live:|panicked|error" "$log" | cut -c1-400 | tail -300 || true
+            grep -E "request:|timeline-us|apply-us|splice-us|steps:|asked:|edit-to-binary|link:|live:|panicked|error" "$log" | cut -c1-400 | tail -300 || true
             echo "::endgroup::"
           done
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: latency
+          name: latency-${{ matrix.program }}
           path: |
             ${{ runner.temp }}/latency.json
             ~/.cache/ra-jit/daemon.log
