@@ -264,6 +264,9 @@ pub(super) struct Recorder<'db> {
     vtables: FxHashMap<(StoredTy, Option<(TraitId, StoredGenericArgs)>), DataId>,
     statics: FxHashMap<StaticId, DataId>,
     pub(super) layouts: Option<RefCell<FxHashMap<Ty<'db>, (u64, u64)>>>,
+    /// With `layouts`: each `async fn`'s future as rustc names it, with the offsets of what
+    /// each of its variants holds, for `harness/layoutdiff.py` to set against rustc's.
+    pub(super) coroutine_layouts: RefCell<Vec<(String, u64, u64)>>,
     pub(super) builder_ctx: FunctionBuilderContext,
     /// The assembly of the function, when it is a `#[naked]` one, and what each operand of
     /// it that is a `sym` names.
@@ -307,6 +310,7 @@ impl<'db> Recorder<'db> {
             vtables: FxHashMap::default(),
             statics: FxHashMap::default(),
             layouts: std::env::var_os("RA_JIT_LAYOUTS").map(|_| Default::default()),
+            coroutine_layouts: RefCell::default(),
             builder_ctx: FunctionBuilderContext::new(),
             naked: None,
             spans: Vec::new(),
@@ -337,13 +341,14 @@ impl<'db> Recorder<'db> {
     }
 
     pub(super) fn finish(self) -> (Requests, Vec<(String, u64, u64)>) {
-        let layouts = self.layouts.map_or_else(Vec::new, |layouts| {
+        let mut layouts: Vec<(String, u64, u64)> = self.layouts.map_or_else(Vec::new, |layouts| {
             layouts
                 .into_inner()
                 .into_iter()
                 .map(|(ty, (size, align))| (format!("{ty:?}"), size, align))
                 .collect()
         });
+        layouts.extend(self.coroutine_layouts.into_inner());
         (self.requests, layouts)
     }
 

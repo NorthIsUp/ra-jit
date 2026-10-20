@@ -1,4 +1,5 @@
-"""Compares the size and alignment rust-analyzer computes for types against rustc's.
+"""Compares the size and alignment rust-analyzer computes for types against rustc's, and for
+the futures of `async fn`s where each variant keeps what it keeps.
 
 rustc's side is `-Zprint-type-sizes`; ra-jit's is the `RA_JIT_LAYOUTS` log of every type its
 backend laid out. The two print types differently, so both are reduced to a common spelling
@@ -38,13 +39,56 @@ def rustc_layouts(workspace, crate):
     layouts = {}
     for m in re.finditer(r"print-type-size type: `(.*)`: (\d+) bytes, alignment: (\d+) bytes", out.stdout):
         layouts.setdefault(spell(m[1]), set()).add((int(m[2]), int(m[3])))
+    for name, layout in rustc_coroutines(out.stdout):
+        layouts.setdefault(name, set()).add(layout)
     return layouts
+
+
+def rustc_coroutines(text):
+    """Each `async fn` future `-Zprint-type-sizes` prints, as (name, (size, align, variants)) with
+    the offsets of what each variant holds. rustc prints a variant's fields by offset, counting
+    from just after a one-byte discriminant and naming the offset of one that comes before it."""
+    found, current, cursor, discriminant = [], None, 0, 0
+    for line in text.splitlines():
+        if not line.startswith("print-type-size"):
+            continue
+        body = line[len("print-type-size"):].strip()
+        m = re.match(r"type: `(\{async fn body of .*\})`: (\d+) bytes, alignment: (\d+) bytes", body)
+        if m:
+            current = [spell(m[1]), int(m[2]), int(m[3]), []]
+            found.append(current)
+            discriminant = 0
+            continue
+        if body.startswith("type: "):
+            current = None
+            continue
+        if current is None:
+            continue
+        if m := re.match(r"discriminant: (\d+) bytes", body):
+            discriminant = int(m[1])
+        elif body.startswith("variant `"):
+            current[3].append([])
+            cursor = discriminant
+        elif m := re.match(r"padding: (\d+) bytes", body):
+            cursor += int(m[1])
+        elif m := re.match(r"(?:upvar|local) `.*`: (\d+) bytes(?:, offset: (\d+) bytes)?", body):
+            offset = int(m[2]) if m[2] else cursor
+            current[3][-1].append(offset)
+            cursor = offset + int(m[1])
+    return [(name + "@coroutine", (size, align, tuple(sorted(tuple(sorted(v)) for v in variants))))
+            for name, size, align, variants in found]
 
 
 def ra_jit_layouts(path):
     layouts = {}
     for line in open(path):
         name, size, align = line.rstrip("\n").rsplit("\t", 2)
+        if " @coroutine " in name:
+            name, variants = name.split(" @coroutine ")
+            variants = tuple(sorted(tuple(sorted(int(it) for it in v.split(",") if it))
+                                    for v in variants.split(";")))
+            layouts.setdefault(spell(name) + "@coroutine", set()).add((int(size), int(align), variants))
+            continue
         if any(s in name for s in ("Binder", "Closure(", "Re", "Param", "Alias", "{", "?")):
             continue
         layouts.setdefault(spell(name), set()).add((int(size), int(align)))
