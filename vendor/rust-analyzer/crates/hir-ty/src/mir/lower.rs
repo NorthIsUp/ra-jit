@@ -344,10 +344,14 @@ impl<'a, 'db> MirLowerCtx<'a, 'db> {
         let Some((p, current)) = self.lower_expr_to_fresh_place(expr_id, current)? else {
             return Ok(None);
         };
-        Ok(Some((
-            Operand { kind: OperandKind::Copy(p.store()), span: Some(expr_id.into()) },
-            current,
-        )))
+        // rustc moves out of a temporary, as it reads it once. Only a `Copy` one here: what
+        // a temporary with drop glue moves out of is how drops are elaborated.
+        let kind = if self.is_copy(self.result.locals[p.local].ty.as_ref()) {
+            OperandKind::Move(p.store())
+        } else {
+            OperandKind::Copy(p.store())
+        };
+        Ok(Some((Operand { kind, span: Some(expr_id.into()) }, current)))
     }
 
     /// The value of an expression in a place nothing else can write to. A place expression is
@@ -3469,6 +3473,14 @@ impl<'a, 'db> MirLowerCtx<'a, 'db> {
             temporaries.pop_assume_dropped(self);
             return Ok(None);
         };
+        // The arm switches on the guard's value after its temporaries are gone, so the
+        // value outlives them.
+        if let OperandKind::Copy(place) | OperandKind::Move(place) = &discr.kind
+            && place.projection.as_slice().is_empty()
+        {
+            let local = place.local;
+            self.drop_scopes.last_mut().unwrap().locals.retain(|&it| it != local);
+        }
         let current = temporaries.pop_and_drop(self, current, guard.into());
         Ok(Some((discr, current)))
     }

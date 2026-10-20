@@ -68,6 +68,7 @@ const BUILD_ENV: &[&str] = &[
     "CARGO_INCREMENTAL",
     "RA_JIT_BACKEND",
     "RA_JIT_OPT",
+    "RA_JIT_MIR_OPT",
     "RA_JIT_EMIT",
     "RA_JIT_SPLICE",
 ];
@@ -85,6 +86,7 @@ const WORKER_ENV: &[&str] = &[
     "PATH",
     "RA_JIT_BACKEND",
     "RA_JIT_OPT",
+    "RA_JIT_MIR_OPT",
     "RA_JIT_EMIT",
     "RA_JIT_SPLICE",
 ];
