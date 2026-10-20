@@ -39,9 +39,9 @@ ROOT = os.path.dirname(HERE)
 BUILD_HISTORY = os.path.join(ROOT, "docs/benchmarks/history/linux-x86_64.jsonl")
 LIVE_HISTORY = os.path.join(ROOT, "docs/benchmarks/history/macos-arm64-live.jsonl")
 PHASE_FIELDS = ("wall_s", "cargo_s", "rss_mb", "built", "link", "compiled", "build_s", "warm_s",
-                "warm_store_s", "warm_store_build_s", "check_s")
+                "warm_store_s", "warm_store_build_s", "check_s", "edit_s", "edit_cargo_s")
 # What is checked, and the least change that counts.
-FLOORS = {"wall_s": 0.05, "build_s": 0.05, "warm_s": 0.05, "rss_mb": 100, "store_mb": 50,
+FLOORS = {"wall_s": 0.05, "build_s": 0.05, "warm_s": 0.05, "edit_s": 0.05, "rss_mb": 100, "store_mb": 50,
           "p50_ms": 1.0, "p90_ms": 1.0, "ra-jit": 0.005}
 
 
@@ -55,7 +55,7 @@ def build_line(result):
     host = result.get("host") or {}
     line = dict(suite="build", date=result["date"], commit=result.get("commit"), machine=host.get("name"),
                 cpu=host.get("cpu"), cores=host.get("cores") or result.get("cores"), runs=result.get("runs"),
-                run_url=result.get("run_url"), results={})
+                run_url=result.get("run_url") or actions_run(), results={})
     for key, measured in result["results"].items():
         phases = {}
         for label, phase in measured["phases"].items():
@@ -99,7 +99,15 @@ def live_line(files, machine):
                 program[mode] = dict(n=len(totals), **{f"p{p}_ms": round(percentile(totals, p), 2) for p in (50, 90, 95, 99)},
                                      max_ms=round(max(totals), 2))
     line.setdefault("date", time_now())
+    line.setdefault("run_url", actions_run())
     return line
+
+
+def actions_run():
+    """The GitHub Actions run this is part of, if it is."""
+    if os.environ.get("GITHUB_RUN_ID"):
+        return f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+    return None
 
 
 def time_now():
@@ -123,7 +131,7 @@ def series(line):
             if (entry.get("runtime_s") or {}).get("ra-jit") is not None:
                 numbers[(key, "runtime", "ra-jit")] = entry["runtime_s"]["ra-jit"]
             for label, phase in entry["phases"].items():
-                for field in ("wall_s", "rss_mb", "build_s", "warm_s"):
+                for field in ("wall_s", "rss_mb", "build_s", "warm_s", "edit_s"):
                     if phase.get(field) is not None:
                         numbers[(key, label, field)] = phase[field]
                 if phase.get("built"):

@@ -1,8 +1,11 @@
 # The README's build table, measured on real projects (docs/benchmarks.md). Runs on the one
 # dedicated benchmark machine (a self-hosted runner labelled bench-x86; its setup is in
 # docs/benchmarks.md), never on a shared GitHub runner: their neighbours make the numbers noise.
-# When a number moved beyond noise, or the stored run is a day old, the new README section and
-# results are committed to main by github-actions with [skip ci].
+# Every run adds a line to docs/benchmarks/history/linux-x86_64.jsonl, which the site's /bench
+# page charts, and checks it against the runs before it (harness/benchhistory.py): a median
+# beyond its noise band opens an issue labelled bench-regression (or comments on the open one)
+# and fails the run. When a number moved beyond noise, or the stored run is a day old, the README
+# section and results are committed too. Commits to main are github-actions' with [skip ci].
 name: bench-readme
 on:
   push:
@@ -16,6 +19,10 @@ on:
         description: "Write the README even when every number is within noise"
         type: boolean
         default: false
+      full:
+        description: "Also time the other setups (cg_clif, mold, wild, -Zthreads, cargo check) and run the test suites, as the nightly run does"
+        type: boolean
+        default: false
 
 # One run at a time on the one machine. A push that comes during a run waits, and a newer push
 # replaces it while it waits, so the queue never grows past one.
@@ -25,6 +32,9 @@ concurrency:
 
 permissions:
   contents: write
+  issues: write
+  # To start the site's deploy after the history commit: a push by GITHUB_TOKEN starts no workflow.
+  actions: write
 
 defaults:
   run:
@@ -34,12 +44,15 @@ jobs:
   bench:
     name: bench (real projects, Linux x86-64)
     runs-on: [self-hosted, linux, x64, bench-x86]
-    timeout-minutes: 300
+    timeout-minutes: 420
     env:
       # Outside the checkout: the checkout is cleaned each run, these are kept between runs so
       # that ra-jit itself builds incrementally and the projects are cloned once.
       BENCH_HOME: ${{ github.workspace }}/../bench-state
       CARGO_TERM_COLOR: never
+      GH_TOKEN: ${{ github.token }}
+      # The nightly run, and a run by hand that asks, compares with the other setups too.
+      FULL: ${{ github.event_name == 'schedule' || inputs.full }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -52,10 +65,12 @@ jobs:
         run: |
           export RA_JIT_BIN="$BENCH_HOME/target/release/ra-jit" RA_JIT_LLVM_BIN="$BENCH_HOME/target/release/ra-jit"
           export RA_JIT_PROJECTS="$BENCH_HOME/projects"
-          rm -rf "$BENCH_HOME/work"
+          rm -rf "$BENCH_HOME/work" "$BENCH_HOME/reference"
+          full=()
+          [ "$FULL" = true ] && full=(--setups all --setups-on ripgrep,nushell --tests)
           nix develop .#bench -c env -u CARGO_INCREMENTAL -u RUSTC_WRAPPER python3 harness/bench.py \
-            ripgrep fd bat hyperfine just axum nushell --runs 5 \
-            --work "$BENCH_HOME/work" --out "$RUNNER_TEMP/bench.json"
+            ripgrep fd bat hyperfine just axum nushell helix bevy --runs 5 --cold-runs 5 "${full[@]}" \
+            --work "$BENCH_HOME/work" --reference "$BENCH_HOME/reference" --out "$RUNNER_TEMP/bench.json"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -66,18 +81,46 @@ jobs:
         run: |
           nix develop .#bench -c python3 harness/benchreport.py "$RUNNER_TEMP/bench.json" \
             ${{ inputs.force && '--force' || '' }}
+      - name: History and regressions
+        id: history
+        run: |
+          python3 harness/benchhistory.py build "$RUNNER_TEMP/bench.json"
+          if python3 harness/benchhistory.py check docs/benchmarks/history/linux-x86_64.jsonl --report "$RUNNER_TEMP/regressions.md"; then
+            echo "regressed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "regressed=true" >> "$GITHUB_OUTPUT"
+          fi
+          cat "$RUNNER_TEMP/regressions.md" >> "$GITHUB_STEP_SUMMARY"
       - name: Commit to main
-        if: steps.report.outputs.changed == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add README.md docs/benchmarks.md docs/benchmarks/linux-x86_64.json
-          git commit -q -m "bench: README numbers for ${GITHUB_SHA::10} [skip ci]"
+          git add docs/benchmarks/history/linux-x86_64.jsonl
+          if [ "${{ steps.report.outputs.changed }}" = true ]; then
+            git add README.md docs/benchmarks.md docs/benchmarks/linux-x86_64.json
+          fi
+          git commit -q -m "bench: numbers for ${GITHUB_SHA::10} [skip ci]"
           # Main may have moved during the run: put the commit on top and try again.
           for attempt in 1 2 3 4 5; do
             git fetch -q origin main
             git rebase -q origin/main || { git rebase --abort; echo "::error::the bench commit does not apply to main"; exit 1; }
-            git push -q origin HEAD:main && exit 0
+            if git push -q origin HEAD:main; then
+              gh workflow run site.yaml --ref main
+              exit 0
+            fi
             sleep $((attempt * 5))
           done
+          exit 1
+      - name: Open or update the regression issue
+        if: steps.history.outputs.regressed == 'true'
+        run: |
+          gh label create bench-regression --color B60205 --description "A benchmark median moved past its noise band" --force
+          open=$(gh issue list --label bench-regression --state open --json number --jq '.[0].number // empty')
+          if [ -n "$open" ]; then
+            gh issue comment "$open" --body-file "$RUNNER_TEMP/regressions.md"
+          else
+            gh issue create --title "Benchmark regression at ${GITHUB_SHA::10}" --label bench-regression \
+              --body-file "$RUNNER_TEMP/regressions.md"
+          fi
+          echo "::error::a benchmark regressed beyond its noise band: see the run summary"
           exit 1
