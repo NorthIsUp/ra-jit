@@ -1,8 +1,5 @@
 # ra-jit
 
-> [!IMPORTANT]
-> **There are no plans for long-term support of ra-jit. [rustd](https://github.com/DioxusLabs/rustd) was published at almost the same time (its first commit is 2026-10-18, ra-jit's is 2026-10-19), we weren't aware of it when we built this, and you should probably use that instead.** It takes the same approach (rust-analyzer front end, Cranelift, per-function recompiles on edit) and is further along: it works on real crates as a drop-in `cargo rustd build/run/test`, while ra-jit only runs a small subset of Rust.
-
 Hot-reload Rust in milliseconds, using rust-analyzer as the compiler front end.
 
 ```
@@ -12,6 +9,9 @@ nix run github:indexable-inc/ra-jit
 ![Editing the running Game of Life: rule, colours and speed change live](docs/demo.webp)
 
 [mp4](docs/demo.mp4)
+
+> [!IMPORTANT]
+> **There are no plans for long-term support of ra-jit. [rustd](https://github.com/DioxusLabs/rustd) was published at almost the same time (its first commit is 2026-10-18, ra-jit's is 2026-10-19), we weren't aware of it when we built this, and you should probably use that instead.** It takes the same approach (rust-analyzer front end, Cranelift, per-function recompiles on edit) and is further along: it works on real crates as a drop-in `cargo rustd build/run/test`, while ra-jit only runs a small subset of Rust.
 
 Edit the source on the right and the Game of Life on the left changes on the next frame, with its state intact. A toggle switches to a real `cargo build` per edit for comparison.
 
