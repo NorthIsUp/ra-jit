@@ -137,6 +137,8 @@ with reasons. The daemon's log says `backend: llvm -O2 fast emit` when LLVM is i
 `shapes.py`, `heap.py` and `realbench.py` measure and do not gate. `realbench.py` times
 `cargo ra-jit build` against `cargo build` on ripgrep, just and nushell (cold, no-op and
 three kinds of edit); the numbers are in [results.md](results.md#11-real-projects). Their docstrings say how to run them.
+`bench.py` on real projects, with `benchreport.py`, is also what writes the README's build table:
+[benchmarks.md](benchmarks.md).
 
 ## The fuzzer
 

@@ -44,28 +44,23 @@ Live edit to running code, Game of Life demo (median of 20 edits, one 96-core Li
 | One function | 169 ms | 7 ms | **24x** |
 | One function, 300 new functions added | 282 ms | 60 ms | 4.7x |
 
-Edit, then build (generated 200-crate workspace, Linux x86-64, 8 CPUs, both warm and
-incremental, same linker, median of three):
+<!-- bench:start -->
+Edit, then build, on real projects at pinned commits. Each cell is incremental `cargo build` → `cargo ra-jit build`, both warm, same linker, median of 5 edits. Linux x86-64, AWS c8a.metal-24xl, bare metal, pinned with taskset (AMD EPYC 9R45, 16 of its 96 cores, 188 GiB), ra-jit [`6a7d245e47`](https://github.com/indexable-inc/ra-jit/commit/6a7d245e47830f26475e98db6e01905f117a2971) on 2026-10-20.
 
-| Edit | cargo | ra-jit | |
-|---|---:|---:|---:|
-| A function in the main crate | 1.76 s | 0.42 s | 4.2x |
-| A function in a crate everything depends on | 6.33 s | 0.60 s | 10.6x |
-| Functions in 30 crates at once | 6.26 s | 0.62 s | 10.1x |
-| A new function | 2.09 s | 0.56 s | 3.7x |
-| A signature used in every crate | 13.87 s | 10.87 s | 1.3x |
+| Project | Edit a function | Edit a widely used function | Change a signature | Nothing changed |
+|---|---:|---:|---:|---:|
+| ripgrep 15.1.0 | 447 ms → **90 ms** (5.0x) | 713 ms → **50 ms** (14x) | 556 ms → **86 ms** (6.5x) | 382 ms → **28 ms** (14x) |
+| fd 10.3.0 | 433 ms → **99 ms** (4.4x) | 403 ms → **86 ms** (4.7x) | 651 ms → **122 ms** (5.3x) | 381 ms → **31 ms** (12x) |
+| bat 0.26.0 | 428 ms → **60 ms** (7.1x) | 667 ms → **54 ms** (12x) | 951 ms → **67 ms** (14x) | 58 ms → **26 ms** (2.2x) |
+| hyperfine 1.19.0 | 315 ms → **92 ms** (3.4x) | 349 ms → **98 ms** (3.6x) | 352 ms → **140 ms** (2.5x) | 298 ms → **30 ms** (9.9x) |
+| just 1.43.0 | 656 ms → **48 ms** (14x) | 687 ms → **52 ms** (13x) | 664 ms → **76 ms** (8.7x) | 41 ms → **24 ms** (1.7x) |
+| axum 0.8.6 | 350 ms → **57 ms** (6.1x) | 798 ms → **52 ms** (15x) |  | 71 ms → **26 ms** (2.7x) |
+| nushell 0.108.0 | 1.44 s → **325 ms** (4.4x) | 4.75 s → **221 ms** (22x) | 4.84 s → **288 ms** (17x) | 179 ms → **43 ms** (4.2x) |
 
-Real projects (64-core Linux x86-64, median of 5, same linker; [details](docs/results.md#11-real-projects)):
+Measured by hand with `harness/bench.py`; the `bench-readme` workflow re-runs it on the dedicated benchmark machine. Cold builds, the spread of every number, the LLVM tier and how fast the built programs run: [docs/benchmarks.md](docs/benchmarks.md) ([raw JSON](docs/benchmarks/linux-x86_64.json)).
+<!-- bench:end -->
 
-| Project | Build from nothing: cargo / ra-jit ready | Edit in a library crate: cargo / ra-jit |
-|---|---:|---:|
-| ripgrep 15.1.0 | 6.2 s / 13.0 s | 0.79 s / 0.08 s (10x) |
-| just 1.43.0 | 8.1 s / 16.8 s | 0.92 s / 0.07 s (14x) |
-| nushell 0.108.0 | 35.5 s / 75.9 s | 6.19 s / 0.24 s (26x) |
-
-The first build takes about twice as long as `cargo build`, because ra-jit compiles every
-program once more after cargo. Not measured yet: workspaces of a million lines or more,
-signature and struct-field edits on real projects, and test suites
+Not measured yet: workspaces of a million lines or more, and test suites
 ([#benchmarks](https://github.com/indexable-inc/ra-jit/issues?q=label%3Abenchmarks)).
 
 ## Try it on your project

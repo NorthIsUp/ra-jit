@@ -1,0 +1,83 @@
+# The README's build table, measured on real projects (docs/benchmarks.md). Runs on the one
+# dedicated benchmark machine (a self-hosted runner labelled bench-x86; its setup is in
+# docs/benchmarks.md), never on a shared GitHub runner: their neighbours make the numbers noise.
+# When a number moved beyond noise, or the stored run is a day old, the new README section and
+# results are committed to main by github-actions with [skip ci].
+name: bench-readme
+on:
+  push:
+    branches: ["main"]
+    paths-ignore: ["README.md", "CHANGELOG.md", "docs/**", "site/**"]
+  schedule:
+    - cron: "17 9 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Write the README even when every number is within noise"
+        type: boolean
+        default: false
+
+# One run at a time on the one machine. A push that comes during a run waits, and a newer push
+# replaces it while it waits, so the queue never grows past one.
+concurrency:
+  group: bench-readme
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  bench:
+    name: bench (real projects, Linux x86-64)
+    runs-on: [self-hosted, linux, x64, bench-x86]
+    timeout-minutes: 300
+    env:
+      # Outside the checkout: the checkout is cleaned each run, these are kept between runs so
+      # that ra-jit itself builds incrementally and the projects are cloned once.
+      BENCH_HOME: ${{ github.workspace }}/../bench-state
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Build ra-jit (Cranelift and LLVM in one binary)
+        run: |
+          mkdir -p "$BENCH_HOME"
+          CARGO_TARGET_DIR="$BENCH_HOME/target" nix develop .#bench -c cargo build -p ra-jit --release --features llvm
+      - name: Bench
+        run: |
+          export RA_JIT_BIN="$BENCH_HOME/target/release/ra-jit" RA_JIT_LLVM_BIN="$BENCH_HOME/target/release/ra-jit"
+          export RA_JIT_PROJECTS="$BENCH_HOME/projects"
+          rm -rf "$BENCH_HOME/work"
+          nix develop .#bench -c env -u CARGO_INCREMENTAL -u RUSTC_WRAPPER python3 harness/bench.py \
+            ripgrep fd bat hyperfine just axum nushell --runs 5 \
+            --work "$BENCH_HOME/work" --out "$RUNNER_TEMP/bench.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench
+          path: ${{ runner.temp }}/bench.json
+      - name: README and docs/benchmarks.md
+        id: report
+        run: |
+          nix develop .#bench -c python3 harness/benchreport.py "$RUNNER_TEMP/bench.json" \
+            ${{ inputs.force && '--force' || '' }}
+      - name: Commit to main
+        if: steps.report.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md docs/benchmarks.md docs/benchmarks/linux-x86_64.json
+          git commit -q -m "bench: README numbers for ${GITHUB_SHA::10} [skip ci]"
+          # Main may have moved during the run: put the commit on top and try again.
+          for attempt in 1 2 3 4 5; do
+            git fetch -q origin main
+            git rebase -q origin/main || { git rebase --abort; echo "::error::the bench commit does not apply to main"; exit 1; }
+            git push -q origin HEAD:main && exit 0
+            sleep $((attempt * 5))
+          done
+          exit 1
