@@ -132,7 +132,7 @@ pub fn record(
         if seen.insert(krate) {
             // Of a proc macro crate only what its macros expand to is needed.
             let deps = &krate.data(db).dependencies;
-            for dep in deps.iter().filter(|_| !krate.data(db).is_proc_macro) {
+            for dep in deps.iter().filter(|_| !krate.data(db).target_kind.is_proc_macro()) {
                 visit(db, dep.crate_id, seen, out);
             }
             out.push(krate);
@@ -191,7 +191,7 @@ pub fn record(
             pack.data_layout = target.data_layout.to_string();
         }
         let root = db.file_source_root(data.root_file_id).source_root_id(&db);
-        if data.is_proc_macro {
+        if data.target_kind.is_proc_macro() {
             pack.files.push(File {
                 id: data.root_file_id.index(),
                 path: format!("/proc-macro/{}.rs", pack.crates.len()),
@@ -255,7 +255,7 @@ pub fn record(
             deps: data
                 .dependencies
                 .iter()
-                .filter(|_| !data.is_proc_macro)
+                .filter(|_| !data.target_kind.is_proc_macro())
                 .map(|dep| Dep {
                     krate: index[&dep.crate_id],
                     name: dep.name.to_string(),
@@ -263,7 +263,7 @@ pub fn record(
                     sysroot: dep.is_sysroot(),
                 })
                 .collect(),
-            macros: data.is_proc_macro.then(|| macros.unwrap_or_default()),
+            macros: data.target_kind.is_proc_macro().then(|| macros.unwrap_or_default()),
         });
     }
     drop(vfs);

@@ -37,14 +37,18 @@ the submodule builds only as part of this repository.
 
 ## rust-analyzer
 
-`vendor/rust-analyzer` is a submodule of this same repository, on its `rust-analyzer`
-branch. That branch is upstream rust-analyzer at the commit ra-jit forked from
-(`dd5ed69d4b`) with ra-jit's changes committed on top: about 160 files in 24 crates. `main`
-records which commit of that branch it builds with, as git does for any submodule.
+`vendor/rust-analyzer` is a submodule of
+[indexable-inc/rust-analyzer](https://github.com/indexable-inc/rust-analyzer), on its
+`ra-jit` branch. That branch is DioxusLabs' `rust-analyzer` branch of rustd (upstream at
+`dd5ed69d4b` with rustd's changes on top), merged with upstream rust-analyzer master, with
+the MIR passes that make rust-analyzer's MIR like rustc's on top
+([`docs/mir-passes.md`](https://github.com/indexable-inc/rust-analyzer/blob/ra-jit/docs/mir-passes.md)
+there). `main` records which commit of that branch it builds with, as git does for any
+submodule.
 
 After cloning:
 
-    git clone --recursive https://github.com/DioxusLabs/rustd
+    git clone --recursive https://github.com/indexable-inc/ra-jit
     cargo +1.99.0 build -p ra-jit --release
 
 or `git submodule update --init` in a clone made without `--recursive`. There is nothing
@@ -56,27 +60,30 @@ Edit the file in `vendor/rust-analyzer`, build and test from the root as usual. 
 commit in two places:
 
     cd vendor/rust-analyzer
-    git switch rust-analyzer      # once; a fresh submodule is on a detached commit
+    git switch ra-jit             # once; a fresh submodule is on a detached commit
     git commit -am "..."
-    git push origin rust-analyzer
+    git push origin ra-jit
     cd ../..
     git add vendor/rust-analyzer  # main now builds with the new commit
     git commit
 
-Push the submodule before `main`, or `main` names a commit nobody else can fetch. The
-`rust-analyzer` branch only moves forward; do not rebase or force-push it, because old
+Push the submodule before `main`, or `main` names a commit nobody else can fetch, and
+update the `rust-analyzer` input of `flake.nix` to the same commit. The `ra-jit` branch only
+moves forward; do not rebase or force-push it, because old
 commits of `main` name commits on it.
 
 A change to rust-analyzer should be something rust-analyzer could take: a bug fix in MIR
-lowering or inference, a missing piece of the language, an accessor ra-jit needs. Code that
-is only ra-jit's belongs in `crates/hir-ty-codegen` or `crates/ra-jit`, where a change is one
-ordinary commit. Fixes that are simply rust-analyzer bugs should be sent upstream, under
+lowering or inference, a missing piece of the language, an accessor ra-jit needs. Where
+rust-analyzer's MIR differs from rustc's, the fix goes in the fork's lowering or in a pass of
+its runtime MIR queries, and the code generator relies on it: codegen does not compensate.
+Code that is only ra-jit's belongs in `crates/hir-ty-codegen` or `crates/ra-jit`, where a
+change is one ordinary commit. Fixes that are simply rust-analyzer bugs should be sent upstream, under
 their rules.
 
 ### Moving to a newer rust-analyzer
 
-1. In `vendor/rust-analyzer`, merge the new upstream commit into the `rust-analyzer`
-   branch and resolve conflicts. Merge, not rebase, so the branch keeps moving forward.
+1. In `vendor/rust-analyzer`, merge the new upstream commit into the `ra-jit` branch and
+   resolve conflicts. Merge, not rebase, so the branch keeps moving forward.
 2. Update `Cargo.toml` and `Cargo.lock` at the root for dependencies rust-analyzer changed.
 3. Build, and run the whole gate under both backends ([harness.md](harness.md)). A newer
    rust-analyzer changes inference, MIR lowering and layout queries, any of which can
@@ -84,8 +91,9 @@ their rules.
    `fuzz/fuzz.py smoke` are the ones that notice first.
 4. Push the branch, then commit the new submodule commit on `main`.
 
-Nobody has done this yet, so this procedure is the intended one and has not been
-exercised.
+This was done once, on 2026-10-20, for upstream `0b21bd6596`. The merge was clean; the one
+API change ra-jit had to follow was `CrateData::is_proc_macro` becoming `target_kind` (a
+`base_db::TargetKind`). Step 3 has not been run on that merge yet.
 
 ### Where the history is
 

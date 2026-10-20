@@ -31,7 +31,7 @@ static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 #[global_allocator]
 static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-use ide_db::base_db::{CrateOrigin, LangCrateOrigin, SourceDatabase as _};
+use ide_db::base_db::{CrateOrigin, LangCrateOrigin, SourceDatabase as _, TargetKind};
 use std::{
     collections::BTreeSet,
     io::{BufRead as _, BufReader, Write as _},
@@ -58,7 +58,7 @@ use ide_db::{ChangeWithProcMacros, RootDatabase};
 use load_cargo::{LoadCargoConfig, ProcMacroServerChoice};
 use project_model::{
     CargoConfig, CargoFeatures, CargoWorkspace, ProjectManifest, ProjectWorkspace,
-    ProjectWorkspaceKind, RustLibSource, TargetDirectoryConfig, TargetKind, WorkspaceBuildScripts,
+    ProjectWorkspaceKind, RustLibSource, TargetDirectoryConfig, WorkspaceBuildScripts,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 use syntax::{
@@ -1406,7 +1406,7 @@ fn linked_from_libraries(db: &RootDatabase, args: &Args) -> anyhow::Result<()> {
     let used: FxHashSet<Crate> =
         built.iter().flat_map(|it| it.dependencies(db)).map(|it| it.krate).collect();
     // A proc macro is a library of the compiler's, not of the program.
-    let is_proc_macro = |krate: &Crate| ide_db::base_db::Crate::from(*krate).data(db).is_proc_macro;
+    let is_proc_macro = |krate: &Crate| ide_db::base_db::Crate::from(*krate).data(db).target_kind.is_proc_macro();
     let libraries: Vec<String> = built
         .iter()
         .filter(|it| used.contains(it) && !is_proc_macro(it))

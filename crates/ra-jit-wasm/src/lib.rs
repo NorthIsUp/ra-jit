@@ -35,7 +35,7 @@ use ide_db::{
     ChangeWithProcMacros, RootDatabase,
     base_db::{
         CrateGraphBuilder, CrateOrigin, CrateWorkspaceData, DependencyBuilder, Env,
-        LangCrateOrigin, SourceDatabase as _, SourceRoot,
+        LangCrateOrigin, SourceDatabase as _, SourceRoot, TargetKind,
         target::{Arch, TargetData},
     },
 };
@@ -310,7 +310,7 @@ impl Compiler {
                 Env::default(),
                 origin,
                 Vec::new(),
-                false,
+                TargetKind::Lib { is_proc_macro: false },
                 cwd.clone(),
                 workspace.clone(),
             )

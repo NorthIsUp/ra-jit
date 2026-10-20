@@ -46,17 +46,17 @@
     "rust-analyzer": {
       "flake": false,
       "locked": {
-        "lastModified": 1792450129,
-        "narHash": "sha256-9k89wLkL9wL0lJPO5WiCW31VVzK+qD2+jdGc3BBFN3Q=",
-        "owner": "DioxusLabs",
-        "repo": "rustd",
-        "rev": "6b1940be0e68cb8004301d6c2dcbdf3f71257fca",
+        "lastModified": 1792500763,
+        "narHash": "sha256-tVQTHKmf/hhsppnE1UazbiUbIgxi4LqHhTrPhCKkxoE=",
+        "owner": "indexable-inc",
+        "repo": "rust-analyzer",
+        "rev": "21a0acef28d5b384cda9e00ada9a116e3f61e607",
         "type": "github"
       },
       "original": {
-        "owner": "DioxusLabs",
-        "repo": "rustd",
-        "rev": "6b1940be0e68cb8004301d6c2dcbdf3f71257fca",
+        "owner": "indexable-inc",
+        "repo": "rust-analyzer",
+        "rev": "21a0acef28d5b384cda9e00ada9a116e3f61e607",
         "type": "github"
       }
     },
