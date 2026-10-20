@@ -6,8 +6,10 @@
 //! signature's hash of each page appended, and the write of all of it, tens of milliseconds
 //! for a 20 MB debug build. So the splice waits until the edits stop for [`QUIET`], is done on
 //! a thread of its own with the newest patch, and is given up on when an edit comes that wants
-//! the executable: typing is never kept waiting by the disk write of a keystroke before. A
-//! request for the executable itself (`cargo ra-jit build`) has the splices done first
+//! the executable: typing is never kept waiting by the disk write of a keystroke before. An
+//! edit that comes while a splice runs is published with a view of the executable as it was
+//! ([`Baseline::view`]), gives the splice up and does not wait for it to stop. A request for
+//! the executable itself (`cargo ra-jit build`) has the splices done first
 //! ([`flush`]).
 
 use std::{
@@ -19,11 +21,12 @@ use std::{
     time::{Duration, Instant},
 };
 
+use anyhow::Context as _;
 use rustc_hash::FxHashMap;
 
 use crate::{
     Executable, LINKED, live, lock,
-    splice::{GaveUp, Spliced},
+    splice::{Baseline, GaveUp, Spliced},
 };
 
 /// How long the edits have to stop for the splice to start: longer than the time between two
@@ -39,12 +42,21 @@ struct Pending {
 struct State {
     /// The newest patch of each executable that is not spliced yet.
     pending: FxHashMap<PathBuf, Pending>,
-    /// The executable a splice is under way of, and the word to give it up.
-    busy: Option<(PathBuf, Arc<AtomicBool>)>,
+    /// The splice under way.
+    busy: Option<Busy>,
     /// The executables a splice failed for, which are linked in full when next built.
     failed: Vec<PathBuf>,
     /// Whether the thread that splices is there.
     thread: bool,
+}
+
+struct Busy {
+    binary: PathBuf,
+    /// The word to give it up.
+    give_up: Arc<AtomicBool>,
+    /// What an edit of the executable is published with meanwhile, once the splice has the
+    /// baseline.
+    view: Option<Baseline>,
 }
 
 static STATE: LazyLock<(Mutex<State>, Condvar)> = LazyLock::new(Default::default);
@@ -72,17 +84,23 @@ pub(crate) fn defer(binary: &Path, patch: Vec<u8>) {
     changed.notify_all();
 }
 
-/// Has the baseline of the executable at `binary` back in [`LINKED`] for the caller: a splice
-/// of it under way is given up on, and waits again for the edits to stop.
-pub(crate) fn claim(binary: &Path) {
+/// Gives up on a splice under way of the executable at `binary`, which waits again for the
+/// edits to stop. With `wait`, or when the splice has no view yet, waits for it to stop, and
+/// the baseline is back in [`LINKED`] for the caller; otherwise says what to publish an edit
+/// with meanwhile, and the caller defers its patch.
+pub(crate) fn claim(binary: &Path, wait: bool) -> Option<Baseline> {
     let (state, changed) = &*STATE;
     let mut state = lock(state);
-    while let Some((busy, give_up)) = &state.busy
-        && busy == binary
+    while let Some(busy) = &state.busy
+        && busy.binary == binary
     {
-        give_up.store(true, Ordering::Relaxed);
-        state = wait(changed, state);
+        busy.give_up.store(true, Ordering::Relaxed);
+        if !wait && let Some(view) = &busy.view {
+            return Some(view.view());
+        }
+        state = self::wait(changed, state);
     }
+    None
 }
 
 /// Drops the splice that waits of the executable at `binary`, which the caller links or
@@ -127,11 +145,24 @@ fn splice_when_quiet() {
         };
         let Some(Pending { patch, .. }) = state.pending.remove(&binary) else { continue };
         let give_up = Arc::new(AtomicBool::new(false));
-        state.busy = Some((binary.clone(), give_up.clone()));
+        state.busy = Some(Busy { binary: binary.clone(), give_up: give_up.clone(), view: None });
         // Taken while `claim` can't look: it finds the splice under way, or the baseline.
         let known = lock(&LINKED).remove(&binary);
         drop(state);
-        let outcome = splice(&binary, known, &patch, &give_up);
+        let outcome = match ready(&binary, known) {
+            Ok(baseline) => {
+                let view = baseline.view();
+                if let Some(busy) = &mut lock(&STATE.0).busy {
+                    busy.view = Some(view);
+                }
+                changed.notify_all();
+                splice(&binary, baseline, &patch, &give_up)
+            }
+            Err(why) => {
+                eprintln!("splice: {}: {why:#}; the next build links it in full", binary.display());
+                Outcome::Failed
+            }
+        };
         state = lock(&STATE.0);
         match outcome {
             Outcome::Done => {}
@@ -154,21 +185,20 @@ enum Outcome {
     Failed,
 }
 
-/// Splices `patch` into the executable at `binary`, known as `known`.
-fn splice(binary: &Path, known: Option<Executable>, patch: &[u8], give_up: &AtomicBool) -> Outcome {
+/// The baseline of the executable known as `known`, with the signature anyone gave it since:
+/// the splice then leaves its image as the views have it.
+fn ready(binary: &Path, known: Option<Executable>) -> anyhow::Result<Baseline> {
+    let known = known.context("no executable to add to")?;
+    let mut baseline = known.baseline()?;
+    anyhow::ensure!(baseline.is_of(binary), "another executable is asked for");
+    baseline.read_again_if_signed()?;
+    Ok(baseline)
+}
+
+/// Splices `patch` into the executable at `binary`.
+fn splice(binary: &Path, mut baseline: Baseline, patch: &[u8], give_up: &AtomicBool) -> Outcome {
     let start = Instant::now();
     let shown = binary.display();
-    let Some(known) = known else {
-        eprintln!("splice: {shown}: no executable to add to; the next build links it in full");
-        return Outcome::Failed;
-    };
-    let mut baseline = match known.baseline() {
-        Ok(baseline) => baseline,
-        Err(why) => {
-            eprintln!("splice: {shown}: {why:#}; the next build links it in full");
-            return Outcome::Failed;
-        }
-    };
     let spliced = baseline.splice(patch, give_up);
     let took = start.elapsed();
     match spliced {

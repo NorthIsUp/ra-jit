@@ -2902,9 +2902,27 @@ fn link(
     static SPLICING: std::sync::LazyLock<bool> =
         std::sync::LazyLock::new(|| std::env::var_os("RA_JIT_SPLICE").is_none_or(|it| it != "0"));
     let splice = splice.filter(|_| *SPLICING);
-    // An older edit's splice under way gives the executable back.
-    if let Some(binary) = splice {
-        splicer::claim(binary);
+    // An older edit's splice under way is given up on. It gives the executable back, or, to an
+    // edit whose splice waits for the edits to stop anyway, what to publish it with meanwhile.
+    let deferred = defer && patched && cmd.is_some();
+    let view = match (splice, patch) {
+        (Some(binary), Some(patch)) => splicer::claim(binary, !deferred).map(|it| (it, patch)),
+        (Some(binary), None) => {
+            _ = splicer::claim(binary, true);
+            None
+        }
+        (None, _) => None,
+    };
+    if let (Some(binary), Some((view, patch))) = (splice, view) {
+        let start = Instant::now();
+        live::tell_superseded();
+        live::publish(&view, patch);
+        splicer::defer(binary, std::fs::read(patch)?);
+        eprintln!(
+            "link: {:.1?} (the splice waits for the edits to stop; the one under way gives up)",
+            start.elapsed()
+        );
+        return Ok(());
     }
     // An executable linked with the object as it was is not one to add to, also when the
     // object was written for a request that does not link.
