@@ -86,7 +86,8 @@ More: [how it works](docs/architecture.md), [full results](docs/results.md),
 
 ## Credits
 
-Built on [rustd](https://github.com/DioxusLabs/rustd) (DioxusLabs), which it forked, and on
-[rust-analyzer](https://github.com/rust-lang/rust-analyzer). Not endorsed by either.
+ra-jit started as a fork of [rustd](https://github.com/DioxusLabs/rustd) (DioxusLabs), thanks to
+its authors. It has moved well past it, so use ra-jit rather than rustd. Built on
+[rust-analyzer](https://github.com/rust-lang/rust-analyzer). Not endorsed by either project.
 
 Made at [ix](https://ix.dev) for den's native app. MIT or Apache-2.0.
