@@ -127,7 +127,9 @@ let
       spec =
         if isRun i then
           let
-            compileDep = (builtins.head u.deps).i;
+            # Its own build script's compile unit; the other deps are the run units of dependencies'
+            # scripts (`links`), which cargo lists in no fixed order.
+            compileDep = (lib.findFirst (d: (U d.i).kind == "custom-build" && (U d.i).mode == "build" && (U d.i).pkg == u.pkg) null u.deps).i;
             # Cargo hands DEP_<links>_<key> from direct deps' build scripts to this package's script.
             libUnit = lib.findFirst (j: (U j).pkg == u.pkg && (U j).mode == "build" && (U j).kind != "custom-build") null idx;
             depScripts = lib.optionals (libUnit != null)
