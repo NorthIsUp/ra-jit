@@ -12,6 +12,7 @@ use std::{
     ffi::OsString,
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    time::{Duration, SystemTime},
 };
 
 use anyhow::Context as _;
@@ -23,6 +24,10 @@ const REAL: &str = "RA_JIT_BUILD_SCRIPT";
 
 /// The file next to a script's `OUT_DIR` that says how cargo ran it.
 const RAN: &str = "ra-jit-ran.json";
+
+/// The file next to a script's `OUT_DIR` whose time is when [`rerun_is_same`] last found it
+/// the same.
+const CHECKED: &str = "ra-jit-checked";
 
 /// How cargo ran a build script.
 #[derive(Serialize, Deserialize)]
@@ -206,7 +211,58 @@ fn dep_info_paths(deps: &str) -> Vec<PathBuf> {
 /// printed and wrote what it did then; `Err` is what is different, which a script that
 /// writes the name of its directory into a file always is.
 pub(crate) fn rerun_is_same(out_dir: &Path) -> Result<(), String> {
-    rerun_matches(out_dir, out_dir)
+    // A file written as the script reads it can have a time a little before now: the
+    // kernel stamps files with a clock that lags by up to a tick.
+    let began = SystemTime::now() - 2 * file_clock_tick();
+    rerun_matches(out_dir, out_dir)?;
+    if let Some(run_dir) = out_dir.parent()
+        && let Ok(checked) = std::fs::File::create(run_dir.join(CHECKED))
+    {
+        let _ = checked.set_modified(began);
+    }
+    Ok(())
+}
+
+/// How far behind the clock the kernel stamps a file it writes can be: Linux takes the time
+/// of the last tick.
+#[cfg(target_os = "linux")]
+fn file_clock_tick() -> Duration {
+    let mut tick = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: `tick` is a timespec to write to.
+    match unsafe { libc::clock_getres(libc::CLOCK_REALTIME_COARSE, &mut tick) } {
+        0 => Duration::new(tick.tv_sec as u64, tick.tv_nsec as u32).max(Duration::from_millis(1)),
+        _ => Duration::from_millis(20),
+    }
+}
+
+/// Windows stamps files with the system time, which moves in steps of about 16 ms.
+#[cfg(windows)]
+fn file_clock_tick() -> Duration {
+    Duration::from_millis(16)
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+fn file_clock_tick() -> Duration {
+    Duration::from_millis(1)
+}
+
+/// Whether the script that wrote `out_dir` was run again by [`rerun_is_same`], and printed
+/// and wrote what it had, after `newest`: when nothing it reads is newer, a run now is the
+/// same again.
+pub(crate) fn checked_after(out_dir: &Path, newest: SystemTime) -> bool {
+    let checked = out_dir.parent().map(|it| it.join(CHECKED));
+    let checked = checked.and_then(|it| std::fs::metadata(it).and_then(|it| it.modified()).ok());
+    checked.is_some_and(|it| newest < it)
+}
+
+/// Whether the run of a script that wrote `out_dir` printed and wrote what the run that wrote
+/// `other` did, but for the name of its directory.
+pub(crate) fn same_run(out_dir: &Path, other: &Path) -> bool {
+    let printed = |dir: &Path| std::fs::read(dir.parent()?.join("output")).ok();
+    let (Some(ours), Some(theirs)) = (printed(out_dir), printed(other)) else { return false };
+    let (Some(named), Some(names)) = (other.to_str(), out_dir.to_str()) else { return false };
+    String::from_utf8_lossy(&ours).replace(names, named).as_bytes() == theirs
+        && digest_of(out_dir) == digest_of(other)
 }
 
 /// Runs the script that wrote `out_dir` again as [`rerun_is_same`] does, and compares what
@@ -309,7 +365,21 @@ mod tests {
         assert_eq!(std::fs::metadata(&made).unwrap().modified().unwrap(), written);
         let left: Vec<_> =
             std::fs::read_dir(out_dir.parent().unwrap()).unwrap().flatten().collect();
-        assert_eq!(left.len(), 4, "{left:?}");
+        assert_eq!(left.len(), 5, "{left:?}");
+        let before = SystemTime::now() - Duration::from_secs(1);
+        assert!(checked_after(&out_dir, before));
+        assert!(!checked_after(&out_dir, SystemTime::now()), "a file written since");
+    }
+
+    #[test]
+    fn a_run_is_the_same_as_another_but_for_its_directory() {
+        let out_dir = ran("run", "fn made() {}");
+        let other = ran("run-other", "fn made() {}");
+        std::fs::write(out_dir.join("made.rs"), "fn made() {}").unwrap();
+        std::fs::write(other.join("made.rs"), "fn made() {}").unwrap();
+        assert!(same_run(&out_dir, &other));
+        std::fs::write(other.join("made.rs"), "fn made_before() {}").unwrap();
+        assert!(!same_run(&out_dir, &other));
     }
 
     #[test]

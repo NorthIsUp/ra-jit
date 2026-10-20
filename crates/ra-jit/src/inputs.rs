@@ -87,9 +87,21 @@ impl Script {
     /// itself is older than its source, or was compiled reading a variable cargo does not
     /// set; cargo compiles it again.
     fn reruns_the_same(&self) -> bool {
+        use crate::cargo::script;
         let Some(out_dir) = self.ran() else { return false };
-        crate::cargo::script::compiled_from_what_is_there(&out_dir, &self.workspace)
-            && crate::cargo::script::rerun_matches(&out_dir, &self.out_dir).is_ok()
+        if !script::compiled_from_what_is_there(&out_dir, &self.workspace) {
+            return false;
+        }
+        // `cargo ra-jit` ran it again before it asked for this build, as it does when
+        // something it reads changed: that is not done twice.
+        let newest = self.files.iter().map(|it| newest(&it.path, it.package));
+        let newest = newest.collect::<Option<Vec<_>>>().and_then(|it| it.into_iter().max());
+        if newest.is_some_and(|it| script::checked_after(&out_dir, it))
+            && script::same_run(&out_dir, &self.out_dir)
+        {
+            return true;
+        }
+        script::rerun_matches(&out_dir, &self.out_dir).is_ok()
     }
 
     /// Where a run of the script that can be run again wrote: the load's, or else the last
@@ -331,6 +343,24 @@ fn stamp(path: &Path, package: bool) -> u64 {
     let mut hasher = FxHasher::default();
     stamp_into(path, package, &mut hasher);
     hasher.finish()
+}
+
+/// When the file at `path`, or the directory there or anything below it that [`stamp`] looks
+/// at, was last written. Nothing when it is not there.
+fn newest(path: &Path, package: bool) -> Option<std::time::SystemTime> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let mut newest = metadata.modified().ok()?;
+    if metadata.is_dir() {
+        for entry in std::fs::read_dir(path).ok()? {
+            let entry = entry.ok()?.path();
+            let built = entry.join("CACHEDIR.TAG").exists() || entry.ends_with(".git");
+            if package && (built || entry.join("Cargo.toml").exists()) {
+                continue;
+            }
+            newest = newest.max(self::newest(&entry, package)?);
+        }
+    }
+    Some(newest)
 }
 
 fn stamp_into(path: &Path, package: bool, hasher: &mut FxHasher) {
