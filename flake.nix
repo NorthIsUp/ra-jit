@@ -136,7 +136,6 @@
         };
         devShells.default = pkgs.mkShell {
           packages = [ rust pkgs.python3 ];
-          # nix/unit_graph.py reads the pinned cargo; its `--unit-graph` needs RUSTC_BOOTSTRAP.
         };
       });
 }

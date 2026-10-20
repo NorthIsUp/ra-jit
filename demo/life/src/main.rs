@@ -117,6 +117,7 @@ impl eframe::App for App {
         // Between frames, where nothing of ours is half done.
         if let Some(outcome) = self.live.as_mut().and_then(|it| it.poll()) {
             self.status = outcome.to_string();
+            eprintln!("life: {}", self.status);
         }
         if Instant::now() >= self.life.next_step {
             self.life.step();
