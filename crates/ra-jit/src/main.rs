@@ -2362,6 +2362,8 @@ struct Listed {
     functions: std::sync::Mutex<FxHashMap<Crate, std::sync::Arc<ListedCrate>>>,
     /// Every crate that was listed, also once an edit has it listed again.
     built: std::sync::Mutex<FxHashSet<Crate>>,
+    /// What [`Listed::in_files`] found written in a file, by its [`outline::skeleton`] then.
+    files: std::sync::Mutex<FxHashMap<vfs::FileId, (u64, Vec<FunctionId>)>>,
 }
 
 struct ListedCrate {
@@ -2452,11 +2454,14 @@ impl Listed {
             return listed.clone();
         }
         let listed = std::sync::Arc::new(ListedCrate::new(db, krate));
+        // A file of the crate that is a module of another too has more functions now.
+        lock(&self.files).clear();
         lock(&self.functions).entry(krate).or_insert(listed).clone()
     }
 
     /// Notes that a file changed: one of `crates`, or with `None` one we can't place.
     fn touch(&self, db: &RootDatabase, crates: Option<&[ide_db::base_db::Crate]>) {
+        lock(&self.files).clear();
         let Some(crates) = crates else {
             lock(&self.functions).clear();
             return;
@@ -3829,23 +3834,39 @@ struct Program {
     moved: bool,
     /// The tests of its crate when it was first built, which is how rustc built it.
     tests: Option<Tests>,
+    /// The tests last found, with the listings of the crates they were found in. A listing
+    /// stays until an edit to more than bodies, which is all that changes a test.
+    tests_now: Option<(Vec<Arc<ListedCrate>>, Tests)>,
 }
 
 /// The functions of a program's own crate that a test harness runs, each with its
 /// attributes. The harness of a test executable is rustc's: it lists the tests by name and
 /// by what `#[ignore]` and `#[should_panic]` say of them, so a build after the list changed
 /// would run the tests of before.
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq)]
 struct Tests(Vec<(String, String)>);
 
 impl Tests {
-    fn of(db: &RootDatabase, listed: &Listed, args: &Args) -> Tests {
+    /// The tests as the crates are listed now: those `found` when the listings are the same.
+    fn of(
+        db: &RootDatabase,
+        listed: &Listed,
+        args: &Args,
+        found: &mut Option<(Vec<Arc<ListedCrate>>, Tests)>,
+    ) -> Tests {
         use hir::HasSource as _;
         use syntax::ast::HasAttrs as _;
         let crates = crates_named(db, &args.krate, args).unwrap_or_default();
+        let listings: Vec<_> = crates.into_iter().map(|it| listed.of(db, it)).collect();
+        if let Some((was, tests)) = found.as_ref() {
+            let same = |(a, b): (&Arc<ListedCrate>, &Arc<ListedCrate>)| Arc::ptr_eq(a, b);
+            if was.len() == listings.len() && was.iter().zip(&listings).all(same) {
+                return tests.clone();
+            }
+        }
         let mut tests = Vec::new();
-        for krate in crates {
-            for &id in &listed.of(db, krate).functions {
+        for listing in &listings {
+            for &id in &listing.functions {
                 let function = hir::Function::from(id);
                 if !function.is_test(db) && !function.is_bench(db) {
                     continue;
@@ -3866,7 +3887,9 @@ impl Tests {
             }
         }
         tests.sort();
-        Tests(tests)
+        let tests = Tests(tests);
+        *found = Some((listings, tests.clone()));
+        tests
     }
 
     /// Why the program can't be built by the daemon, when its tests are not these.
@@ -5276,9 +5299,11 @@ fn run_holding(
     }
     // The first is the program asked for when a request names none.
     let (wrote, whole) = (Some(args.out.clone()), Some(args.out.clone()));
-    let tests = Some(hir::attach_db(&db, || Tests::of(&db, &listed, &args)));
+    let mut tests_now = None;
+    let tests = Some(hir::attach_db(&db, || Tests::of(&db, &listed, &args, &mut tests_now)));
     let mut programs = vec![Program {
         tests,
+        tests_now,
         args,
         table: Arc::new(table),
         known,
@@ -5598,6 +5623,7 @@ fn run_holding(
                             };
                             let mut program = Program {
                                 tests: None,
+                                tests_now: None,
                                 args,
                                 table,
                                 known,
@@ -6019,6 +6045,7 @@ fn run_holding(
                     interrupted: program.interrupted,
                     moved: program.moved,
                     tests: None,
+                    tests_now: None,
                 };
                 let mut program = Box::new(std::mem::replace(program, away));
                 builds.running.insert(at, Running { clients, kept });
@@ -6475,7 +6502,7 @@ impl Program {
         let named_anew = std::mem::take(&mut self.unbuilt.named_anew);
         let unnamed = if named_anew { None } else { self.widen(db) };
         self.read_copies_again(db)?;
-        let Program { args, table, known, unbuilt, wrote, whole, tests, .. } = self;
+        let Program { args, table, known, unbuilt, wrote, whole, tests, tests_now, .. } = self;
         let Outputs { out, patch, link_cmd, splice } =
             wanted.cloned().unwrap_or_else(|| Outputs::of(args));
         let args = &Args { out, patch, link_cmd, splice, ..args.clone() };
@@ -6526,11 +6553,11 @@ impl Program {
             .or_else(|| refusal(db, &edited, paths, broken, out_of_date))
             .or_else(|| warm.unset.clone());
         failed = failed.or_else(|| stale_copies(db, table, args));
-        let tests_now = hir::attach_db(db, || Tests::of(db, listed, args));
+        let now = hir::attach_db(db, || Tests::of(db, listed, args, tests_now));
         match tests {
-            Some(first) => failed = failed.or_else(|| first.changed(&tests_now)),
+            Some(first) => failed = failed.or_else(|| first.changed(&now)),
             // The first build of the program is of the source rustc built it from.
-            None if failed.is_none() => *tests = Some(tests_now),
+            None if failed.is_none() => *tests = Some(now),
             None => {}
         }
         let checked = start.elapsed();

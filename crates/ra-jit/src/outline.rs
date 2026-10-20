@@ -310,6 +310,49 @@ fn declares_items(db: &RootDatabase, func: FunctionId) -> bool {
     })
 }
 
+/// A hash of the file but the bodies nothing else sees into, when the functions written in it
+/// are what they were whenever it hashes the same: when no such body has an item in it, and
+/// the macros that write items are called at the top of the file. The functions are known
+/// by ids handed out a level of nesting at a time, kind by kind; an item in a body, or a call
+/// of a macro, takes one of the ids of its level that a function or a macro call further on
+/// would have had otherwise.
+pub(crate) fn skeleton(db: &RootDatabase, file: FileId) -> Option<u64> {
+    let edition =
+        relevant_crates(db, file).first().map_or(Edition::CURRENT, |it| it.data(db).edition);
+    skeleton_of(&EditionedFileId::new(db, file, edition).parse(db).syntax_node())
+}
+
+fn skeleton_of(tree: &SyntaxNode) -> Option<u64> {
+    let written_by_macro = |node: &SyntaxNode| {
+        node.kind() == SyntaxKind::MACRO_CALL
+            && node.parent().is_some_and(|it| {
+                !matches!(
+                    it.kind(),
+                    SyntaxKind::SOURCE_FILE
+                        | SyntaxKind::MACRO_EXPR
+                        | SyntaxKind::MACRO_PAT
+                        | SyntaxKind::MACRO_TYPE
+                )
+            })
+    };
+    // An import's id is of a kind of its own, which no function's is found by.
+    let has_items = |body: &SyntaxNode| {
+        body.descendants().skip(1).any(|it| {
+            ast::Item::can_cast(it.kind())
+                && !matches!(
+                    it.kind(),
+                    SyntaxKind::MACRO_CALL | SyntaxKind::USE | SyntaxKind::EXTERN_CRATE
+                )
+        })
+    };
+    for node in tree.descendants() {
+        if written_by_macro(&node) || is_unseen_body(&node) && has_items(&node) {
+            return None;
+        }
+    }
+    Some(hash_outside_bodies(tree, &FxHashSet::default()).0)
+}
+
 /// The hash, and how many of the `declaring` functions were come by.
 fn hash_outside_bodies(file: &SyntaxNode, declaring: &FxHashSet<TextRange>) -> (u64, usize) {
     let mut hasher = FxHasher::default();
@@ -442,6 +485,29 @@ impl Listed {
         db: &RootDatabase,
         files: &[FileId],
     ) -> Vec<Option<Vec<FunctionId>>> {
+        // Asked before the lock is taken: a query that is cancelled unwinds, and would poison it.
+        let skeletons: Vec<_> = files.iter().map(|&file| skeleton(db, file)).collect();
+        let found: Option<Vec<_>> = {
+            let kept = crate::lock(&self.files);
+            let mut found = files.iter().zip(&skeletons).map(|(file, &now)| {
+                kept.get(file).filter(|it| Some(it.0) == now).map(|it| Some(it.1.clone()))
+            });
+            found.by_ref().collect()
+        };
+        if let Some(found) = found {
+            return found;
+        }
+        let found = self.list_in_files(db, files);
+        let mut kept = crate::lock(&self.files);
+        for ((&file, skeleton), functions) in files.iter().zip(skeletons).zip(&found) {
+            if let (Some(skeleton), Some(functions)) = (skeleton, functions) {
+                kept.insert(file, (skeleton, functions.clone()));
+            }
+        }
+        found
+    }
+
+    fn list_in_files(&self, db: &RootDatabase, files: &[FileId]) -> Vec<Option<Vec<FunctionId>>> {
         type Crate = ide_db::base_db::Crate;
         let listed: Vec<Crate> =
             self.functions.lock().unwrap().keys().map(|&it| it.into()).collect();
@@ -558,6 +624,37 @@ mod tests {
         seen("m! { a b }", "m! { a  b }");
         seen("m! { a }", "m! { a /* note */ }");
         seen("fn f() { fn g() { 1; } }", "fn f() { fn g() { 1; } } fn h() {}");
+    }
+
+    fn skeleton(text: &str) -> Option<u64> {
+        skeleton_of(&SourceFile::parse(text, Edition::CURRENT).syntax_node())
+    }
+
+    #[test]
+    fn functions_are_found_again_by_the_skeleton_after_an_edit_to_bodies() {
+        let file = |body: &str| {
+            format!("use a::b;\nm! {{ x }}\nfn f() {{ {body} }}\nimpl S {{ fn g(&self) {{}} }}")
+        };
+        let before = skeleton(&file("1;"));
+        assert!(before.is_some());
+        for body in ["2;", "println!(\"{}\", 1);", "use std::fmt::Write; 1;", "let s = m!(a);"] {
+            assert_eq!(skeleton(&file(body)), before, "{body}");
+        }
+        assert_ne!(skeleton("fn f() {}\nfn h() {}"), skeleton("fn f() {}"));
+    }
+
+    #[test]
+    fn functions_are_not_found_by_the_skeleton_where_ids_can_move() {
+        // An item in a body, and a macro called where it writes items but at the top.
+        for text in [
+            "fn f() { fn g() {} }",
+            "fn f() { struct S; }",
+            "fn f() { impl S {} }",
+            "impl S { m!(); }",
+            "mod m { n!(); }",
+        ] {
+            assert_eq!(skeleton(text), None, "{text}");
+        }
     }
 
     #[test]
