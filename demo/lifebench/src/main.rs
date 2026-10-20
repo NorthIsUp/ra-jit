@@ -91,13 +91,15 @@ fn number(name: &str) -> Option<u64> {
     std::env::var(name).ok()?.parse().ok()
 }
 
-/// The levels of the functions the daemon tiered, as one line: `step=2 neighbours=3`. What
-/// the daemon did since `seen` is printed as it comes, a line each.
-fn levels(seen: &mut u64) -> String {
+/// The levels of the functions the daemon tiered, as one line: `step=2 neighbours=3`, and
+/// the sampler's share of a core in thousandths. What the daemon did since `seen` is printed
+/// as it comes, a line each, with how long after `started` (milliseconds since the epoch).
+fn levels(seen: &mut u64, started: u64) -> String {
     let Some(tiers) = ra_jit_live::tiers() else { return String::new() };
     let since = *seen;
     for event in tiers.events.iter().filter(|it| it.at > since) {
-        eprintln!("tier: {}", event.text);
+        let at = event.at.saturating_sub(started) as f64 / 1e3;
+        eprintln!("tier: t={at:.1} {}", event.text);
         *seen = event.at;
     }
     let mut shown: Vec<String> = tiers
@@ -110,7 +112,13 @@ fn levels(seen: &mut u64) -> String {
         })
         .collect();
     shown.sort();
+    shown.push(format!("sampler_permille={}", tiers.sampler_permille));
     shown.join(" ")
+}
+
+fn epoch_ms() -> u64 {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+    now.map_or(0, |it| it.as_millis() as u64)
 }
 
 fn main() {
@@ -123,6 +131,7 @@ fn main() {
     }
     let mut life = Life::new(side);
     let start = Instant::now();
+    let started = epoch_ms();
     let (mut last, mut last_generation) = (start, 0);
     let mut seen = 0;
     loop {
@@ -134,7 +143,7 @@ fn main() {
         if now - last >= Duration::from_millis(500) {
             let rate = (life.generation - last_generation) as f64 / (now - last).as_secs_f64();
             let at = (now - start).as_secs_f64();
-            eprintln!("rate t={at:.1} gens_per_s={rate:.1} {}", levels(&mut seen));
+            eprintln!("rate t={at:.1} gens_per_s={rate:.1} {}", levels(&mut seen, started));
             (last, last_generation) = (now, life.generation);
         }
         let done = match generations {
