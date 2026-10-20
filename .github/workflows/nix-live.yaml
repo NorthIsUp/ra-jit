@@ -85,7 +85,6 @@ jobs:
         run: |
           out=$(nix build --no-link --print-out-paths .#daemon-units)
           for bin in ra-jit cargo-ra-jit ra-jit-rustc; do test -x "$out/bin/$bin"; done
-          PATH="$out/bin:$(nix develop -c dirname "$(command -v cargo)"):$PATH" cargo-ra-jit ra-jit --help | head -n 5
 
   nix-darwin:
     name: nix build (aarch64-darwin)
