@@ -2,7 +2,7 @@
  "dir": ".",
  "inputs": {
   "Cargo.lock": "ea02074373a9c83ba58f1878fba59b8bb94f829572a2656697d1d64971a1db8e",
-  "Cargo.toml": "83e9b3c8d714647e2f8677cebf5bf1def76bcfb4b1ff9ebc25cee6cc744b748f"
+  "Cargo.toml": "d95ba6c9af48d129e40090506045368f502ef14655c3e2ebfb785206cc5a7a91"
  },
  "packages": {
   "adler2@2.0.1": {
@@ -4673,7 +4673,7 @@
    "name": "ra-jit-bench",
    "readme": "",
    "repository": "",
-   "rust_version": "1.98",
+   "rust_version": "1.99",
    "source": {
     "dir": "crates/ra-jit-bench",
     "kind": "path"
@@ -4707,7 +4707,7 @@
    "name": "ra-jit",
    "readme": "",
    "repository": "https://github.com/indexable-inc/ra-jit",
-   "rust_version": "1.98",
+   "rust_version": "1.99",
    "source": {
     "dir": "crates/ra-jit",
     "kind": "path"
