@@ -1,0 +1,7 @@
+{
+  "name": "ra-jit",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "assets": { "directory": "./build" },
+  "routes": [{ "pattern": "ra-jit.ix.dev", "custom_domain": true }]
+}
