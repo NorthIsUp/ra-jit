@@ -1273,7 +1273,7 @@ impl<'a> Patch<'a> {
         image: &Image,
         originals: &FxHashMap<u64, Vec<u8>>,
         base: u64,
-    ) -> anyhow::Result<ra_jit_live::format::Code> {
+    ) -> anyhow::Result<(ra_jit_live::format::Code, Vec<(u64, u64)>)> {
         ensure!(base.is_multiple_of(PAGE), "a patch laid out off a page");
         let laid = self.lay_out(image, base, false)?;
         let frames = match self.frames {
@@ -1281,7 +1281,9 @@ impl<'a> Patch<'a> {
             None => (0, 0),
         };
         let mut writes = Vec::new();
-        for (old, _, jump) in self.redirects(base, &laid.placed)? {
+        let mut moved = Vec::new();
+        for (old, new, jump) in self.redirects(base, &laid.placed)? {
+            moved.push((new, old.address));
             writes.push(ra_jit_live::format::Write {
                 address: old.address,
                 bytes: jump,
@@ -1312,7 +1314,7 @@ impl<'a> Patch<'a> {
         }
         let mut appended = laid.appended;
         let data = appended.split_off(laid.data_at as usize);
-        Ok(ra_jit_live::format::Code {
+        let code = ra_jit_live::format::Code {
             base,
             text: appended,
             data,
@@ -1321,7 +1323,8 @@ impl<'a> Patch<'a> {
             writes,
             redirected,
             statics,
-        })
+        };
+        Ok((code, moved))
     }
 
     /// The jump over the entry of each function the patch replaces, by the function: to
@@ -1713,7 +1716,7 @@ pub(super) fn live(
     originals: &FxHashMap<u64, Vec<u8>>,
     patch: &[u8],
     base: u64,
-) -> anyhow::Result<ra_jit_live::format::Code> {
+) -> anyhow::Result<(ra_jit_live::format::Code, Vec<(u64, u64)>)> {
     let patch = Patch::read(patch, image)?;
     let defined: FxHashSet<&[u8]> = patch.replaced.iter().map(|it| it.name).collect();
     ensure!(
