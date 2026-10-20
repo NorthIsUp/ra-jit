@@ -99,7 +99,7 @@ of a newer format.
 ## 4. Size limit and garbage collection
 
 `RA_JIT_CACHE_MAX` is the most the sealed packs may take: a number of bytes or one with
-`K`, `M` or `G`, `off` for no limit, 8G when unset. `RA_JIT_CACHE_SEAL_AT` (4M) is the
+`K`, `M` or `G`, `off` for no limit, 32G when unset. `RA_JIT_CACHE_SEAL_AT` (4M) is the
 size at which an open pack is sealed at the end of a build; it exists for the harnesses.
 
 A collection runs when a daemon opens the store and after it seals a pack, and on

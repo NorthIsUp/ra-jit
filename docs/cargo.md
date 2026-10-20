@@ -276,7 +276,7 @@ end in rustc doing the work. An error ra-jit cannot diagnose itself, such as a u
 move, fails with rustc's message and status 101, as under cargo.
 
 The store is on by default in this mode and in `cargo ra-jit`: `$XDG_CACHE_HOME/ra-jit/store`,
-else `~/.cache/ra-jit/store`, limited to 8 GiB. `RA_JIT_CACHE=<dir>` moves it, `RA_JIT_CACHE=off`
+else `~/.cache/ra-jit/store`, limited to 32 GiB. `RA_JIT_CACHE=<dir>` moves it, `RA_JIT_CACHE=off`
 disables it, `RA_JIT_CACHE_MAX` sets the limit. The socket and logs are in
 `$XDG_RUNTIME_DIR/ra-jit`, else `~/.cache/ra-jit`.
 
