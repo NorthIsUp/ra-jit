@@ -323,8 +323,8 @@ pub(super) struct Recorder<'db> {
 }
 
 /// What a function asks for, as its IR is built and as a producer of its code adds to it:
-/// the part of a [`Recorder`] that has nothing of the database, which is all LLVM is run
-/// with.
+/// the part of a [`Recorder`] that has nothing of the database, which LLVM is run with
+/// once the database is let go of (see `tier::Prepared`).
 pub(super) struct Wants {
     pub(super) isa: &'static dyn TargetIsa,
     requests: Requests,
@@ -338,6 +338,10 @@ pub(super) struct Wants {
 }
 
 impl Wants {
+    pub(super) fn into_requests(self) -> Requests {
+        self.requests
+    }
+
     /// The bytes of each data object asked for so far that is read-only and points nowhere,
     /// by its place among the requests: what a load from it is known to give.
     #[cfg(feature = "llvm")]
@@ -548,6 +552,13 @@ impl<'db> Recorder<'db> {
     }
 
     pub(super) fn finish(self) -> (Requests, Vec<(String, u64, u64)>) {
+        let (wants, layouts) = self.detach();
+        (wants.requests, layouts)
+    }
+
+    /// What the function asks for, with the layouts `RA_JIT_LAYOUTS` collects: all that is
+    /// kept of this without the database.
+    pub(super) fn detach(self) -> (Wants, Vec<(String, u64, u64)>) {
         let mut layouts: Vec<(String, u64, u64)> = self.layouts.map_or_else(Vec::new, |layouts| {
             layouts
                 .into_inner()
@@ -556,7 +567,7 @@ impl<'db> Recorder<'db> {
                 .collect()
         });
         layouts.extend(self.coroutine_layouts.into_inner());
-        (self.wants.requests, layouts)
+        (self.wants, layouts)
     }
 
     /// The function to call for `def` instantiated with `args`.
@@ -675,8 +686,12 @@ impl<'db> Recorder<'db> {
         }
         let rename = |func: &ir::Function| {
             let mut func = func.clone();
-            let names: Vec<_> =
-                func.params.user_named_funcs().iter().map(|(name, it)| (name, it.clone())).collect();
+            let names: Vec<_> = func
+                .params
+                .user_named_funcs()
+                .iter()
+                .map(|(name, it)| (name, it.clone()))
+                .collect();
             for (name, was) in names {
                 let index = match was.namespace {
                     0 => funcs[was.index as usize].as_u32(),
@@ -695,7 +710,12 @@ impl<'db> Recorder<'db> {
             let id = funcs[seen.id.as_u32() as usize];
             if !self.seen.iter().any(|it| it.id == id) {
                 let func = rename(&seen.func);
-                self.seen.push(Seen { id, func, pointees: seen.pointees.clone(), never: seen.never });
+                self.seen.push(Seen {
+                    id,
+                    func,
+                    pointees: seen.pointees.clone(),
+                    never: seen.never,
+                });
             }
         }
         rename(&body.func)

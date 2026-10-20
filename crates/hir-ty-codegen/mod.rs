@@ -1624,15 +1624,12 @@ fn rows_of(db: &dyn HirDatabase, compiled: &CompiledFunction) -> Vec<Row> {
 #[salsa::tracked(returns(ref))]
 fn compiled_root<'db>(db: &'db dyn HirDatabase, func: FunctionId) -> Result<CompiledFunction> {
     let _span = tracing::info_span!(target: "ra_jit", "compiled_root").entered();
-    tier::plain(|| root_code(db, func, None))
+    tier::plain(|| root_code(db, func, false)).map(Produced::code)
 }
 
-/// The code of a non-generic function: Cranelift's, or at a level above 1 as `tier` asks.
-fn root_code(
-    db: &dyn HirDatabase,
-    func: FunctionId,
-    tier: Option<&tier::Request>,
-) -> Result<CompiledFunction> {
+/// The code of a non-generic function: Cranelift's, or, for a compile at a level above 1
+/// (`tier`), its IR for LLVM.
+fn root_code(db: &dyn HirDatabase, func: FunctionId, tier: bool) -> Result<Produced> {
     let (body, env) = root_body(db, func)?;
     if std::env::var("RA_JIT_DUMP_MIR")
         .is_ok_and(|want| FunctionSignature::of(db, func).name.as_str() == want)
@@ -1698,21 +1695,21 @@ fn compiled_instance<'db>(
     env: StoredParamEnvAndCrate,
 ) -> Result<CompiledFunction> {
     let _span = tracing::info_span!(target: "ra_jit", "compiled_instance").entered();
-    tier::plain(|| instance_code(db, instance, env, None))
+    tier::plain(|| instance_code(db, instance, env, false)).map(Produced::code)
 }
 
-/// The code of an instance: Cranelift's, or at a level above 1 as `tier` asks, which only a
-/// function, closure or `async` block of the source is compiled at.
+/// The code of an instance: Cranelift's, or, for a compile at a level above 1 (`tier`), its
+/// IR for LLVM, which only a function, closure or `async` block of the source is compiled at.
 fn instance_code(
     db: &dyn HirDatabase,
     instance: Instance,
     env: StoredParamEnvAndCrate,
-    tier: Option<&tier::Request>,
-) -> Result<CompiledFunction> {
+    tier: bool,
+) -> Result<Produced> {
     let stored_env = env.clone();
     let env = env.as_ref(db);
     let ty = || instance.args.as_ref().type_at(0);
-    if tier.is_some()
+    if tier
         && !matches!(
             instance.def,
             InstanceDef::Fn(_)
@@ -1725,7 +1722,7 @@ fn instance_code(
     }
     let body = match instance.def {
         InstanceDef::DropGlue => {
-            return compile(db, env, None, false, instance.checked, |fx| {
+            return compile_as(db, env, None, false, instance.checked, false, |fx| {
                 let ty = ty();
                 fx.drop_glue(ty)?;
                 if std::env::var_os("RA_JIT_DUMP_CLIF").is_some() {
@@ -1736,22 +1733,26 @@ fn instance_code(
         }
         InstanceDef::CallOnceShim => {
             let args = instance.args.as_ref();
-            return compile(db, env, None, false, instance.checked, |fx| match args.len() {
-                1 => fx.call_once_shim(ty()),
-                _ => fx.call_once_by_pointer(args),
+            return compile_as(db, env, None, false, instance.checked, false, |fx| {
+                match args.len() {
+                    1 => fx.call_once_shim(ty()),
+                    _ => fx.call_once_by_pointer(args),
+                }
             });
         }
         InstanceDef::VtableShim(func) => {
             let args = instance.args.as_ref();
-            return compile(db, env, None, false, instance.checked, |fx| {
+            return compile_as(db, env, None, false, instance.checked, false, |fx| {
                 fx.vtable_shim(func, args)
             });
         }
         InstanceDef::FnPointerShim => {
-            return compile(db, env, None, false, instance.checked, |fx| fx.fn_pointer_shim(ty()));
+            return compile_as(db, env, None, false, instance.checked, false, |fx| {
+                fx.fn_pointer_shim(ty())
+            });
         }
         InstanceDef::ReifyShim { receiver } => {
-            return compile(db, env, None, false, instance.checked, |fx| {
+            return compile_as(db, env, None, false, instance.checked, false, |fx| {
                 fx.reify_shim(ty(), receiver)
             });
         }
@@ -1791,7 +1792,10 @@ fn instance_code(
         fx.args = Some(args);
         fx.codegen()
     })?;
-    Ok(CompiledFunction { closure, ..compiled })
+    Ok(match compiled {
+        Produced::Code(compiled) => Produced::Code(CompiledFunction { closure, ..compiled }),
+        Produced::Pending(pending) => Produced::Pending(Pending { closure, ..pending }),
+    })
 }
 
 /// How many of the argument registers of a C convention the named parameters of a variadic
@@ -3210,20 +3214,20 @@ fn compile<'db>(
     checked: bool,
     fill: impl for<'cx> FnOnce(&mut FunctionCx<'cx, 'db>) -> Result<()>,
 ) -> Result<CompiledFunction> {
-    compile_as(db, env, body, tracked, checked, None, fill)
+    compile_as(db, env, body, tracked, checked, false, fill).map(Produced::code)
 }
 
-/// Builds the IR of one function and compiles it: with Cranelift, or at a level above 1 as
-/// `tier` asks.
+/// Builds the IR of one function and compiles it with Cranelift, or, for a compile at a level
+/// above 1 (`tier`), leaves it to LLVM to compile once the database is let go of.
 fn compile_as<'db>(
     db: &'db dyn HirDatabase,
     env: ParamEnvAndCrate<'db>,
     body: Option<&'db MirBody<'db>>,
     tracked: bool,
     checked: bool,
-    tier: Option<&tier::Request>,
+    tier: bool,
     fill: impl for<'cx> FnOnce(&mut FunctionCx<'cx, 'db>) -> Result<()>,
-) -> Result<CompiledFunction> {
+) -> Result<Produced> {
     let isa = &**target()?;
     let mut cg = Recorder::new(db, isa, selected_target()?, checked);
     let tally = backend::Tally::global();
@@ -3270,14 +3274,93 @@ fn compile_as<'db>(
                 slots: SlotPlaces::default(),
             }
         }
-        None => match tier {
-            None => Backend::emit(&mut cg, &mut ctx)?,
-            Some(request) => {
-                let named: Vec<ir::StackSlot> = cg.named_slots().collect();
-                tier::emit(&mut cg.wants, &named, &mut ctx.func, request)?
-            }
-        },
+        None if tier => {
+            let named = cg.named_slots().collect();
+            let (source, variables) = described(&mut cg, env, body);
+            let (wants, layouts) = cg.detach();
+            return Ok(Produced::Pending(Pending {
+                func: ctx.func,
+                wants,
+                named,
+                source,
+                variables,
+                layouts,
+                closure: None,
+            }));
+        }
+        None => Backend::emit(&mut cg, &mut ctx)?,
     };
+    let (source, variables) = described(&mut cg, env, body);
+    let (requests, layouts) = cg.finish();
+    // What a build compiled, which a compile at a level above 1 is not part of.
+    if !tier {
+        COMPILED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    Ok(Produced::Code(CompiledFunction {
+        requests,
+        code,
+        source,
+        closure: None,
+        variables,
+        layouts,
+    }))
+}
+
+/// What `compile_as` gives: the code, or, for a compile at a level above 1, what LLVM makes
+/// it of once the database is let go of.
+pub(crate) enum Produced {
+    Code(CompiledFunction),
+    Pending(Pending),
+}
+
+impl Produced {
+    /// The code of a compile at level 1, which leaves nothing for later.
+    fn code(self) -> CompiledFunction {
+        match self {
+            Produced::Code(code) => code,
+            Produced::Pending(_) => unreachable!("only a compile at a level above 1 is pending"),
+        }
+    }
+}
+
+/// A function whose IR is built, and all that was asked of the database for it, which LLVM
+/// compiles without it: an edit applied meanwhile waits for nothing.
+pub struct Pending {
+    func: ir::Function,
+    wants: fragment::Wants,
+    named: Vec<ir::StackSlot>,
+    source: Option<(DefWithBodyId, Vec<MirSpan>)>,
+    variables: Option<(StoredParamEnvAndCrate, Vec<Variable>)>,
+    layouts: Vec<(String, u64, u64)>,
+    closure: Option<ExprId>,
+}
+
+impl Pending {
+    pub(crate) fn func(&self) -> &ir::Function {
+        &self.func
+    }
+
+    /// The code LLVM makes of the function, at the level `request` asks for.
+    pub(crate) fn produce(mut self, request: &tier::Request) -> Result<CompiledFunction> {
+        let code = tier::emit(&mut self.wants, &self.named, &mut self.func, request)?;
+        Ok(CompiledFunction {
+            requests: self.wants.into_requests(),
+            code,
+            source: self.source,
+            closure: self.closure,
+            variables: self.variables,
+            layouts: self.layouts,
+        })
+    }
+}
+
+/// What tells the code of a function's lines and variables: the statements of `body` its
+/// instructions were built for, and its locals with a name.
+fn described<'db>(
+    cg: &mut Recorder<'db>,
+    env: ParamEnvAndCrate<'db>,
+    body: Option<&'db MirBody<'db>>,
+) -> (Option<(DefWithBodyId, Vec<MirSpan>)>, Option<(StoredParamEnvAndCrate, Vec<Variable>)>) {
     let source = match body.map(|body| body.owner) {
         Some(InferBodyId::DefWithBodyId(owner)) => Some((owner, cg.take_spans())),
         _ => None,
@@ -3292,13 +3375,7 @@ fn compile_as<'db>(
             pointer,
         })
         .collect::<Vec<_>>();
-    let variables = Some((env.store(), variables)).filter(|it| !it.1.is_empty());
-    let (requests, layouts) = cg.finish();
-    // What a build compiled, which a compile at a level above 1 is not part of.
-    if tier.is_none() {
-        COMPILED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    }
-    Ok(CompiledFunction { requests, code, source, closure: None, variables, layouts })
+    (source, Some((env.store(), variables)).filter(|it| !it.1.is_empty()))
 }
 
 fn build<'db>(
@@ -8069,12 +8146,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                 (layout.size.bytes(), layout.align.abi.bytes())
             }
         };
-        Ok(Some(fragment::Pointee {
-            unique,
-            frozen: mutability == Mutability::Not,
-            size,
-            align,
-        }))
+        Ok(Some(fragment::Pointee { unique, frozen: mutability == Mutability::Not, size, align }))
     }
 
     /// Whether `ty` is made of scalars, pointers and references only, through arrays, tuples
@@ -8101,9 +8173,12 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             TyKind::Adt(def, args) => {
                 let variants: Vec<hir_def::VariantId> = match def.def_id() {
                     AdtId::StructId(id) => vec![id.into()],
-                    AdtId::EnumId(id) => {
-                        id.enum_variants(self.cg.db).variants.iter().map(|(_, it)| it.0.into()).collect()
-                    }
+                    AdtId::EnumId(id) => id
+                        .enum_variants(self.cg.db)
+                        .variants
+                        .iter()
+                        .map(|(_, it)| it.0.into())
+                        .collect(),
                     AdtId::UnionId(_) => return false,
                 };
                 variants.into_iter().all(|variant| {

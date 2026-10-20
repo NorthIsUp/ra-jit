@@ -3900,7 +3900,6 @@ fn compile_tiered(
             node,
             level: want.level,
             hot: hot.clone(),
-            counters: None,
             profile: want.profile,
         };
         asked.push((want.symbol, asked_for));
@@ -3911,27 +3910,35 @@ fn compile_tiered(
     }
     let db = db.clone();
     std::thread::spawn(move || {
-        let (mut code, mut done) = (Vec::new(), Vec::new());
-        for (symbol, mut asked) in asked {
-            let level = asked.level;
-            let room = ra_jit_live::format::COUNTERS as u32;
-            if level == Level::Llvm && tier::highest() == Level::Pgo && counters < room {
-                asked.counters = Some(counters);
-            }
-            let compile = |asked: &codegen_tier::Asked| {
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    hir::attach_db(&db, || codegen_tier::compile(&db, asked))
+        // The IR of every function is built with the database, which is let go of before
+        // LLVM runs: a change to the source waits for the database to be let go of, and
+        // so for nothing LLVM does.
+        let prepared: Vec<_> = asked
+            .into_iter()
+            .map(|(symbol, asked)| {
+                let start = Instant::now();
+                let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    hir::attach_db(&db, || codegen_tier::prepare(&db, &asked))
                 }))
-                .unwrap_or_else(|_| Err("an edit came first".to_owned()))
-            };
-            let mut compiled = compile(&asked);
-            // Code that would count past the counters is compiled again without counting.
-            if let Ok(tiered) = &compiled
-                && tiered.counters.is_some_and(|first| first + tiered.counters_used() > room)
-            {
-                asked.counters = None;
-                compiled = compile(&asked);
-            }
+                .unwrap_or_else(|_| Err("an edit came first".to_owned()));
+                (symbol, asked.node, asked.level, prepared, start.elapsed())
+            })
+            .collect();
+        drop(db);
+        let (mut code, mut done) = (Vec::new(), Vec::new());
+        for (symbol, node, level, prepared, with_db) in prepared {
+            let room = ra_jit_live::format::COUNTERS as u32;
+            let counting =
+                (level == Level::Llvm && tier::highest() == Level::Pgo).then_some((counters, room));
+            let start = Instant::now();
+            let compiled = prepared.and_then(|prepared| {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| prepared.finish(counting)))
+                    .unwrap_or_else(|_| Err("LLVM's compile of it panicked".to_owned()))
+            });
+            eprintln!(
+                "tier-timing: {symbol}: IR {with_db:.1?} with the database, LLVM {:.1?} without",
+                start.elapsed()
+            );
             let outcome = compiled.map(|tiered| {
                 let used = tiered.counters_used();
                 if let Some(first) = tiered.counters {
@@ -3943,12 +3950,11 @@ fn compile_tiered(
                     branches: tiered.branches,
                     counters: tiered.counters.map(|first| (first, used)),
                 };
-                code.push((asked.node.clone(), tiered));
+                code.push((node, tiered));
                 compiled
             });
             done.push(tier::Done { symbol, level, outcome });
         }
-        drop(db);
         let _ = sender.send(Event::Tiered(at, Tiered { binary, code, done, counters }));
     });
 }

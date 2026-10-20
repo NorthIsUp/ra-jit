@@ -99,8 +99,6 @@ pub struct Asked {
     pub level: Level,
     /// The hot functions that may be built into it where it calls them.
     pub hot: Vec<Node>,
-    /// At level 2, the first of the counters it counts in, when there are any to spare.
-    pub counters: Option<u32>,
     /// At level 3, what level 2 counted.
     pub profile: Option<Branches>,
 }
@@ -421,8 +419,8 @@ fn build_body(
         );
         cg.unlocated = true;
         let args = instance.args.clone();
-        let mut ctx = super::build(&mut cg, env.as_ref(db), body.as_deref(), tracked, |fx| {
-            match fx.body {
+        let mut ctx =
+            super::build(&mut cg, env.as_ref(db), body.as_deref(), tracked, |fx| match fx.body {
                 Some(_) => {
                     fx.args = Some(args);
                     fx.codegen()
@@ -431,10 +429,9 @@ fn build_body(
                     use rustc_type_ir::inherent::GenericArgs as _;
                     fx.drop_glue(args.as_ref().type_at(0))
                 }
-            }
-        })
-        .map_err(|e| refused(&e.to_string()))
-        .ok()?;
+            })
+            .map_err(|e| refused(&e.to_string()))
+            .ok()?;
         if cg.naked.is_some() || cg.opaque {
             refused("naked or opaque");
             return None;
@@ -458,8 +455,25 @@ fn build_body(
     built
 }
 
-/// Compiles the function `asked` names at the level it asks for.
+/// Compiles the function `asked` names at the level it asks for: [`prepare`], then
+/// [`Prepared::finish`] with no counters to count in.
 pub fn compile(db: &dyn HirDatabase, asked: &Asked) -> std::result::Result<Tiered, String> {
+    prepare(db, asked)?.finish(None)
+}
+
+/// A function of [`prepare`]: its IR, with all it took of the database.
+pub struct Prepared {
+    level: Level,
+    profile: Option<Branches>,
+    pending: super::Pending,
+    serial: u128,
+    inlined: Vec<(Node, u128)>,
+    start: std::time::Instant,
+}
+
+/// Builds the IR of the function `asked` names, with what it builds in, for LLVM to compile
+/// at the level asked for once the database is let go of (an edit is then applied at once).
+pub fn prepare(db: &dyn HirDatabase, asked: &Asked) -> std::result::Result<Prepared, String> {
     let start = std::time::Instant::now();
     if asked.level == Level::Cranelift {
         return Err("level 1 is what every build compiles".to_owned());
@@ -485,12 +499,6 @@ pub fn compile(db: &dyn HirDatabase, asked: &Asked) -> std::result::Result<Tiere
             }
         }
     }
-    let request = Request {
-        level: asked.level,
-        counters: asked.counters.filter(|_| asked.level == Level::Llvm),
-        profile: asked.profile.clone().filter(|_| asked.level == Level::Pgo),
-        branches: std::cell::Cell::new(0),
-    };
     if std::env::var_os("RA_JIT_DUMP_TIER").is_some() {
         eprintln!(
             "tier: {:?} at {:?}: {} roots and {} instances may be built in",
@@ -509,14 +517,16 @@ pub fn compile(db: &dyn HirDatabase, asked: &Asked) -> std::result::Result<Tiere
     }
     let held = INLINING.with(|it| it.borrow_mut().replace(inlining));
     let compiled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match &asked.node.0 {
-        Kind::Root(func) => super::root_code(db, *func, Some(&request)),
+        Kind::Root(func) => super::root_code(db, *func, true),
         Kind::Instance(instance, env) => {
-            super::instance_code(db, instance.clone(), env.clone(), Some(&request))
+            super::instance_code(db, instance.clone(), env.clone(), true)
         }
     }));
     let inlining = INLINING.with(|it| std::mem::replace(&mut *it.borrow_mut(), held));
-    let code = match compiled {
-        Ok(code) => code.map_err(|e| e.to_string())?,
+    let pending = match compiled {
+        Ok(Ok(super::Produced::Pending(pending))) => pending,
+        Ok(Ok(super::Produced::Code(_))) => return Err("its code is its assembly".to_owned()),
+        Ok(Err(e)) => return Err(e.to_string()),
         Err(panic) => std::panic::resume_unwind(panic),
     };
     let mut inlined = Vec::new();
@@ -534,16 +544,39 @@ pub fn compile(db: &dyn HirDatabase, asked: &Asked) -> std::result::Result<Tiere
             inlined.push((node, serial));
         }
     }
-    Ok(Tiered {
+    Ok(Prepared {
         level: asked.level,
-        code,
+        profile: asked.profile.clone().filter(|_| asked.level == Level::Pgo),
+        pending,
         serial,
-        inlined_count: inlined.len(),
         inlined,
-        branches: request.branches.get(),
-        counters: request.counters,
-        took: start.elapsed(),
+        start,
     })
+}
+
+impl Prepared {
+    /// LLVM's code of the function, which takes nothing of the database. Code of level 2
+    /// counts in the counters from the first of `counters` on, if all it counts fits in the
+    /// second, how many there are.
+    pub fn finish(self, counters: Option<(u32, u32)>) -> std::result::Result<Tiered, String> {
+        let Prepared { level, profile, pending, serial, inlined, start } = self;
+        let branches = branches(pending.func()).len() as u32;
+        let counters = counters
+            .filter(|&(first, room)| level == Level::Llvm && first + 1 + 2 * branches <= room)
+            .map(|(first, _)| first);
+        let request = Request { level, counters, profile, branches: std::cell::Cell::new(0) };
+        let code = pending.produce(&request).map_err(|e| e.to_string())?;
+        Ok(Tiered {
+            level,
+            code,
+            serial,
+            inlined_count: inlined.len(),
+            inlined,
+            branches: request.branches.get(),
+            counters: request.counters,
+            took: start.elapsed(),
+        })
+    }
 }
 
 /// The two-way branches of `func`, in the order of its layout.
