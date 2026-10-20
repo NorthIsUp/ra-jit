@@ -26,51 +26,51 @@ you send them, including fixes you find here and want to upstream.
     docs/                     these documents
     docs/reports/             working reports, one per piece of work, as written at the time
     SECURITY.md               what to know before sharing a store, and how to report a problem
-    vendor/rust-analyzer/     rust-analyzer with ra-jit's changes, a git submodule
-    vendor/rustc_abi/         rustc's layout crate, copied from the 1.99.0 tag
+    vendor/rust-analyzer/     rust-analyzer with ra-jit's changes, a git subtree
+    vendor/rustc_abi/         rustc's layout crate, copied from the 1.99.0 tag, a git subtree
+    vendor/subtree.sh         pulls a newer fork into vendor/, pushes vendor/ changes back
     vendor/source.rev         the commit of the old development branch this tree last took from
 
 `crates/hir-ty-codegen` is not a crate. It is the module `hir_ty::mir::codegen`, which uses
-private items of `hir-ty`. It is kept outside the submodule because all of it is ra-jit's:
-`mir.rs` in the submodule declares the module with a `#[path]` that points back here. So
-the submodule builds only as part of this repository.
+private items of `hir-ty`. It is kept outside `vendor/` because all of it is ra-jit's:
+`mir.rs` in the fork declares the module with a `#[path]` that points back here. So
+the fork builds only as part of this repository.
 
 ## rust-analyzer
 
-`vendor/rust-analyzer` is a submodule of
-[indexable-inc/rust-analyzer](https://github.com/indexable-inc/rust-analyzer), on its
-`ra-jit` branch. That branch is DioxusLabs' `rust-analyzer` branch of rustd (upstream at
+`vendor/rust-analyzer` is a squashed git subtree of the `ra-jit` branch of
+[indexable-inc/rust-analyzer](https://github.com/indexable-inc/rust-analyzer). That branch is DioxusLabs' `rust-analyzer` branch of rustd (upstream at
 `dd5ed69d4b` with rustd's changes on top), merged with upstream rust-analyzer master, with
 the MIR passes that make rust-analyzer's MIR like rustc's on top
 ([`docs/mir-passes.md`](https://github.com/indexable-inc/rust-analyzer/blob/ra-jit/docs/mir-passes.md)
-there). `main` records which commit of that branch it builds with, as git does for any
-submodule.
+there). The fork stays the public home of those changes and the place upstream is merged
+in; ra-jit carries the files themselves, so a plain clone builds:
 
-After cloning:
-
-    git clone --recursive https://github.com/indexable-inc/ra-jit
+    git clone https://github.com/indexable-inc/ra-jit
     cargo +1.99.0 build -p ra-jit --release
 
-or `git submodule update --init` in a clone made without `--recursive`. There is nothing
-else to run. After a pull that moves the submodule, `git submodule update` again.
+`vendor/rustc_abi` is a subtree of [indexable-inc/rustc_abi](https://github.com/indexable-inc/rustc_abi)
+(`main`) the same way.
 
 ### Changing a rust-analyzer file
 
-Edit the file in `vendor/rust-analyzer`, build and test from the root as usual. Then
-commit in two places:
+Edit the file in `vendor/rust-analyzer`, build and test from the root as usual, and commit
+in ra-jit like any other file: one commit can change MIR lowering and the code generator
+together. Then send the vendor/ part back to the fork:
 
-    cd vendor/rust-analyzer
-    git switch ra-jit             # once; a fresh submodule is on a detached commit
-    git commit -am "..."
-    git push origin ra-jit
-    cd ../..
-    git add vendor/rust-analyzer  # main now builds with the new commit
-    git commit
+    vendor/subtree.sh push rust-analyzer
+    # git subtree push --prefix vendor/rust-analyzer https://github.com/indexable-inc/rust-analyzer ra-jit
 
-Push the submodule before `main`, or `main` names a commit nobody else can fetch, and
-update the `rust-analyzer` input of `flake.nix` to the same commit. The `ra-jit` branch only
-moves forward; do not rebase or force-push it, because old
-commits of `main` name commits on it.
+`git subtree push` splits the commits that touched `vendor/rust-analyzer` into commits of
+the fork and pushes them to `ra-jit`. The `ra-jit` branch only moves forward; do not rebase
+or force-push it.
+
+### Taking a newer fork commit
+
+    vendor/subtree.sh pull rust-analyzer
+    # git subtree pull --prefix vendor/rust-analyzer https://github.com/indexable-inc/rust-analyzer ra-jit --squash
+
+That is the whole bump: there is no second pin, and the flake builds from the same files.
 
 A change to rust-analyzer should be something rust-analyzer could take: a bug fix in MIR
 lowering or inference, a missing piece of the language, an accessor ra-jit needs. Where
@@ -82,14 +82,15 @@ their rules.
 
 ### Moving to a newer rust-analyzer
 
-1. In `vendor/rust-analyzer`, merge the new upstream commit into the `ra-jit` branch and
-   resolve conflicts. Merge, not rebase, so the branch keeps moving forward.
+1. In a clone of the fork, merge the new upstream commit into the `ra-jit` branch, resolve
+   conflicts and push. Merge, not rebase, so the branch keeps moving forward. Then
+   `vendor/subtree.sh pull rust-analyzer` here.
 2. Update `Cargo.toml` and `Cargo.lock` at the root for dependencies rust-analyzer changed.
 3. Build, and run the whole gate under both backends ([harness.md](harness.md)). A newer
    rust-analyzer changes inference, MIR lowering and layout queries, any of which can
    change generated code. The corpus with `--layouts`, `breakers.py` and
    `fuzz/fuzz.py smoke` are the ones that notice first.
-4. Push the branch, then commit the new submodule commit on `main`.
+4. Commit on `main`.
 
 This was done once, on 2026-10-20, for upstream `0b21bd6596`. The merge was clean; the one
 API change ra-jit had to follow was `CrateData::is_proc_macro` becoming `target_kind` (a

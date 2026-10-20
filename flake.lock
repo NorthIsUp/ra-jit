@@ -38,26 +38,7 @@
       "inputs": {
         "flake-utils": "flake-utils",
         "nixpkgs": "nixpkgs",
-        "rust-analyzer": "rust-analyzer",
-        "rust-overlay": "rust-overlay",
-        "rustc-abi": "rustc-abi"
-      }
-    },
-    "rust-analyzer": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1792505991,
-        "narHash": "sha256-YzElhDPnBgeEVSbqK1jcZhjhJaFXBwgHr9/skI7ynmg=",
-        "owner": "indexable-inc",
-        "repo": "rust-analyzer",
-        "rev": "f68c92f264b79ea66a5266c4ad05a3f2d6d26eb4",
-        "type": "github"
-      },
-      "original": {
-        "owner": "indexable-inc",
-        "repo": "rust-analyzer",
-        "rev": "f68c92f264b79ea66a5266c4ad05a3f2d6d26eb4",
-        "type": "github"
+        "rust-overlay": "rust-overlay"
       }
     },
     "rust-overlay": {
@@ -77,23 +58,6 @@
       "original": {
         "owner": "oxalica",
         "repo": "rust-overlay",
-        "type": "github"
-      }
-    },
-    "rustc-abi": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1792498840,
-        "narHash": "sha256-Nd8CUVFxiiCTPXrCb+bYsFDbSWMZy0XNGhR7NpyV+3E=",
-        "owner": "indexable-inc",
-        "repo": "rustc_abi",
-        "rev": "8f6db283fd604ef63978def1e13dfaaf7f3376db",
-        "type": "github"
-      },
-      "original": {
-        "owner": "indexable-inc",
-        "repo": "rustc_abi",
-        "rev": "8f6db283fd604ef63978def1e13dfaaf7f3376db",
         "type": "github"
       }
     },
