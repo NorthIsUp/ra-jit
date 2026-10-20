@@ -34,7 +34,7 @@ jobs:
           - os: ubuntu-24.04-arm
             suffix: " (aarch64)"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: rustup toolchain install 1.99.0 --profile minimal -c rustfmt -c rust-src && rustup default 1.99.0
       - uses: Swatinem/rust-cache@v2
       # The code that is ra-jit's own: vendor/ is the forks' code, formatted by their rules.
@@ -62,7 +62,7 @@ jobs:
       RA_JIT_EMIT: fast
       PART: ${{ matrix.part }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: rustup toolchain install 1.99.0 --profile minimal -c rust-src && rustup default 1.99.0
       # What `buildmodel.py` builds for besides the host.
       - run: rustup target add aarch64-unknown-linux-gnu x86_64-unknown-linux-musl
@@ -164,7 +164,7 @@ jobs:
       RA_JIT_OPT: 2
       RA_JIT_EMIT: fast
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: rustup toolchain install 1.99.0 --profile minimal -c rust-src && rustup default 1.99.0
       - name: LLVM 20
         run: |
@@ -191,7 +191,7 @@ jobs:
         shell: bash
     steps:
       - run: git config --global core.autocrlf false
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: rustup toolchain install 1.99.0 --profile minimal -c rustfmt -c rust-src && rustup default 1.99.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt -p ra-jit -p ra-jit-live -- --check
@@ -218,13 +218,13 @@ jobs:
       LLVM_SYS_201_PREFIX: C:\llvm20
     steps:
       - run: git config --global core.autocrlf false
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       # The harnesses run the linker themselves, with the environment the compiler has. In
       # this shell the `link` of coreutils comes before the linker, so it goes.
       - uses: ilammy/msvc-dev-cmd@v1
       - run: rm -f /usr/bin/link.exe
       - run: rustup toolchain install 1.99.0 --profile minimal -c rust-src -c llvm-tools && rustup default 1.99.0
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         id: llvm
         with:
           path: C:\llvm20
@@ -299,7 +299,7 @@ jobs:
       RA_JIT_EMIT: fast
       PART: ${{ matrix.part }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: rustup toolchain install 1.99.0 --profile minimal -c rustfmt -c rust-src && rustup default 1.99.0
       - name: LLVM 20
         run: |
@@ -368,7 +368,7 @@ jobs:
       RA_JIT_OPT: 2
       RA_JIT_EMIT: fast
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: rustup toolchain install 1.99.0 --profile minimal -c rust-src && rustup default 1.99.0
       - name: LLVM 20
         run: |
@@ -399,7 +399,7 @@ jobs:
       RA_JIT_OPT: 2
       RA_JIT_EMIT: fast
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: rustup toolchain install 1.99.0 --profile minimal -c rust-src && rustup default 1.99.0
       - name: LLVM 20
         run: |
@@ -420,7 +420,7 @@ jobs:
     timeout-minutes: 60
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: rustup toolchain install 1.99.0 --profile minimal -c rust-src && rustup default 1.99.0
       - name: LLVM 20
         run: |
@@ -434,7 +434,7 @@ jobs:
           export RA_JIT_BIN="$GITHUB_WORKSPACE/target/release/ra-jit" RA_JIT_LLVM_BIN="$GITHUB_WORKSPACE/target/release/ra-jit"
           python3 bench.py ripgrep --out "$RUNNER_TEMP/bench.json"
           python3 bench.py --compare bench-baseline.json "$RUNNER_TEMP/bench.json" --threshold 200
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: bench

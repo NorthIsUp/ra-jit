@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 300
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: rustup toolchain install 1.99.0 --profile minimal -c rust-src && rustup default 1.99.0
       - name: LLVM 20
         run: |
@@ -40,7 +40,7 @@ jobs:
             --out "$RUNNER_TEMP/fuzz-out" || status=$?
           python3 fuzz/fuzz.py report "$RUNNER_TEMP/fuzz-out" | tee -a "$GITHUB_STEP_SUMMARY"
           exit "${status:-0}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: fuzz-${{ github.run_number }}
