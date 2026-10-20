@@ -7,7 +7,7 @@ usage: live_e2e.py          (RA_JIT_BIN names the ra-jit built; cargo-ra-jit and
 
 A copy of harness/live (a program that polls ra-jit-live and prints `answer()`) is built by the
 daemon until the daemon serves the build, edited once (the first edit after a daemon starts
-writes the whole object again), started, and edited again. The second edit has to arrive as a
+writes the whole object again), started, and edited again LIVE_EDITS times (default 5). Each edit has to arrive as a
 patch the program applies: `outcome: edit N applied` and the new answer on its output.
 
 Python 3.13, stdlib only. Every step has a timeout; a failure names the step.
@@ -24,6 +24,8 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 BUILD_TIMEOUT = 900
 APPLY_TIMEOUT = 60
+# How many edits the running program takes one after another.
+LIVE_EDITS = int(os.environ.get("LIVE_EDITS", "5"))
 
 
 class StepError(Exception):
@@ -107,15 +109,19 @@ async def main() -> None:
         await wait_for("program runs the edited source", lines, "answer 2", log)
         print("program started with answer 2")
 
-        edit(source, 2, 3)
-        out = await build("edit while running", project, env)
-        print("build:", out.strip().splitlines()[-1] if out.strip() else "")
-        applied = await wait_for("patch applied", lines, "outcome:", log)
-        print(applied)
-        if "applied" not in applied:
-            raise StepError(f"patch applied: the program did not take the patch: {applied}")
-        await wait_for("new code runs", lines, "answer 3", log)
-        print("live edit: answer 1 -> 2 -> 3 in a running program, applied by ra-jit-live")
+        # Edit after edit, as the demo's editor does: each has to arrive as a patch the running
+        # program applies, none may link the program again.
+        for new in range(3, 3 + LIVE_EDITS):
+            edit(source, new - 1, new)
+            out = await build(f"edit {new - 2} while running", project, env)
+            print("build:", out.strip().splitlines()[-1] if out.strip() else "")
+            applied = await wait_for(f"patch {new - 2} applied", lines, "outcome:", log)
+            print(applied)
+            if "applied" not in applied:
+                raise StepError(f"patch {new - 2} applied: the program did not take the patch: {applied}")
+            await wait_for(f"new code of edit {new - 2} runs", lines, f"answer {new}", log)
+        chain = " -> ".join(str(it) for it in range(1, 3 + LIVE_EDITS))
+        print(f"live edits: answer {chain} in a running program, each applied by ra-jit-live")
         pumper.cancel()
     finally:
         if probe is not None and probe.returncode is None:
