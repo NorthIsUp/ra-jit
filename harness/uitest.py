@@ -366,23 +366,23 @@ def run_ra_jit(ws, work, built, rlib, symbols, env):
     while pending:
         crates = [x for name in pending for x in ("--crate", name)]
         files = [x for file in [rlib[n] for n in pending] + symbols for x in ("--symbols", file)]
-        ra-jit = subprocess.Popen([difftest.RA_JIT, ws, *crates, "--out", work, "--report", work, *files],
+        ra_jit = subprocess.Popen([difftest.RA_JIT, ws, *crates, "--out", work, "--report", work, *files],
                                  stdout=subprocess.DEVNULL, stderr=open(f"{work}/stderr.txt", "w"), env=env)
         done = lambda: [n for n in pending if os.path.exists(f"{work}/{n}.tsv") or os.path.exists(f"{work}/{n}.error")]
         seen, since = 0, time.time()
-        while ra-jit.poll() is None:
+        while ra_jit.poll() is None:
             time.sleep(0.5)
             if len(done()) != seen:
                 seen, since = len(done()), time.time()
             elif time.time() - since > (STALL if seen else 300):
-                ra-jit.kill()
-                ra-jit.wait()
+                ra_jit.kill()
+                ra_jit.wait()
                 break
         finished = set(done())
         rest = [n for n in pending if n not in finished]
-        if ra-jit.returncode == 0 or not rest:
+        if ra_jit.returncode == 0 or not rest:
             break
-        if ra-jit.returncode < 0:
+        if ra_jit.returncode < 0:
             hung.add(rest[0])
         else:
             failure = open(f"{work}/stderr.txt").read()[-300:]

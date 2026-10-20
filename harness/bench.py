@@ -215,11 +215,11 @@ def compiled(text):
 
 def measure(name, spec, backend, runs, work, reference_dir):
     """Runs every phase of one project under one backend. The result is the phases by name."""
-    ra-jit = ra_jit_of(backend)
+    ra_jit = ra_jit_of(backend)
     ws = os.path.realpath(os.path.join(work, f"{name}-{backend}"))
     shutil.copytree(fetch(name, spec), ws, symlinks=True, ignore=shutil.ignore_patterns("target", "target-ref", ".git"))
     env = cargo_ra_jit.base_env(os.path.join(work, f"home-{name}-{backend}"))
-    env["PATH"] = os.path.dirname(ra-jit) + os.pathsep + env["PATH"]
+    env["PATH"] = os.path.dirname(ra_jit) + os.pathsep + env["PATH"]
     env.update(BACKENDS[backend], RA_JIT_STATS="1", RA_JIT_CACHE=os.path.join(work, f"store-{name}-{backend}"))
     ours, theirs = Side(ws, env, True), Side(ws, env, False)
     if reference_dir:

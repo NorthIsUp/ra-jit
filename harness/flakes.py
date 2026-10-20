@@ -16,16 +16,16 @@ import sys
 FAILED = re.compile(r"^test (\S+) \.\.\. FAILED", re.M)
 
 
-def runs_of(checkout, count, ra-jit, env):
+def runs_of(checkout, count, ra_jit, env):
     """The tests each of `count` runs failed, and who built each run."""
-    argv = ["cargo", *(["ra-jit"] if ra-jit else []), "test", "--no-fail-fast"]
+    argv = ["cargo", *(["ra-jit"] if ra_jit else []), "test", "--no-fail-fast"]
     failed, built = collections.Counter(), collections.Counter()
     keep = os.environ.get("FLAKES_KEEP")
     for run in range(count):
         ran = subprocess.run(argv, cwd=checkout, env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL)
         failed.update(set(FAILED.findall(ran.stdout)))
         if keep:
-            with open(os.path.join(keep, f"{'ra-jit' if ra-jit else 'cargo'}-{run}.log"), "w") as kept:
+            with open(os.path.join(keep, f"{'ra-jit' if ra_jit else 'cargo'}-{run}.log"), "w") as kept:
                 kept.write(ran.stdout + ran.stderr)
         built["daemon" if "[ra-jit]" in ran.stderr else "cargo"] += 1
     return failed, built
