@@ -239,18 +239,18 @@ were left out, for reasons listed in the results.
 
 ## What is supported
 
-| | Linux x86-64 | Linux AArch64 | Windows x86-64 MSVC | macOS arm64 | wasm32 |
+|  | Linux x86-64 | Linux AArch64 | Windows x86-64 MSVC | macOS arm64 | wasm32 |
 |---|---|---|---|---|---|
-| Cranelift | yes | yes | yes | yes | no (own lowering) |
-| LLVM | yes | yes | yes | yes | no |
-| Full link | yes | yes | yes | yes | older branch only |
-| Splice | yes | yes | yes | yes, not with chained fixups | older branch only |
-| Debug info | yes | yes | lines only | unverified | no |
-| `cargo rustd` | yes | unverified | not run | yes, three projects | no |
-| Disk store | yes | yes | yes | yes | unverified |
-| S3 remote | yes, not real AWS | unverified | unverified | unverified | unverified |
+| Cranelift | ✅ | ✅ | ✅ | ✅ | ❌ (own lowering) |
+| LLVM | ✅ | ✅ | ✅ | ✅ | ❌ |
+| Full link | ✅ | ✅ | ✅ | ✅ | ⚠️ older branch only |
+| Splice | ✅ | ✅ | ✅ | ✅ not with chained fixups | ⚠️ older branch only |
+| Debug info | ✅ | ✅ | ⚠️ lines only | ❓ | ❌ |
+| `cargo rustd` | ✅ | ❓ | ❌ | ✅ three projects | ❌ |
+| Disk store | ✅ | ✅ | ✅ | ✅ | ❓ |
+| S3 remote | ✅ not real AWS | ❓ | ❓ | ❓ | ❓ |
 
-"yes" means a harness passes there and a report says where it ran. The wasm32 column was
+✅ means a harness passes there and a report says where it ran. ❓ is unverified, ⚠️ partial. The wasm32 column was
 measured on an earlier branch with a nightly toolchain and has not been run since.
 [docs/support.md](docs/support.md) has the source of every cell and the same for language and
 build-model features.
