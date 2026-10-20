@@ -57,6 +57,14 @@ All notable changes to ra-jit are written here. The format follows
   it, in one place: a space in a path is `\ `, and `$`, `#` and backslashes are themselves;
   the values of the variables in it are unescaped too. `harness/spaces.py` builds a
   workspace under such a directory end to end.
+- On macOS a program whose unwind table is larger than 1 MB takes edits as splices, and so
+  live in the running program ([#13](https://github.com/indexable-inc/ra-jit/issues/13)).
+  The daemon gave Apple's linker a fixed `-headerpad` of 1 MiB, and a splice moves the
+  table into that room, so a GUI app of 570 crates with 3 MB of table linked every edit in
+  full. The link now reads its headerpad from a file beside the executable, last on the
+  line: 1 MiB, or what the line's own flags ask for. After each full link the daemon reads
+  the header, and when the room is short it links once again with what the table needs and a
+  quarter more, which the links after start from. `harness/headerpad.py` checks it.
 
 ## [0.1.0] - 2026-10-20
 

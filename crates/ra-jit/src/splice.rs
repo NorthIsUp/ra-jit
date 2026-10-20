@@ -354,6 +354,24 @@ impl Baseline {
     }
 }
 
+/// The `-headerpad` to link the executable at `path` with again for an edit to be spliced into
+/// it, when the room its header has is too little: only Apple's linker leaves no more than it
+/// is told to. `None` for an executable that has the room, or needs none.
+pub(crate) fn headerpad_short(path: &Path) -> anyhow::Result<Option<u64>> {
+    use std::io::Read as _;
+    const HEADER: usize = size_of::<object::macho::MachHeader64<object::LittleEndian>>();
+    let mut file = File::open(path)?;
+    let mut commands = vec![0; HEADER];
+    let magic = object::macho::MH_MAGIC_64.to_le_bytes();
+    if file.read_exact(&mut commands).is_err() || commands[..4] != magic {
+        return Ok(None);
+    }
+    let len = u32::from_le_bytes(commands[20..24].try_into()?) as usize;
+    commands.resize(HEADER + len, 0);
+    file.read_exact(&mut commands[HEADER..])?;
+    macho::headerpad_short(&commands)
+}
+
 /// Why a splice stopped half way: a newer edit wants the executable.
 #[derive(Debug)]
 pub(crate) struct GaveUp;
