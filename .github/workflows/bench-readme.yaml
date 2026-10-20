@@ -33,6 +33,9 @@ defaults:
 jobs:
   bench:
     name: bench (real projects, Linux x86-64)
+    # Until the machine is registered a run would wait for it for a day and then be cancelled:
+    # the repository variable BENCH_RUNNER=true says it is there (docs/benchmarks.md).
+    if: vars.BENCH_RUNNER == 'true'
     runs-on: [self-hosted, linux, x64, bench-x86]
     timeout-minutes: 300
     env:

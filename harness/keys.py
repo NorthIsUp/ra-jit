@@ -7,7 +7,10 @@ and builds again with the store the first build filled: the program has to print
 does. "again" changes the checkout where it is, "elsewhere" changes a copy of it at another
 path, as a second worktree or another machine would have it.
 
-usage: keys.py [case ...]
+usage: keys.py [case ...] [--shard K/N]
+
+--shard K/N runs every Nth build of the chosen ones, starting at the Kth: N machines with K
+from 1 to N run all of them between them.
 """
 import os, shutil, subprocess, sys, tempfile
 
@@ -107,55 +110,59 @@ def build(ws, env, args):
 
 def main():
     work = os.path.realpath(tempfile.mkdtemp(prefix="ra-jit-keys-"))
-    chosen = sys.argv[1:]
+    chosen, shard = sys.argv[1:], (1, 1)
+    if "--shard" in chosen:
+        at = chosen.index("--shard")
+        shard = tuple(int(it) for it in chosen[at + 1].split("/"))
+        del chosen[at:at + 2]
+    runs = [(name, change, line, mode) for name, change, line in CASES
+            if not chosen or any(it in name for it in chosen) for mode in ("again", "elsewhere")]
+    runs = runs[shard[0] - 1::shard[1]]
     wrong = total = fixed = refusals = 0
-    for name, change, line in CASES:
-        if chosen and not any(it in name for it in chosen):
-            continue
-        for mode in ("again", "elsewhere"):
-            total += 1
-            at = os.path.join(work, str(total))
-            store, first = os.path.join(at, "store"), os.path.join(at, "first")
-            os.makedirs(store)
-            shutil.copytree(os.path.join(HERE, "keys"), first, ignore=shutil.ignore_patterns("target"))
-            env, args = {"RA_JIT_CACHE": store}, []
-            want, got, _ = build(first, env, args)
-            problems = [] if want == got else ["the first build differs"]
-            filled = size(store)
-            second = first
-            if mode == "elsewhere":
-                second = os.path.join(at, "second")
-                shutil.copytree(first, second, ignore=shutil.ignore_patterns("target"))
-            before = want
-            change(second, env, args)
-            want, got, left = build(second, env, args)
-            if want != got:
-                problems.append("the second build differs")
-            if line and before == want:
-                problems.append("cargo's program is the same after the change")
-            # Where the crates differ in overflow checks, ra-jit leaves to rustc a function that
-            # calls a copy it cannot tell the checks of. The function the case is about has to
-            # be ra-jit's all the same, or the case shows nothing.
-            refused = [row for row in left if REFUSED in row[2] and row[1].split("::")[-1] != line]
-            if len(left) > len(refused):
-                problems.append(f"{len(left) - len(refused)} functions left to rustc")
-            refusals += len(refused)
-            known = name in OPEN
-            fixed += known and not problems
-            wrong += bool(problems) and not known
-            print(f"{'same     ' if not problems else 'open     ' if known else 'DIFFERENT'} {mode:9} {name}: store {filled} bytes, {size(store) - filled} more", flush=True)
-            for problem in problems:
-                print(f"    {problem}")
-            for row in refused:
-                print(f"    refused {row[1]}: {row[2][:160]}")
-            if want != got:
-                ours, theirs = (it[1].decode(errors="replace").splitlines() for it in (got, want))
-                for a, b in zip(theirs, ours):
-                    if a != b:
-                        print(f"    rustc: {a}\n    ra-jit: {b}")
-                if len(ours) != len(theirs):
-                    print(f"    ra-jit: status {got[0]}, {len(ours)} lines of {len(theirs)}; {got[2].decode(errors='replace').strip()[-300:]}")
-    still = sum(2 for name, _, _ in CASES if name in OPEN and (not chosen or any(it in name for it in chosen))) - fixed
+    for name, change, line, mode in runs:
+        total += 1
+        at = os.path.join(work, str(total))
+        store, first = os.path.join(at, "store"), os.path.join(at, "first")
+        os.makedirs(store)
+        shutil.copytree(os.path.join(HERE, "keys"), first, ignore=shutil.ignore_patterns("target"))
+        env, args = {"RA_JIT_CACHE": store}, []
+        want, got, _ = build(first, env, args)
+        problems = [] if want == got else ["the first build differs"]
+        filled = size(store)
+        second = first
+        if mode == "elsewhere":
+            second = os.path.join(at, "second")
+            shutil.copytree(first, second, ignore=shutil.ignore_patterns("target"))
+        before = want
+        change(second, env, args)
+        want, got, left = build(second, env, args)
+        if want != got:
+            problems.append("the second build differs")
+        if line and before == want:
+            problems.append("cargo's program is the same after the change")
+        # Where the crates differ in overflow checks, ra-jit leaves to rustc a function that
+        # calls a copy it cannot tell the checks of. The function the case is about has to
+        # be ra-jit's all the same, or the case shows nothing.
+        refused = [row for row in left if REFUSED in row[2] and row[1].split("::")[-1] != line]
+        if len(left) > len(refused):
+            problems.append(f"{len(left) - len(refused)} functions left to rustc")
+        refusals += len(refused)
+        known = name in OPEN
+        fixed += known and not problems
+        wrong += bool(problems) and not known
+        print(f"{'same     ' if not problems else 'open     ' if known else 'DIFFERENT'} {mode:9} {name}: store {filled} bytes, {size(store) - filled} more", flush=True)
+        for problem in problems:
+            print(f"    {problem}")
+        for row in refused:
+            print(f"    refused {row[1]}: {row[2][:160]}")
+        if want != got:
+            ours, theirs = (it[1].decode(errors="replace").splitlines() for it in (got, want))
+            for a, b in zip(theirs, ours):
+                if a != b:
+                    print(f"    rustc: {a}\n    ra-jit: {b}")
+            if len(ours) != len(theirs):
+                print(f"    ra-jit: status {got[0]}, {len(ours)} lines of {len(theirs)}; {got[2].decode(errors='replace').strip()[-300:]}")
+    still = sum(1 for name, _, _, _ in runs if name in OPEN) - fixed
     print(f"{total - wrong - still} of {total - still} right, {still} open, {refusals} functions refused; {work}")
     if fixed:
         print(f"{fixed} of the open cases are the same now: take them out of OPEN")

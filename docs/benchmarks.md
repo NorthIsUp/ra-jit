@@ -82,7 +82,10 @@ The CI machine is a dedicated AWS instance used for nothing else, registered as 
 GitHub Actions runner with the labels `self-hosted, linux, x64, bench-x86`. It runs as user
 `andrew` from `~/actions-runner` under a user systemd unit (`ra-jit-bench-runner.service`,
 lingering, so it starts at boot); `harness/benchrunner.sh` sets all of that up, and its `.env`
-names the machine for the results. The instance meant for it is `dev-aws-bench-x86`
+names the machine for the results. Once it is registered, set the repository variable that turns
+the workflow's job on (`gh variable set BENCH_RUNNER -R indexable-inc/ra-jit -b true`); until
+then every run of the workflow is skipped rather than left waiting for a runner that is not
+there. The instance meant for it is `dev-aws-bench-x86`
 (i-01666717f0de39201, us-west-2a, on demand, ttl a year, tagged `ix-dev-purpose=ra-jit-bench`):
 16 AMD EPYC 9R45 (Zen 5) cores, one thread per core, NixOS. It was launched as a c8a.4xlarge
 (32 GiB), but nushell's daemon alone holds 15 GB, so it should be resized to m8a.4xlarge (the
