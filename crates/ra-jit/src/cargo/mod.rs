@@ -56,6 +56,10 @@ pub(crate) fn command(args: impl Iterator<Item = String>) -> anyhow::Result<()> 
             println!("{HELP}");
             0
         }
+        Asked::Version => {
+            println!("{}", crate::version());
+            0
+        }
     };
     std::process::exit(code)
 }

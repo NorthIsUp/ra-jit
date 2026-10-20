@@ -41,6 +41,11 @@ Edit one function, then build (200-crate workspace, median of three):
 nix run github:indexable-inc/ra-jit#ra-jit -- build
 ```
 
+No nix? `cargo +1.99.0 install --locked ra-jit`, or put the binaries from a
+[release](https://github.com/indexable-inc/ra-jit/releases) on your PATH. Then use Rust
+1.99.0 with its source:
+`rustup toolchain install 1.99.0 -c rust-src && rustup override set 1.99.0`.
+
 ### Use it as your normal `cargo build`
 
 ```
@@ -56,7 +61,7 @@ From then on plain `cargo build`, `run`, `test` and `check` in any project go th
 Add the crate and poll once per frame:
 
 ```toml
-ra-jit-live = { git = "https://github.com/indexable-inc/ra-jit" }
+ra-jit-live = "0.1"
 ```
 
 ```rust

@@ -1406,7 +1406,8 @@ fn linked_from_libraries(db: &RootDatabase, args: &Args) -> anyhow::Result<()> {
     let used: FxHashSet<Crate> =
         built.iter().flat_map(|it| it.dependencies(db)).map(|it| it.krate).collect();
     // A proc macro is a library of the compiler's, not of the program.
-    let is_proc_macro = |krate: &Crate| ide_db::base_db::Crate::from(*krate).data(db).target_kind.is_proc_macro();
+    let is_proc_macro =
+        |krate: &Crate| ide_db::base_db::Crate::from(*krate).data(db).target_kind.is_proc_macro();
     let libraries: Vec<String> = built
         .iter()
         .filter(|it| used.contains(it) && !is_proc_macro(it))
@@ -4025,6 +4026,16 @@ pub(crate) fn end_with_reader() {
     }
 }
 
+/// `ra-jit 0.1.0 (abc123def456)`: the crate's version, and the commit when the build was
+/// told it in `RA_JIT_GIT_SHA` (the release workflow and the flake set it).
+pub(crate) fn version() -> String {
+    let version = env!("CARGO_PKG_VERSION");
+    match option_env!("RA_JIT_GIT_SHA") {
+        Some(sha) if !sha.is_empty() => format!("ra-jit {version} ({sha})"),
+        _ => format!("ra-jit {version}"),
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let stands_in_for_rustc = std::env::var_os("RA_JIT_WRAPS_RUSTC").is_some();
     match std::env::args().nth(1).as_deref() {
@@ -4035,7 +4046,7 @@ fn main() -> anyhow::Result<()> {
             return Ok(());
         }
         Some("--version" | "-V") => {
-            println!("ra-jit {}", env!("CARGO_PKG_VERSION"));
+            println!("{}", version());
             return Ok(());
         }
         Some("cache") => {

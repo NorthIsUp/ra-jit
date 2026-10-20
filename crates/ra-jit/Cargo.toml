@@ -1,13 +1,19 @@
 [package]
 name = "ra-jit"
-version = "0.0.0"
-description = "Spike: persistent compiler on top of rust-analyzer's database"
+description = "Rust compiler daemon over rust-analyzer's MIR: incremental builds and live edits through cargo"
+# Published by .github/scripts/publish_crates.py, which publishes the vendored crates it
+# depends on by path as `ra-jit-<name>` and rewrites this manifest to name them.
 publish = false
 
+version.workspace = true
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 memchr = "2"

@@ -60,7 +60,7 @@ def allowing_duplicates(wasm):
     return [allow, *shlex.split(os.environ.get("RA_JIT_LINK_ARGS", spliced))]
 
 
-def ahead(link, objects, ra-jit):
+def ahead(link, objects, ra_jit):
     """`link` with `objects` before rustc's, and the linker told that the first definition stays."""
     link = list(link)
     first = first_of_rustc(link)
@@ -73,7 +73,7 @@ def ahead(link, objects, ra-jit):
     # The library of the toolchain defines nothing a workspace crate does.
     sysroot = subprocess.check_output(["rustc", "--print", "sysroot"], text=True).strip()
     theirs = [i for i, a in enumerate(link) if a.endswith(THEIRS) and not a.startswith(sysroot)]
-    copies = subprocess.check_output([ra-jit, "weaken", *(link[i] for i in theirs)], text=True).splitlines()
+    copies = subprocess.check_output([ra_jit, "weaken", *(link[i] for i in theirs)], text=True).splitlines()
     for i, copy in zip(theirs, copies):
         link[i] = copy
     # A splice adds two segments to the header, which the linker leaves no room for.

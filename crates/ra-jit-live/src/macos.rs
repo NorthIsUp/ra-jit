@@ -94,7 +94,11 @@ impl Live {
         let image = Image::read(header)?;
         let dir = format::dir(&image.uuid).ok_or("no home directory to take edits through")?;
         forget_exited();
-        std::fs::create_dir_all(&dir).map_err(|it| format!("{}: {it}", dir.display()))?;
+        // For the user alone: the daemon refuses a directory of its own that others can enter,
+        // and `~/.cache/ra-jit` is its parent.
+        std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700)
+            .create(&dir)
+            .map_err(|it| format!("{}: {it}", dir.display()))?;
         let (next, end) = reserve(&image, slide)?;
         let started = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH);
         let started = started.map_or(0, |it| it.as_millis() as u64);
