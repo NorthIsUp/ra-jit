@@ -13,10 +13,16 @@ it is under [macOS arm64](#macos-arm64). The design notes it was written from ar
 
 `cargo ra-jit` is cargo's way of running a program called `cargo-ra-jit` on your `PATH`. That
 program is built with ra-jit and runs the `ra-jit` executable in the same directory, so the two
-have to be installed side by side:
+have to be installed side by side, with `ra-jit-rustc`. `cargo install` does that:
+
+    cargo +1.99.0 install --locked ra-jit
+
+That build has the Cranelift backend only. The LLVM one (`RA_JIT_BACKEND=llvm`) is
+`--features llvm`, and needs LLVM 20 with `LLVM_SYS_201_PREFIX` set to its prefix. From a
+checkout:
 
     cargo +1.99.0 build -p ra-jit --release
-    cp target/release/ra-jit target/release/cargo-ra-jit ~/.cargo/bin/
+    cp target/release/{ra-jit,cargo-ra-jit,ra-jit-rustc} ~/.cargo/bin/
 
 The project you build must use Rust 1.99.0, the toolchain ra-jit is pinned to. Use a
 `rust-toolchain.toml`, `rustup override set 1.99.0`, or `RUSTUP_TOOLCHAIN=1.99.0`.
