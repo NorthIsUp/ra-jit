@@ -671,7 +671,8 @@ fn rustc_commit(toolchain: &str) -> Option<String> {
     static KNOWN: Mutex<Option<FxHashMap<String, (Seen, Option<String>)>>> = Mutex::new(None);
     let rustlib = format!("{toolchain}lib/rustlib");
     let modified = |path: &str| std::fs::metadata(path).and_then(|it| it.modified()).ok();
-    let seen = (modified(&format!("{rustlib}/multirust-channel-manifest.toml")), modified(&rustlib));
+    let seen =
+        (modified(&format!("{rustlib}/multirust-channel-manifest.toml")), modified(&rustlib));
     if let Some((was, commit)) = lock(&KNOWN).get_or_insert_default().get(toolchain)
         && *was == seen
     {
@@ -5017,14 +5018,13 @@ fn run_holding(
         Ok(_) => Overlay::Always,
         Err(_) => Overlay::Quick,
     };
-    let mut builds =
-        Builds {
-            events,
-            running: FxHashMap::default(),
-            waiting: Default::default(),
-            stuck: false,
-            edits: Vec::new(),
-        };
+    let mut builds = Builds {
+        events,
+        running: FxHashMap::default(),
+        waiting: Default::default(),
+        stuck: false,
+        edits: Vec::new(),
+    };
     // How many times running each checkout that is read as a loaded one has been long to turn
     // to or from.
     let mut slow: FxHashMap<PathBuf, u32> = FxHashMap::default();
@@ -5342,18 +5342,17 @@ fn run_holding(
                         Watched::Source(id) => Some((id, it.path.clone())),
                         Watched::Included(_) => None,
                     };
-                    let found = files
-                        .iter()
-                        .filter(|it| it.path == edited.path)
-                        .find_map(source)
-                        .or_else(|| {
-                            let path = dunce::canonicalize(&edited.path).ok()?;
-                            files.iter().find_map(|it| {
-                                source(it).filter(|_| {
-                                    dunce::canonicalize(&it.path).is_ok_and(|it| it == path)
+                    let found =
+                        files.iter().filter(|it| it.path == edited.path).find_map(source).or_else(
+                            || {
+                                let path = dunce::canonicalize(&edited.path).ok()?;
+                                files.iter().find_map(|it| {
+                                    source(it).filter(|_| {
+                                        dunce::canonicalize(&it.path).is_ok_and(|it| it == path)
+                                    })
                                 })
-                            })
-                        });
+                            },
+                        );
                     let Some((id, path)) = found else {
                         let shown = edited.path.display();
                         let _ = writeln!(&edited.client, "error: {shown} is not a source file");
@@ -5375,7 +5374,9 @@ fn run_holding(
                     }
                     let busy = owners.iter().any(|at| {
                         builds.running.contains_key(at)
-                            || outputs.get(at).is_some_and(|it| *it != Outputs::of(&programs[*at].args))
+                            || outputs
+                                .get(at)
+                                .is_some_and(|it| *it != Outputs::of(&programs[*at].args))
                     });
                     if busy {
                         builds.edits.push(edited);
@@ -5388,10 +5389,9 @@ fn run_holding(
                         sent.insert(id, (text, edited.at));
                     }
                     // Built for the process the last build was for.
-                    edited.client.env =
-                        ide_db::base_db::ProcessEnv::try_get(&db)
-                            .map(|it| it.vars(&db).clone())
-                            .unwrap_or_default();
+                    edited.client.env = ide_db::base_db::ProcessEnv::try_get(&db)
+                        .map(|it| it.vars(&db).clone())
+                        .unwrap_or_default();
                     // Asked as a client of each would: one interrupted asks again.
                     let target = |at: usize| (at != 0).then(|| Target::of(&programs[at].args));
                     for &at in &owners[1..] {
