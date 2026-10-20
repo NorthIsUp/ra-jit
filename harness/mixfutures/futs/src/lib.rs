@@ -1,9 +1,9 @@
 //! Futures made by one compiler and polled or dropped by the other.
 //!
 //! `difftest.py mixfutures --bin runner --crate futs --mixed N` leaves a random half of these
-//! functions to rustc. With `RA_JIT_MIX_FUTURES=1` nothing keeps a future and what polls it on
-//! one side, so a future rustc's code makes is polled by ra-jit's and the other way round, which
-//! is right only where both lay the future out alike. Each future here keeps something across
+//! functions to rustc. Nothing keeps a future and what polls it on one side (unless
+//! `RA_JIT_SPLIT_FUTURES=1`), so a future rustc's code makes is polled by ra-jit's and the
+//! other way round, which is right only where both lay the future out alike. Each future here keeps something across
 //! an await: a value with a destructor, a borrow of its own local, a value moved out on one path
 //! only (rustc keeps a drop flag for it), a future it waits for; some are dropped while
 //! suspended or before they start, and one unwinds.

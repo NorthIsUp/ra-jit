@@ -82,10 +82,10 @@ use self::fragment::{
 use self::unwind::{FunctionUnwind, UnwindContext};
 use self::vtable::{Slot, Upcast, VtableLayout};
 use super::{
-    AggregateKind, BasicBlockId, BinOp, CastKind, LocalId, MirBody, MirPhase, MirSpan, Operand,
-    OperandKind, PlaceTy, ProjectionElem, Rvalue, StatementKind, StoredPlace, TerminatorKind, UnOp,
-    eval::interpret_mir, lower::is_builtin_index, monomorphization::monomorphized,
-    monomorphized_promoted_mir_body_query, return_slot,
+    AggregateKind, AssertKind, BasicBlockId, BinOp, CastKind, LocalId, MirBody, MirPhase, MirSpan,
+    Operand, OperandKind, PlaceTy, ProjectionElem, Rvalue, StatementKind, StoredPlace,
+    TerminatorKind, UnOp, eval::interpret_mir, lower::is_builtin_index,
+    monomorphization::monomorphized, monomorphized_promoted_mir_body_query, return_slot,
 };
 
 mod asm;
@@ -1922,12 +1922,14 @@ fn body_types<'db>(
     })
 }
 
-/// Whether a future and everything that makes, polls or drops it come from one compiler.
-/// `RA_JIT_MIX_FUTURES=1` lets them come from both, which is right only where ra-jit lays a
-/// future out exactly as rustc does: it is how that is measured (`harness/mixfutures`).
+/// Whether a future and everything that makes, polls or drops it have to come from one
+/// compiler. They need not: ra-jit lays a future out as rustc does, from the same MIR
+/// (`docs/mir-passes.md` of the fork). `RA_JIT_SPLIT_FUTURES=1` keeps them apart as before,
+/// a temporary way back until mixing is verified (`harness/mixfutures`).
+// FIXME: delete with what it guards once mixed futures are verified on den-native.
 fn futures_kept_apart() -> bool {
     static APART: LazyLock<bool> =
-        LazyLock::new(|| std::env::var_os("RA_JIT_MIX_FUTURES").is_none_or(|it| it == "0"));
+        LazyLock::new(|| std::env::var_os("RA_JIT_SPLIT_FUTURES").is_some_and(|it| it != "0"));
     *APART
 }
 
@@ -3085,7 +3087,6 @@ fn build<'db>(
         argument_slots: Vec::new(),
         free_argument_slots: Vec::new(),
         given_away: None,
-        index_spans: Default::default(),
         in_cleanup: false,
         guarded: false,
         ret_mode: PassMode::Ignore,
@@ -5617,8 +5618,6 @@ struct FunctionCx<'cx, 'db> {
     /// While a call is generated: the local its result goes to, and where the locals moved
     /// whole into it are. Nothing reads those again, so the callee can be handed them.
     given_away: Option<GivenAway>,
-    /// The index expression each local that holds an index was made for.
-    index_spans: FxHashMap<LocalId, MirSpan>,
     in_cleanup: bool,
     /// Whether a call was made by [`Self::guarded_call`].
     guarded: bool,
@@ -7119,9 +7118,6 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             }
             let block = &body.basic_blocks[id];
             worklist.extend(block.terminator.as_ref().and_then(|it| it.kind.unwind()));
-            if !block.is_cleanup && block.statements.iter().any(|it| it.kind.may_panic()) {
-                worklist.extend(body.panic_cleanup);
-            }
         }
         let state = frame.as_ref().map(|(frame, ..)| frame.state()).map(|it| in_frame(self, it));
         match (frame, state) {
@@ -7137,7 +7133,6 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                 self.builder.ins().jump(self.blocks[body.start_block], &[]);
             }
         }
-        self.index_spans = index_spans(body);
         for (id, block) in body.basic_blocks.iter() {
             if !reachable.contains(&id) {
                 continue;
@@ -7149,7 +7144,8 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             }
             for statement in &block.statements {
                 self.at(statement.span);
-                self.unwind_to = statement.kind.may_panic().then_some(body.panic_cleanup).flatten();
+                // No statement unwinds: what panics is an `Assert`.
+                self.unwind_to = None;
                 match &statement.kind {
                     // A promoted constant already holds its value.
                     StatementKind::Assign(place, _)
@@ -7157,11 +7153,6 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                     StatementKind::Assign(place, rvalue) => self.assign(place, rvalue)?,
                     StatementKind::Deinit(_) => unsupported!("deinit"),
                     StatementKind::InlineAsm(asm) => self.inline_asm(asm)?,
-                    // A place that is matched on and not read is still indexed, and the
-                    // index is checked: `let _ = items[at]` panics when `at` is out of bounds.
-                    StatementKind::FakeRead(place) if is_indexed(place) => {
-                        self.place(place)?;
-                    }
                     StatementKind::StorageLive(_)
                     | StatementKind::StorageDead(_)
                     | StatementKind::FakeRead(_)
@@ -7390,12 +7381,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                             self.builder.ins().load(ptr(), MEM, index, 0)
                         }
                     };
-                    // An index out of bounds is reported at the index expression, which may be
-                    // an operand of the statement that reads it.
-                    let statement = self.span;
-                    self.at(self.index_spans.get(local).copied().unwrap_or(statement));
-                    addr = self.element(addr, meta, prev.ty, index)?;
-                    self.at(statement);
+                    addr = self.element(addr, prev.ty, index)?;
                     meta = None;
                 }
                 ProjectionElem::ConstantIndex { offset, from_end } => {
@@ -7405,7 +7391,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                     } else {
                         self.builder.ins().iconst(ptr(), *offset as i64)
                     };
-                    addr = self.element(addr, meta, prev.ty, index)?;
+                    addr = self.element(addr, prev.ty, index)?;
                     meta = None;
                 }
                 ProjectionElem::Subslice { from, to } => {
@@ -7445,18 +7431,9 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         }
     }
 
-    /// Address of `container[index]`, after a bounds check.
-    fn element(
-        &mut self,
-        addr: Value,
-        meta: Option<Value>,
-        container: Ty<'db>,
-        index: Value,
-    ) -> Result<Value> {
+    /// Address of `container[index]`: the `Assert` before what reads it has checked the index.
+    fn element(&mut self, addr: Value, container: Ty<'db>, index: Value) -> Result<Value> {
         let size = self.element_size(container)?;
-        let len = self.len(container, meta)?;
-        let out_of_bounds = self.builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, index, len);
-        self.bounds_panic_if(out_of_bounds, index, len)?;
         let offset = self.builder.ins().imul_imm(index, size as i64);
         Ok(self.builder.ins().iadd(addr, offset))
     }
@@ -7602,45 +7579,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
 
     /// Whether `ty` is known to have no `UnsafeCell` outside of indirections.
     fn is_freeze(&self, ty: Ty<'db>) -> bool {
-        let db = self.cg.db;
-        match ty.kind() {
-            TyKind::Bool
-            | TyKind::Char
-            | TyKind::Int(_)
-            | TyKind::Uint(_)
-            | TyKind::Float(_)
-            | TyKind::Str
-            | TyKind::Never
-            | TyKind::Ref(..)
-            | TyKind::RawPtr(..)
-            | TyKind::FnPtr(..)
-            | TyKind::FnDef(..) => true,
-            TyKind::Array(element, _) | TyKind::Slice(element) | TyKind::Pat(element, _) => {
-                self.is_freeze(element)
-            }
-            TyKind::Tuple(fields) => fields.iter().all(|field| self.is_freeze(field)),
-            TyKind::Adt(def, args) => {
-                let variants: Vec<VariantId> = match def.def_id() {
-                    AdtId::StructId(id) => {
-                        if Some(id) == self.interner.lang_items().UnsafeCell {
-                            return false;
-                        }
-                        vec![id.into()]
-                    }
-                    AdtId::EnumId(id) => {
-                        id.enum_variants(db).variants.iter().map(|(_, it)| it.0.into()).collect()
-                    }
-                    AdtId::UnionId(_) => return false,
-                };
-                variants.into_iter().all(|variant| {
-                    db.field_types(variant).iter().all(|(_, field)| {
-                        let ty = field.ty().instantiate(self.interner, args).skip_norm_wip();
-                        self.is_freeze(ty)
-                    })
-                })
-            }
-            _ => false,
-        }
+        crate::drop::is_freeze(self.cg.db, self.interner, ty)
     }
 
     fn eval_const(&mut self, unevaluated: UnevaluatedConst<'db>) -> Result<Allocation<'db>> {
@@ -8400,7 +8339,20 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                     self.builder.switch_to_block(done);
                 }
             }
-            Rvalue::CheckedBinaryOp(op, lhs, rhs) => {
+            Rvalue::BinaryOp(
+                op @ (BinOp::AddWithOverflow | BinOp::SubWithOverflow | BinOp::MulWithOverflow),
+                lhs,
+                rhs,
+            ) => {
+                let (value, overflow) = self.overflowing_op(op, lhs, rhs)?;
+                let Some(overflow) = overflow else { unsupported!("{op:?} of floats") };
+                let layout = self.layout(dst_ty.ty)?;
+                let [value_at, flag_at] =
+                    [0, 1].map(|field| layout.fields.offset(field).bytes() as i32);
+                self.builder.ins().store(MEM, value, dst, value_at);
+                self.builder.ins().store(MEM, overflow, dst, flag_at);
+            }
+            Rvalue::BinaryOp(op, lhs, rhs) => {
                 let value = self.binary_op(op, lhs, rhs)?;
                 store(self, value);
             }
@@ -8421,9 +8373,8 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                             types::I64 => zero,
                             _ => self.builder.ins().ireduce(ty, zero),
                         };
-                        let (value, overflow) = self.builder.ins().ssub_overflow(zero, value);
-                        self.panic_if_overflow(overflow, OverflowOp::Neg)?;
-                        value
+                        // An `Assert` before it has ruled out `MIN`.
+                        self.builder.ins().isub(zero, value)
                     }
                 };
                 store(self, value);
@@ -8706,6 +8657,23 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
     }
 
     fn binary_op(&mut self, op: &BinOp, lhs: &Operand, rhs: &Operand) -> Result<Value> {
+        Ok(self.overflowing_op(op, lhs, rhs)?.0)
+    }
+
+    /// `lhs op rhs`, which never panics: runtime MIR checks with an `Assert` before it. For
+    /// `AddWithOverflow` and the like, also whether it overflowed.
+    fn overflowing_op(
+        &mut self,
+        op: &BinOp,
+        lhs: &Operand,
+        rhs: &Operand,
+    ) -> Result<(Value, Option<Value>)> {
+        let (op, overflowing) = match op {
+            BinOp::AddWithOverflow => (&BinOp::Add, true),
+            BinOp::SubWithOverflow => (&BinOp::Sub, true),
+            BinOp::MulWithOverflow => (&BinOp::Mul, true),
+            op => (op, false),
+        };
         let (mut l_addr, mut ty) = self.operand(lhs)?;
         let (mut r_addr, mut r_ty) = self.operand(rhs)?;
         // RA lowers comparisons of references without the deref.
@@ -8749,7 +8717,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             let unequal = self.builder.ins().iconst(types::I8, matches!(op, BinOp::Ne) as i64);
             self.builder.ins().jump(done, &[unequal.into()]);
             self.builder.switch_to_block(done);
-            return Ok(self.builder.block_params(done)[0]);
+            return Ok((self.builder.block_params(done)[0], None));
         }
         if matches!(ty.kind(), TyKind::RawPtr(..))
             && matches!(self.layout(ty)?.backend_repr, BackendRepr::ScalarPair { .. })
@@ -8771,11 +8739,12 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             let same_ptr = self.builder.ins().icmp(IntCC::Equal, l_ptr, r_ptr);
             let by_meta = self.builder.ins().icmp(cc, l_meta, r_meta);
             let by_ptr = self.builder.ins().icmp(cc, l_ptr, r_ptr);
-            return Ok(match op {
+            let value = match op {
                 BinOp::Eq => self.builder.ins().band(same_ptr, by_meta),
                 BinOp::Ne => self.builder.ins().bor(by_ptr, by_meta),
                 _ => self.builder.ins().select(same_ptr, by_meta, by_ptr),
-            });
+            };
+            return Ok((value, None));
         }
         let scalar = self.scalar_of(ty)?;
         let r_scalar = self.scalar_of(r_ty)?;
@@ -8790,7 +8759,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         };
         let signed = scalar.signed;
         if scalar.ty.is_float() {
-            return self.float_binary_op(op, l, r);
+            return Ok((self.float_binary_op(op, l, r)?, None));
         }
         let cc = match (op, signed) {
             (BinOp::Eq, _) => Some(IntCC::Equal),
@@ -8806,17 +8775,16 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             _ => None,
         };
         if let Some(cc) = cc {
-            return Ok(self.builder.ins().icmp(cc, l, r));
+            return Ok((self.builder.ins().icmp(cc, l, r), None));
         }
         if let BinOp::Mul = op
             && self.builder.func.dfg.value_type(l) == types::I128
         {
             let (value, overflow) = self.wide_mul_overflow(l, r, signed)?;
-            self.panic_if_overflow(overflow, OverflowOp::Mul)?;
-            return Ok(value);
+            return Ok((value, overflowing.then_some(overflow)));
         }
         let ins = self.builder.ins();
-        Ok(match op {
+        let value = match op {
             BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
                 unreachable!("comparisons return above")
             }
@@ -8832,56 +8800,25 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                     (BinOp::Mul, true) => ins.smul_overflow(l, r),
                     (_, _) => ins.umul_overflow(l, r),
                 };
-                let op = match op {
-                    BinOp::Add => OverflowOp::Add,
-                    BinOp::Sub => OverflowOp::Sub,
-                    _ => OverflowOp::Mul,
-                };
-                self.panic_if_overflow(overflow, op)?;
-                value
+                return Ok((value, overflowing.then_some(overflow)));
             }
-            BinOp::Div | BinOp::Rem => {
-                let div = matches!(op, BinOp::Div);
-                let zero = self.builder.ins().icmp_imm(IntCC::Equal, r, 0);
-                self.panic_if(
-                    zero,
-                    if div { OverflowOp::DivByZero } else { OverflowOp::RemByZero },
-                )?;
-                if signed {
-                    let ty = scalar.ty;
-                    let min = if ty == types::I128 {
-                        let low = self.builder.ins().iconst(types::I64, 0);
-                        let high = self.builder.ins().iconst(types::I64, i64::MIN);
-                        self.builder.ins().iconcat(low, high)
-                    } else {
-                        self.builder.ins().iconst(ty, i64::MIN >> (64 - ty.bits()))
-                    };
-                    let is_min = self.builder.ins().icmp(IntCC::Equal, l, min);
-                    let minus_one = self.builder.ins().icmp_imm(IntCC::Equal, r, -1);
-                    let overflow = self.builder.ins().band(is_min, minus_one);
-                    self.panic_if(overflow, if div { OverflowOp::Div } else { OverflowOp::Rem })?;
-                }
-                self.divide(l, r, div, signed)?
-            }
+            // An `Assert` before it has ruled out a zero divisor and `MIN / -1`.
+            BinOp::Div | BinOp::Rem => self.divide(l, r, matches!(op, BinOp::Div), signed)?,
+            // The amount is taken modulo the width, as rustc's `Shl` and `Shr` do.
             BinOp::Shl | BinOp::Shr => {
-                let (r, beyond_a_word) = self.shift_amount_word(r);
-                let bits = i64::from(scalar.ty.bits());
-                let overflow =
-                    self.builder.ins().icmp_imm(IntCC::UnsignedGreaterThanOrEqual, r, bits);
-                let overflow = match beyond_a_word {
-                    Some(beyond) => self.builder.ins().bor(overflow, beyond),
-                    None => overflow,
-                };
-                let (shift_op, value) = match (op, signed) {
-                    (BinOp::Shl, _) => (OverflowOp::Shl, self.builder.ins().ishl(l, r)),
-                    (_, true) => (OverflowOp::Shr, self.builder.ins().sshr(l, r)),
-                    (_, false) => (OverflowOp::Shr, self.builder.ins().ushr(l, r)),
-                };
-                self.panic_if_overflow(overflow, shift_op)?;
-                value
+                let (r, _) = self.shift_amount_word(r);
+                match (op, signed) {
+                    (BinOp::Shl, _) => self.builder.ins().ishl(l, r),
+                    (_, true) => self.builder.ins().sshr(l, r),
+                    (_, false) => self.builder.ins().ushr(l, r),
+                }
             }
             BinOp::Offset => unsupported!("pointer offset"),
-        })
+            BinOp::AddWithOverflow | BinOp::SubWithOverflow | BinOp::MulWithOverflow => {
+                unreachable!("taken apart above")
+            }
+        };
+        Ok((value, None))
     }
 
     /// A shift amount as at most one machine word, and whether the part cut off was not zero.
@@ -8999,11 +8936,6 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             return Ok(false);
         }
         Ok(self.cg.checked)
-    }
-
-    /// Branches to a panic when `overflow` is set, if the body is one that checks.
-    fn panic_if_overflow(&mut self, overflow: Value, op: OverflowOp) -> Result<()> {
-        if self.checks_overflow()? { self.panic_if(overflow, op) } else { Ok(()) }
     }
 
     /// Branches to a call of rustc's `panic_const_*` when `cond` is set.
@@ -9325,6 +9257,37 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             }
             // A suspended future has been dropped: its state already says it returned.
             TerminatorKind::CoroutineDrop => self.return_()?,
+            TerminatorKind::Assert { cond, expected, msg, target, .. } => {
+                // rustc's codegen skips an overflow check where overflow is not checked.
+                if !msg.is_optional_overflow_check() || self.checks_overflow()? {
+                    let (holds, _) = self.load_scalar(cond)?;
+                    let cc = if *expected { IntCC::Equal } else { IntCC::NotEqual };
+                    let failed = self.builder.ins().icmp_imm(cc, holds, 0);
+                    let op = match msg {
+                        AssertKind::BoundsCheck { len, index } => {
+                            let (len, _) = self.load_scalar(len)?;
+                            let (index, _) = self.load_scalar(index)?;
+                            self.bounds_panic_if(failed, index, len)?;
+                            None
+                        }
+                        AssertKind::Overflow(BinOp::Add, ..) => Some(OverflowOp::Add),
+                        AssertKind::Overflow(BinOp::Sub, ..) => Some(OverflowOp::Sub),
+                        AssertKind::Overflow(BinOp::Mul, ..) => Some(OverflowOp::Mul),
+                        AssertKind::Overflow(BinOp::Div, ..) => Some(OverflowOp::Div),
+                        AssertKind::Overflow(BinOp::Rem, ..) => Some(OverflowOp::Rem),
+                        AssertKind::Overflow(BinOp::Shl, ..) => Some(OverflowOp::Shl),
+                        AssertKind::Overflow(BinOp::Shr, ..) => Some(OverflowOp::Shr),
+                        AssertKind::Overflow(op, ..) => unsupported!("overflow check of {op:?}"),
+                        AssertKind::OverflowNeg(_) => Some(OverflowOp::Neg),
+                        AssertKind::DivisionByZero(_) => Some(OverflowOp::DivByZero),
+                        AssertKind::RemainderByZero(_) => Some(OverflowOp::RemByZero),
+                    };
+                    if let Some(op) = op {
+                        self.panic_if(failed, op)?;
+                    }
+                }
+                self.builder.ins().jump(self.blocks[*target], &[]);
+            }
             TerminatorKind::Call { func, args, destination, target, .. } => {
                 self.call(func, args, destination, *target)?
             }
@@ -13139,24 +13102,6 @@ fn dump_mir(body: &MirBody<'_>) {
             eprintln!("    -> {}", compact(format!("{:?}", terminator.kind)));
         }
     }
-}
-
-/// Whether a place is an element of an array or slice at an index that is only known when
-/// the program runs.
-fn is_indexed(place: &StoredPlace) -> bool {
-    place.projection.as_slice().iter().any(|it| matches!(it, ProjectionElem::Index(_)))
-}
-
-/// Where each local of a body starts to live. A local that holds the index of `base[index]`
-/// starts at that expression.
-fn index_spans(body: &MirBody<'_>) -> FxHashMap<LocalId, MirSpan> {
-    let statements = body.basic_blocks.iter().flat_map(|(_, block)| &block.statements);
-    statements
-        .filter_map(|statement| match statement.kind {
-            StatementKind::StorageLive(local) => Some((local, statement.span)),
-            _ => None,
-        })
-        .collect()
 }
 
 /// The locals that can be kept in a register as far as the body goes: temporaries written
