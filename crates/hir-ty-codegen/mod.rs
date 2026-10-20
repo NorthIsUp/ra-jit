@@ -11278,6 +11278,13 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                 let value = self.builder.ins().load(scalar.ty, MEM, from, 0);
                 self.builder.ins().store(MEM, value, dst, 0);
             }
+            // Out of range is undefined, so `as`'s saturating cast is one of its meanings.
+            ("float_to_int_unchecked", [arg]) => {
+                let (value, from) = self.load_scalar(arg)?;
+                let to = self.scalar_of(dst_ty)?;
+                let value = self.float_cast(value, from, to)?;
+                self.builder.ins().store(MEM, value, dst, 0);
+            }
             ("transmute" | "transmute_unchecked" | "black_box" | "likely" | "unlikely", [arg]) => {
                 self.cg.opaque |= name == "black_box";
                 let (src, ty) = self.operand(arg)?;
