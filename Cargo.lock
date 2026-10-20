@@ -3129,6 +3129,7 @@ dependencies = [
  "tokio",
  "toml",
  "toolchain",
+ "tracing",
  "triomphe",
  "typed-arena",
  "uds_windows",
