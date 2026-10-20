@@ -139,6 +139,14 @@ jobs:
           if [ -x "$HOME/s3tools/minio" ]; then run remote.py; fi
           echo "failed:${failed:- none}"
           test -z "$failed"
+      # What the daemons said when a harness failed: each harness keeps its daemon's log in a
+      # temporary directory of its own.
+      - name: Daemon logs
+        if: failure()
+        run: |
+          find "${TMPDIR:-/tmp}" /tmp -maxdepth 2 -name daemon.log 2>/dev/null | sort -u | while read -r log; do
+            echo "::group::$log"; tail -n 60 "$log"; echo "::endgroup::"
+          done
 
   # `cargo ra-jit` in place of cargo on projects as they are published, natively on AArch64:
   # what the programs print and what every test says has to be what cargo gives.
@@ -342,6 +350,17 @@ jobs:
           run storeshared.py
           echo "failed:${failed:- none}"
           test -z "$failed"
+      # What the daemons said when a harness failed, and the report of one that crashed.
+      - name: Daemon logs
+        if: failure()
+        run: |
+          find "${TMPDIR:-/tmp}" /tmp -maxdepth 2 -name daemon.log 2>/dev/null | sort -u | while read -r log; do
+            echo "::group::$log"; tail -n 60 "$log"; echo "::endgroup::"
+          done
+          for report in "$HOME"/Library/Logs/DiagnosticReports/ra-jit*; do
+            [ -f "$report" ] && { echo "::group::$report"; head -c 20000 "$report"; echo; echo "::endgroup::"; }
+          done
+          true
 
   cargo-ra-jit:
     name: cargo ra-jit (${{ matrix.backend }})

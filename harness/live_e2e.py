@@ -124,9 +124,30 @@ async def main() -> None:
         shutil.rmtree(work, ignore_errors=True)
 
 
+def daemon_home() -> Path:
+    """Where the daemon keeps its socket and log, as `cargo::daemon::home` finds it."""
+    if os.environ.get("RA_JIT_HOME"):
+        return Path(os.environ["RA_JIT_HOME"])
+    if os.environ.get("XDG_RUNTIME_DIR"):
+        return Path(os.environ["XDG_RUNTIME_DIR"]) / "ra-jit"
+    return Path.home() / ".cache" / "ra-jit"
+
+
+def show_daemon_log(lines: int = 80) -> None:
+    log = daemon_home() / "daemon.log"
+    try:
+        tail = log.read_text(errors="replace").splitlines()[-lines:]
+    except OSError as why:
+        print(f"no daemon log at {log}: {why}", file=sys.stderr)
+        return
+    print(f"--- the last {len(tail)} lines of {log}", file=sys.stderr)
+    print("\n".join(tail), file=sys.stderr)
+
+
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except StepError as error:
         print(f"error: {error}", file=sys.stderr)
+        show_daemon_log()
         sys.exit(1)
