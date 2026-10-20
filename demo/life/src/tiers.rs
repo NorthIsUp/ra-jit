@@ -138,7 +138,9 @@ impl TiersPanel {
             painter.text(area.left_top(), Align2::LEFT_TOP, quiet, text, t.comment);
             return;
         }
-        for (nth, function) in tiers.functions.iter().take(m.tier_rows).enumerate() {
+        // As many as fit above the footer, however tall the island is.
+        let fits = (area.height() / m.tier_row_height).floor() as usize;
+        for (nth, function) in tiers.functions.iter().take(m.tier_rows.min(fits)).enumerate() {
             let top = area.top() + nth as f32 * m.tier_row_height;
             let row =
                 Rect::from_min_size(pos2(area.left(), top), vec2(area.width(), m.tier_row_height));
@@ -207,7 +209,8 @@ impl TiersPanel {
             painter.text(pos2(area.left(), first), Align2::LEFT_TOP, quiet, text, t.gutter_fg);
             return;
         }
-        for (nth, event) in tiers.events.iter().rev().take(m.tier_events).enumerate() {
+        let fits = ((area.bottom() - first) / m.tier_row_height).floor() as usize;
+        for (nth, event) in tiers.events.iter().rev().take(m.tier_events.min(fits)).enumerate() {
             let top = first + nth as f32 * m.tier_row_height;
             let row =
                 Rect::from_min_size(pos2(area.left(), top), vec2(area.width(), m.tier_row_height));
