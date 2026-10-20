@@ -1329,9 +1329,24 @@ fn target() -> Result<&'static isa::OwnedTargetIsa> {
     static TARGET: std::sync::OnceLock<std::result::Result<isa::OwnedTargetIsa, String>> =
         std::sync::OnceLock::new();
     TARGET
-        .get_or_init(|| Target::selected()?.isa("backtracking", false))
+        .get_or_init(|| Target::selected()?.isa(regalloc(), false))
         .as_ref()
         .map_err(|e| CodegenError::Backend(e.clone()))
+}
+
+/// The register allocator of a function that is not [`LARGE`]: `RA_JIT_REGALLOC` names one of
+/// Cranelift's, `backtracking` (the default) or `single_pass`. The second allocates in one
+/// walk over the code: it took a fifth off Cranelift's time on cold builds of ripgrep and of
+/// just, and none off their wall time, and its code was twice the size and up to 1.8 times
+/// slower (the demo's Life step). Code in the store is kept whichever made it, so compare the
+/// two with a store of their own each.
+fn regalloc() -> &'static str {
+    static REGALLOC: LazyLock<&'static str> =
+        LazyLock::new(|| match std::env::var("RA_JIT_REGALLOC").as_deref() {
+            Ok("single_pass") => "single_pass",
+            _ => "backtracking",
+        });
+    *REGALLOC
 }
 
 /// The same target for a function of more than [`LARGE`] instructions. The usual register
@@ -1353,7 +1368,7 @@ fn target_with_frame_pointer() -> Result<&'static isa::OwnedTargetIsa> {
     static TARGET: std::sync::OnceLock<std::result::Result<isa::OwnedTargetIsa, String>> =
         std::sync::OnceLock::new();
     TARGET
-        .get_or_init(|| Target::selected()?.isa("backtracking", true))
+        .get_or_init(|| Target::selected()?.isa(regalloc(), true))
         .as_ref()
         .map_err(|e| CodegenError::Backend(e.clone()))
 }
@@ -3357,12 +3372,11 @@ fn emit(ctx: &mut cranelift_codegen::Context) -> Result<Code> {
     }
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         match store::Store::global() {
-            Some(store) => ctx
-                .compile_with_cache(isa, &mut store::Lookup(store), &mut Default::default())
-                .map(drop),
+            Some(store) => ctx.compile_with_cache(isa, &mut store::Lookup(store), &mut Default::default()).map(drop),
             None => ctx.compile(isa, &mut Default::default()).map(drop),
         }
         .map_err(|e| format!("{:?}", e.inner))?;
+        backend::Tally::global().passes();
         let Some(compiled) = ctx.compiled_code() else {
             return Err("no compiled code".to_owned());
         };
