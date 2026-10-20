@@ -113,8 +113,8 @@ struct App {
 }
 
 impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Between frames, where nothing of ours is half done.
+    // Runs before each frame is drawn, between two frames: nothing of ours is half done.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if let Some(outcome) = self.live.as_mut().and_then(|it| it.poll()) {
             self.status = outcome.to_string();
             eprintln!("life: {}", self.status);
@@ -123,7 +123,11 @@ impl eframe::App for App {
             self.life.step();
             self.life.next_step = Instant::now() + Duration::from_millis(step_ms());
         }
-        egui::CentralPanel::default().show(ctx, |ui| {
+        ctx.request_repaint_after(Duration::from_millis(16));
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        egui::CentralPanel::default().show_inside(ui, |ui| {
             let side = (ui.available_width() / W as f32).min((ui.available_height() - 24.0) / H as f32);
             let (rect, _) = ui.allocate_exact_size(egui::vec2(side * W as f32, side * H as f32), egui::Sense::hover());
             let painter = ui.painter_at(rect);
@@ -142,7 +146,6 @@ impl eframe::App for App {
             }
             ui.label(format!("generation {}   {}", self.life.generation, self.status));
         });
-        ctx.request_repaint_after(Duration::from_millis(16));
     }
 }
 
