@@ -103,6 +103,8 @@ pub(super) struct Image {
     /// Where the first section starts in the file: the load commands end before it.
     room: usize,
     segments: Vec<Segment>,
+    /// How many sections the segments have.
+    sectioned: usize,
     /// Where `commands` has what refers into `__LINKEDIT`.
     at: Commands,
     symbols: FxHashMap<Box<[u8]>, Named>,
@@ -143,6 +145,9 @@ struct Commands {
 struct Table {
     /// Where `commands` has its header.
     header: usize,
+    /// Its number among the sections, from 0, and that of the first of its segment.
+    nth: usize,
+    first: usize,
     address: u64,
     bytes: Vec<u8>,
 }
@@ -468,6 +473,7 @@ impl Image {
                         file_size: u64_at(commands, command + 48)?,
                         writable: u32_at(commands, command + 60)? & macho::VM_PROT_WRITE != 0,
                     };
+                    let first = sections.len();
                     for nth in 0..u32_at(commands, command + 64)? as usize {
                         let header = command + SEGMENT + nth * SECTION;
                         let (address, len) =
@@ -485,7 +491,7 @@ impl Image {
                         if let Some(table) = table {
                             let content = bytes.get(offset..offset + len as usize);
                             let bytes = content.context("the file ends early")?.to_vec();
-                            *table = Table { header, address, bytes };
+                            *table = Table { header, nth: first + nth, first, address, bytes };
                         }
                         let indirect = u32_at(commands, header + 68)?;
                         let stub = u32_at(commands, header + 72)?;
@@ -635,6 +641,7 @@ impl Image {
             commands: commands.to_vec(),
             room,
             segments,
+            sectioned: sections.len(),
             at,
             symbols,
             imports,
@@ -869,6 +876,45 @@ fn frames_in_front(
     Ok(Some((vec![(image.offset_of(start)?, block), (at as u64, table)], [unwind, start])))
 }
 
+/// Lists `__unwind_info` first of its segment's sections once it is in the room the header
+/// leaves ([`frames_in_front`]): a segment lists its sections in the order of their
+/// addresses, which dyld checks (`dyld_info` says "start address overlaps previous
+/// section"). The symbols name their section by its number, so those in the sections it
+/// passes are numbered again, in the symbol table of `linkedit`, which starts at `offset`
+/// of the file.
+fn unwind_first(
+    image: &Image,
+    commands: &mut [u8],
+    linkedit: &mut [u8],
+    offset: u64,
+) -> anyhow::Result<()> {
+    let Table { header, nth, first, .. } = image.unwind;
+    let start = header - (nth - first) * SECTION;
+    commands[start..header + SECTION].rotate_right(SECTION);
+
+    let (lowest, moved) = (u8::try_from(first + 1)?, u8::try_from(nth + 1)?);
+    let mut command = HEADER;
+    for _ in 0..u32_at(commands, 16)? {
+        if u32_at(commands, command)? == macho::LC_SYMTAB {
+            let table = (u64::from(u32_at(commands, command + 8)?))
+                .checked_sub(offset)
+                .context("a symbol table in front of `__LINKEDIT`")?;
+            for nth in 0..u32_at(commands, command + 12)? as usize {
+                let entry = table as usize + nth * NLIST + 5;
+                let section = linkedit.get_mut(entry).context("symbols past the end")?;
+                *section = match *section {
+                    it if it == moved => lowest,
+                    it if (lowest..moved).contains(&it) => it + 1,
+                    it => it,
+                };
+            }
+            return Ok(());
+        }
+        command += u32_at(commands, command + 4)? as usize;
+    }
+    bail!("no symbol table")
+}
+
 /// The `-headerpad` to link the executable `bytes` with for a splice to have room in its
 /// header, when the linker left less: the load commands with two more segments
 /// ([`Layout::linked`]) and the unwind table that moves in behind them ([`frames_in_front`]),
@@ -896,7 +942,7 @@ pub(super) fn header_pad(bytes: &[u8]) -> anyhow::Result<Option<u64>> {
         }
         command += u32_at(commands, command + 4)? as usize;
     }
-    let needed = (commands.len() + 2 * SEGMENT).next_multiple_of(16) + unwind;
+    let needed = (commands.len() + 2 * (SEGMENT + SECTION)).next_multiple_of(16) + unwind;
     Ok((needed > room).then(|| ((needed + needed / 2) as u64).next_multiple_of(0x10000)))
 }
 
@@ -1360,7 +1406,7 @@ impl<'a> Patch<'a> {
         let text = (base, data_at);
         let data = (base + data_at, linkedit_at - data_at);
         let layout = Layout { text, data, rebases, renamed };
-        let (mut commands, linkedit) = layout.linked(image, offset + linkedit_at)?;
+        let (mut commands, mut linkedit) = layout.linked(image, offset + linkedit_at)?;
         ensure!(
             commands.len() <= image.room,
             "the header has no room for two more segments: link with -Wl,-headerpad,{:#x}",
@@ -1388,6 +1434,7 @@ impl<'a> Patch<'a> {
                         u32::try_from(image.offset_of(start)?)?,
                     );
                 }
+                unwind_first(image, &mut commands, &mut linkedit, offset + linkedit_at)?;
                 tables = written;
             }
         }
@@ -1687,33 +1734,46 @@ impl Layout {
         let address = self.data.0 + self.data.1;
         let mut commands = image.commands.clone();
 
-        // The segments, of no sections: dyld looks for the unwinder's tables only in
-        // `__TEXT`.
+        // The segments, of one section each, as long as it: `dyld_info` stops at a fixup in
+        // no section. The patch's frames are not one of them, for dyld looks for the
+        // unwinder's tables only in `__TEXT`.
         let mut added = Vec::new();
-        let segment = |name: &[u8], (address, len): (u64, u64), protection: u32| {
-            let mut command = vec![0; SEGMENT];
-            put32(&mut command, 0, macho::LC_SEGMENT_64);
-            put32(&mut command, 4, SEGMENT as u32);
-            command[8..8 + name.len()].copy_from_slice(name);
-            for (at, field) in
-                [address, len, address - old.address + old.offset, len].into_iter().enumerate()
-            {
-                put64(&mut command, 24 + at * 8, field);
-            }
-            put32(&mut command, 56, protection);
-            put32(&mut command, 60, protection);
-            command
-        };
+        let segment =
+            |name: &[u8], (address, len): (u64, u64), protection: u32, section: (&[u8], u32)| {
+                let mut command = vec![0; SEGMENT + SECTION];
+                put32(&mut command, 0, macho::LC_SEGMENT_64);
+                put32(&mut command, 4, (SEGMENT + SECTION) as u32);
+                command[8..8 + name.len()].copy_from_slice(name);
+                let offset = address - old.address + old.offset;
+                for (at, field) in [address, len, offset, len].into_iter().enumerate() {
+                    put64(&mut command, 24 + at * 8, field);
+                }
+                put32(&mut command, 56, protection);
+                put32(&mut command, 60, protection);
+                put32(&mut command, 64, 1);
+                let (sectname, flags) = section;
+                let header = &mut command[SEGMENT..];
+                header[..sectname.len()].copy_from_slice(sectname);
+                header[16..16 + name.len()].copy_from_slice(name);
+                put64(header, 32, address);
+                put64(header, 40, len);
+                put32(header, 48, u32::try_from(offset)?);
+                put32(header, 52, PAGE.trailing_zeros());
+                put32(header, 64, flags);
+                anyhow::Ok(command)
+            };
         added.extend(segment(
             b"__RA_JIT_TEXT",
             self.text,
             macho::VM_PROT_READ | macho::VM_PROT_EXECUTE,
-        ));
+            (b"__text", macho::S_ATTR_PURE_INSTRUCTIONS | macho::S_ATTR_SOME_INSTRUCTIONS),
+        )?);
         added.extend(segment(
             b"__RA_JIT_DATA",
             self.data,
             macho::VM_PROT_READ | macho::VM_PROT_WRITE,
-        ));
+            (b"__data", macho::S_REGULAR),
+        )?);
 
         // `__LINKEDIT`: the fixups are written again, and what is behind them moves by as
         // much as they grew.
@@ -1735,8 +1795,17 @@ impl Layout {
             at if at < rebases + len => at - old.offset + offset,
             at => at - old.offset + offset + stream.len() as u64 - len,
         };
+        // The new code is in the section of the first new segment, which comes in front of
+        // `__LINKEDIT`, of none.
+        let text = u8::try_from(image.sectioned + 1)
+            .ok()
+            .filter(|_| u32_at(&image.commands, image.at.linkedit + 64).ok() == Some(0));
         for (entry, address) in &self.renamed {
-            put64(&mut linkedit, (moved(*entry) - offset) as usize + 8, *address);
+            let entry = (moved(*entry) - offset) as usize;
+            put64(&mut linkedit, entry + 8, *address);
+            if let Some(text) = text {
+                linkedit[entry + 5] = text;
+            }
         }
         // The signature is looked for right behind the strings, which end the rest, at the
         // next multiple of sixteen: what filled up to the old one is not kept.
