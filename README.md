@@ -1,7 +1,7 @@
 # ra-jit
 
 > [!IMPORTANT]
-> **There are no plans for long-term support of ra-jit. We weren't aware of [rustd](https://github.com/DioxusLabs/rustd) when we built it, and you should probably use that instead.** It takes the same approach (rust-analyzer front end, Cranelift, per-function recompiles on edit) and is further along: it works on real crates as a drop-in `cargo rustd build/run/test`, while ra-jit only runs a small subset of Rust.
+> **There are no plans for long-term support of ra-jit. [rustd](https://github.com/DioxusLabs/rustd) was published at almost the same time (its first commit is 2026-10-18, ra-jit's is 2026-10-19), we weren't aware of it when we built this, and you should probably use that instead.** It takes the same approach (rust-analyzer front end, Cranelift, per-function recompiles on edit) and is further along: it works on real crates as a drop-in `cargo rustd build/run/test`, while ra-jit only runs a small subset of Rust.
 
 Hot-reload Rust in milliseconds, using rust-analyzer as the compiler front end.
 
