@@ -7,15 +7,15 @@ use std::process::{Command, ExitCode};
 
 pub fn main() -> ExitCode {
     let mut asked = std::env::args_os().skip(1);
-    let ra-jit = std::env::current_exe()
+    let exe = std::env::current_exe()
         .map(|this| this.with_file_name(format!("ra-jit{}", std::env::consts::EXE_SUFFIX)));
-    let why = match ra-jit {
-        Ok(ra-jit) => {
-            let mut command = Command::new(&ra-jit);
+    let why = match exe {
+        Ok(exe) => {
+            let mut command = Command::new(&exe);
             command.arg("rustc-wrapper").args(std::env::args_os().skip(1));
             match ended(&mut command) {
                 Ok(code) => return code,
-                Err(error) => format!("{} does not run ({error})", ra-jit.display()),
+                Err(error) => format!("{} does not run ({error})", exe.display()),
             }
         }
         Err(error) => format!("ra-jit-rustc does not know where it is installed ({error})"),
