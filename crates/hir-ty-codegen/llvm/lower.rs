@@ -130,9 +130,9 @@ impl<'ctx> Marks<'ctx> {
         let (builder, unit) = module.create_debug_info_builder(
             false,
             DWARFSourceLanguage::Rust,
-            "rustd",
+            "ra-jit",
             "",
-            "rustd",
+            "ra-jit",
             false,
             "",
             0,

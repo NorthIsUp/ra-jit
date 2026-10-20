@@ -1,6 +1,6 @@
 # Platforms
 
-This is the current state of each platform rustd has been run on, in one place. The
+This is the current state of each platform ra-jit has been run on, in one place. The
 numbers are from GitHub Actions run 39057174862 on commit 888e87df74, the last recorded run
 that covered all four native platforms under both backends, unless a line says otherwise.
 The report behind it is [reports/PLAT-ABI2.md](reports/PLAT-ABI2.md). The table of what is
@@ -33,7 +33,7 @@ On every platform the gate in CI is the corpus with layouts, programs, stress, b
 unwinds, splices, asmedits, includes, worktrees, keys, storekills, storecorrupts and
 storeshared, under Cranelift and under LLVM at `-O2` with fast instruction selection.
 
-| Platform | Corpus functions from rustd, both backends | Layouts that differ | LLVM compiled itself |
+| Platform | Corpus functions from ra-jit, both backends | Layouts that differ | LLVM compiled itself |
 |---|---|---|---|
 | Linux x86-64 | 822 of 822 | 0 of 893 | 11,787 of 11,787 |
 | Linux AArch64, native | 825 of 825 | 0 of 903 | 11,813 of 11,813 |
@@ -47,10 +47,10 @@ system.
 
 The platform the work was done on, and the only one where everything has been run: the
 whole gate, `debuginfo.py`, `buildmodel.py`, `storefull.py`, `remote.py` against MinIO, the
-fuzzer, rustc's own test suites, the crate sweep and `cargo rustd`. The gate was rerun for
+fuzzer, rustc's own test suites, the crate sweep and `cargo ra-jit`. The gate was rerun for
 these documents at f191c6e42a under both backends; see [results.md](results.md).
 
-Objects are ELF. A full link runs rustc's link line with rustd's object first and
+Objects are ELF. A full link runs rustc's link line with ra-jit's object first and
 `--allow-multiple-definition`, so the first definition wins. The splice appends segments to
 the executable and rewrites the debug sections so that a debugger sees the new code. About
 60 of the 71 steps of `splices.py` are spliced; the others link in full by design. An edit
@@ -74,13 +74,13 @@ AArch64 can also be a cross target from Linux x86-64, with the programs run unde
 `qemu-aarch64`. The counts are the same as native except `debuginfo.py`, which does not
 pass under qemu because the harness runs gdb and backtraces without the emulator.
 
-The fuzzer has not been run on AArch64, and nobody has recorded running `cargo rustd`
+The fuzzer has not been run on AArch64, and nobody has recorded running `cargo ra-jit`
 there.
 
 ## Windows x86-64 (MSVC)
 
 Runs on `windows-latest` in CI under both backends. Objects are COFF and link with MSVC
-`link.exe` using rustc's line, with `/FORCE:MULTIPLE` so that rustd's definitions win.
+`link.exe` using rustc's line, with `/FORCE:MULTIPLE` so that ra-jit's definitions win.
 
 What is specific to the port:
 
@@ -89,7 +89,7 @@ What is specific to the port:
   calling convention, so a call with a pad is a plain call followed by a look at a slot of
   the frame, and each object carries a personality function of its own (`unwind/seh.rs`).
   This costs a load and a branch after every such call. Exceptions that are not C++
-  exceptions (structured exceptions, foreign unwinds) pass through rustd's frames without
+  exceptions (structured exceptions, foreign unwinds) pass through ra-jit's frames without
   running cleanup; that is inferred from the code and not tested. A Rust panic is a C++
   exception on MSVC and is handled.
 - The splice (`splice/pe.rs`) adds sections behind the linker's last. `splices.py` is 71 of
@@ -105,7 +105,7 @@ What is specific to the port:
 
 Debug info is CodeView procedures and line tables: backtraces and breakpoints by line work,
 a debugger shows no types, parameters or locals. The PDB is stale after a splice until the
-next full link. `cargo rustd`
+next full link. `cargo ra-jit`
 hands every build to cargo, because its link step is written for ELF, and has not been run
 on Windows. `remote.py` and the fuzzer are not run. The GNU and ARM64 Windows targets have nothing implemented.
 
@@ -116,8 +116,8 @@ modes. Objects are Mach-O.
 
 What is specific to the port:
 
-- Linking. Apple's linker has no flag to keep the first of two definitions. `rustd weaken`
-  makes copies of rustc's objects and archives whose definitions are weak, and rustd's
+- Linking. Apple's linker has no flag to keep the first of two definitions. `ra-jit weaken`
+  makes copies of rustc's objects and archives whose definitions are weak, and ra-jit's
   object is linked ahead of them.
 - The splice (`splice/macho.rs`). The loader wants `__LINKEDIT` last with the signature at
   its end. The patch goes where `__LINKEDIT` was, in two new segments, `__LINKEDIT` is
@@ -132,26 +132,26 @@ What is specific to the port:
   arguments always go on the stack.
 
 Not there: debug info is not checked on macOS (the harness reads DWARF out of ELF).
-`cargo rustd` and plain cargo after `rustd enable` serve dev and test builds;
-`harness/cargo_rustd.py --small` (ripgrep, fd, hyperfine) passes under both backends, and
+`cargo ra-jit` and plain cargo after `ra-jit enable` serve dev and test builds;
+`harness/cargo_ra_jit.py --small` (ripgrep, fd, hyperfine) passes under both backends, and
 the larger projects of that harness have not been run ([cargo.md](cargo.md#macos-arm64)).
 `buildmodel.py`,
 `storefull.py`, `remote.py`, `farsplices.py` and the fuzzer are not run. The first port
 noted that under LLVM the unwind rules are not exact inside prologues and epilogues;
 nothing later says that changed.
 
-`x86_64-apple-darwin` is refused. With the triple forced through, rustd compiled the corpus
+`x86_64-apple-darwin` is refused. With the triple forced through, ra-jit compiled the corpus
 and the link failed on a relocation in the unwind table; the splice and the LLVM object
 reader are arm64 only as well.
 
 ## wasm32
 
-rustd runs natively and emits wasm32 with its own lowering from Cranelift IR, written as a
+ra-jit runs natively and emits wasm32 with its own lowering from Cranelift IR, written as a
 relocatable object that `rust-lld` links ahead of rustc's rlibs. The splice writes the
 module again with new function bodies under the same indices.
 
 This was measured once, on an earlier branch with `nightly-2026-05-10`, for `wasm32-wasip1`
-under wasmtime: corpus MATCH with 655 of 656 functions from rustd, stress 99 of 99, splices
+under wasmtime: corpus MATCH with 655 of 656 functions from ra-jit, stress 99 of 99, splices
 71 of 71 with 62 spliced ([reports/WASM32.md](reports/WASM32.md)). It is not in CI and has
 not been rerun on Rust 1.99.0, so treat it as unverified at the current commit.
 
@@ -161,7 +161,7 @@ refused, and `wasm32-unknown-unknown` was exercised only through one Dioxus page
 wasm-bindgen has to run again after every edit and takes 0.27 to 0.36 s on a hello world,
 more than the compile and the splice together. There is no LLVM backend for wasm.
 
-Running the compiler itself in a browser is a separate experiment in `crates/rustd-wasm`.
+Running the compiler itself in a browser is a separate experiment in `crates/ra-jit-wasm`.
 
 ## Still refused on every platform
 

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Summary of a crate sweep: sweepreport.py <dir of cratetest --json files> [--md].
 
-One line per crate (match, tests, share of functions rustd compiled), then the reasons functions
+One line per crate (match, tests, share of functions ra-jit compiled), then the reasons functions
 were left to rustc, most common first, over all crates. `--md` prints the crates as a markdown
-table, with the time rustd spent compiling each.
+table, with the time ra-jit spent compiling each.
 """
 import collections, glob, json, os, sys
 
@@ -11,7 +11,7 @@ reasons, where = collections.Counter(), collections.defaultdict(set)
 compiled = roots = tests = 0
 markdown = "--md" in sys.argv
 if markdown:
-    print("| crate | result | test binaries | tests | functions from rustd | codegen ms | left to rustc, or differing |")
+    print("| crate | result | test binaries | tests | functions from ra-jit | codegen ms | left to rustc, or differing |")
     print("|---|---|---|---|---|---|---|")
 for path in sorted(glob.glob(os.path.join(sys.argv[1], "*.json"))):
     crate = json.load(open(path))
@@ -44,6 +44,6 @@ for path in sorted(glob.glob(os.path.join(sys.argv[1], "*.json"))):
         print(f"{mark} {crate['fixture']:24} {crate['tests_run']:5} tests  "
               f"{done:5}/{total:<5} functions  {' '.join(differing[:6])} {' '.join(errors[:2])}")
     compiled, roots, tests = compiled + done, roots + total, tests + crate["tests_run"]
-print(f"\n{tests} tests, {compiled}/{roots} functions from rustd\n")
+print(f"\n{tests} tests, {compiled}/{roots} functions from ra-jit\n")
 for reason, n in reasons.most_common(40):
     print(f"{n:6}  {reason}  ({', '.join(sorted(where[reason])[:4])})")

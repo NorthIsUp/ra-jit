@@ -1,4 +1,4 @@
-//! Differential-test corpus. Every `pub fn` here is compiled by rustd and called from the
+//! Differential-test corpus. Every `pub fn` here is compiled by ra-jit and called from the
 //! rustc-built `runner`; the output must match an all-rustc build.
 //!
 //! One module per backend feature area, so a bisected culprit names the area.

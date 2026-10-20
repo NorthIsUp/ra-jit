@@ -8,12 +8,12 @@ How to read the commit column. The work was done on separate branches that were 
 into one, so the commits differ from section to section. Where a report names the commit
 it measured, that commit is given. Where it only says "the head of this branch", the commit
 given is the one that last changed the report, marked "report at". Commits are of the
-development branch (`rustd-collate` and the branches merged into it), not of the published
+development branch (`ra-jit-collate` and the branches merged into it), not of the published
 tree; `vendor/source.rev` says which development commit a published tree was made from.
 
 Reports are named by file. Those under [reports/](reports/) are published with this
 tree. BREAKERS.md and the other `harness/*.md` files are in `harness/`. WINDOWS.md,
-MACOS.md, MACOS-ABI2.md, AARCH64.md and RUSTD.md are earlier reports that
+MACOS.md, MACOS-ABI2.md, AARCH64.md and RA_JIT.md are earlier reports that
 [platforms.md](platforms.md) and these documents replace; they are on the development
 branch only.
 
@@ -26,17 +26,17 @@ commit. Do not append a second row for the same measurement.
 ## 1. Checked for these documents
 
 Run on Linux x86-64 (8 CPUs, 31 GB) with Rust 1.99.0 at f191c6e42a, the commit these
-documents were written against. rustd was built with `cargo build -p rustd --release`, and
+documents were written against. ra-jit was built with `cargo build -p ra-jit --release`, and
 for the LLVM column with `--features llvm` against LLVM 20.1.8.
 Source trees and scratch directories were on tmpfs.
 
-The gate, from `harness/` with `RUSTD_BIN` set and `TMPDIR` on tmpfs:
+The gate, from `harness/` with `RA_JIT_BIN` set and `TMPDIR` on tmpfs:
 
 <!-- LOCAL-GATE: replace this table when the gate is rerun. -->
 
-| Harness | Cranelift | LLVM (`RUSTD_OPT=2 RUSTD_EMIT=fast`) |
+| Harness | Cranelift | LLVM (`RA_JIT_OPT=2 RA_JIT_EMIT=fast`) |
 |---|---|---|
-| `difftest.py corpus --bin runner --crate cases --layouts` | MATCH, 822 of 822 functions from rustd, 0 of 893 layouts differ | MATCH, 822 of 822, 0 of 893 layouts differ |
+| `difftest.py corpus --bin runner --crate cases --layouts` | MATCH, 822 of 822 functions from ra-jit, 0 of 893 layouts differ | MATCH, 822 of 822, 0 of 893 layouts differ |
 | `programs.py` | 22 of 22 | 22 of 22 |
 | `stress.py` | 99 of 99, 0 restarts | 99 of 99, 0 restarts |
 | `breakers.py` | 58 of 58, 7 open, 0 functions skipped | 58 of 58, 7 open, 0 functions skipped |
@@ -52,30 +52,30 @@ The gate, from `harness/` with `RUSTD_BIN` set and `TMPDIR` on tmpfs:
 
 The seven "open" breakers are the five known differences and the two known refusals
 listed in [support.md](support.md). Not run here: `buildmodel.py`, `farsplices.py`, the
-four store harnesses, `remote.py` and `cargo_rustd.py`.
+four store harnesses, `remote.py` and `cargo_ra_jit.py`.
 
-By hand, with `cargo rustd` from that build:
+By hand, with `cargo ra-jit` from that build:
 
 | What | Result |
 |---|---|
-| New `cargo new` project: `cargo rustd build`, `run`, edit, `run` | first build cargo's; edit served by the daemon; `Finished` in 0.01 s |
-| ripgrep 15.1.0: `cargo rustd build` | cargo's, 5.6 s; daemon ready within 10 s |
-| ripgrep: one-line edit to `crates/core/main.rs`, `cargo rustd build` | by the daemon, 0.26 s wall; the binary prints the edit |
-| ripgrep: `cargo rustd test` | by the daemon; 114 and 329 tests pass, the same as cargo's |
+| New `cargo new` project: `cargo ra-jit build`, `run`, edit, `run` | first build cargo's; edit served by the daemon; `Finished` in 0.01 s |
+| ripgrep 15.1.0: `cargo ra-jit build` | cargo's, 5.6 s; daemon ready within 10 s |
+| ripgrep: one-line edit to `crates/core/main.rs`, `cargo ra-jit build` | by the daemon, 0.26 s wall; the binary prints the edit |
+| ripgrep: `cargo ra-jit test` | by the daemon; 114 and 329 tests pass, the same as cargo's |
 | ripgrep: second git worktree | first build cargo's, 16 s; joined the same worker; edit by the daemon, 0.44 s wall |
-| `RUSTD_CACHE` set when the daemon starts | store filled: 1 pack, 26,377 records, 57,153,509 bytes; `rustd cache verify` exit 0 |
-| `rustd cache push` and `pull` to a directory remote | 1 pack, 7,744,971 bytes compressed, sent and fetched |
-| Published layout: recursive clone, `cargo build -p rustd --release --locked` | builds |
+| `RA_JIT_CACHE` set when the daemon starts | store filled: 1 pack, 26,377 records, 57,153,509 bytes; `ra-jit cache verify` exit 0 |
+| `ra-jit cache push` and `pull` to a directory remote | 1 pack, 7,744,971 bytes compressed, sent and fetched |
+| Published layout: recursive clone, `cargo build -p ra-jit --release --locked` | builds |
 
 ## 2. Corpus and layouts, per platform
 
 `difftest.py corpus --bin runner --crate cases --layouts`. "Functions" is how many
-functions of the corpus rustc emitted a symbol for and rustd compiled; the rest would be
-left to rustc. "Layouts" is how many types rustd laid out differently from rustc's
+functions of the corpus rustc emitted a symbol for and ra-jit compiled; the rest would be
+left to rustc. "Layouts" is how many types ra-jit laid out differently from rustc's
 `-Zprint-type-sizes`. The LLVM columns are from
 `backends.py corpus runner cases --bin runner --levels 2f` and count instances.
 
-| Platform | Functions from rustd, both backends | Layouts that differ | LLVM compiled | Left to Cranelift | Commit | Source |
+| Platform | Functions from ra-jit, both backends | Layouts that differ | LLVM compiled | Left to Cranelift | Commit | Source |
 |---|---|---|---|---|---|---|
 | Linux x86-64 | 822 of 822 | 0 of 893 | 11,787 of 11,787 | 0 | 888e87df74, CI run 39057174862 | PLAT-ABI2.md |
 | Linux AArch64, native | 825 of 825 | 0 of 903 | 11,813 of 11,813 | 0 | same | PLAT-ABI2.md |
@@ -119,10 +119,10 @@ run (the same CI run).
 ## 4. rustc's own test suites
 
 Linux x86-64, Rust 1.99.0, the rust-lang/rust checkout at the `1.99.0` tag. Single runs.
-Report at b46bc7b8ec, branch `rustd-rustc-suites` off 6d12f21c86. Source: RUSTCSUITES.md.
+Report at b46bc7b8ec, branch `ra-jit-rustc-suites` off 6d12f21c86. Source: RUSTCSUITES.md.
 Harnesses: `uitest.py` and `libsuite.py`.
 
-| Suite | Backend | Tests run | Matching | Differing | Left out | Functions from rustd | Left to rustc |
+| Suite | Backend | Tests run | Matching | Differing | Left out | Functions from ra-jit | Left to rustc |
 |---|---|---|---|---|---|---|---|
 | `tests/ui` run-pass | Cranelift | 2690 | 2686 | 4 | 1114 | 5558 of 5615 | 57 |
 | `tests/ui` run-pass | LLVM | 2689 | 2685 | 4 | 1115 | 5554 of 5611 | 57 |
@@ -142,14 +142,14 @@ std's. The unit tests inside `core`, `alloc` and `std` are not run at all. Only 
 x86-64 was run.
 
 The four differing tests are three causes, all listed as open in
-[support.md](support.md): the size of a future (two tests), a value rustc leaks and rustd
+[support.md](support.md): the size of a future (two tests), a value rustc leaks and ra-jit
 drops, and a macro fragment read by a different edition.
 
 ## 5. The crate sweep (partial)
 
 This is a sweep of 93 crates chosen by hand, not of crates.io. Seven of the 93 gave no
 result (tests that do not build from the published crate, a missing system library, a
-timeout). Each crate's own integration tests are built by cargo and again with rustd's
+timeout). Each crate's own integration tests are built by cargo and again with ra-jit's
 objects linked in front, and every test must report the same.
 
 Harness: `cratesweep.sh` and `sweepreport.py`. Source: harness/BREAKERS.md, "On stable
@@ -160,7 +160,7 @@ Harness: `cratesweep.sh` and `sweepreport.py`. Source: harness/BREAKERS.md, "On 
 | Crates with a result | 86 of 93 |
 | Crates whose tests behave as rustc's | 86 of 86 |
 | Tests run and compared | 10,745 |
-| Functions compiled by rustd, as the sweep ran | 41,958 of 41,987 (29 left to rustc) |
+| Functions compiled by ra-jit, as the sweep ran | 41,958 of 41,987 (29 left to rustc) |
 | After the fixes, rerun on the four crates they touch | 15 left, all in generic-array |
 | tokio with `--features full` (`cratetest.py`) | 155 test binaries, 1018 tests, all matching, 296,088 of 296,088 functions |
 
@@ -170,11 +170,11 @@ The sweep has not been run under LLVM, or on any platform but Linux x86-64.
 
 ### Command lines compared (`bintest.py`)
 
-Each program is built by cargo and with rustd's code for its workspace crates, and a list
+Each program is built by cargo and with ra-jit's code for its workspace crates, and a list
 of command lines is run with both. Source: harness/BREAKERS.md. Linux x86-64, Cranelift,
 `nightly-2026-05-10`, at 1c293327c1. Not rerun on 1.99.0.
 
-| Program | Command lines the same | Functions from rustd |
+| Program | Command lines the same | Functions from ra-jit |
 |---|---|---|
 | fd | 10 of 10 | 148 of 148 |
 | just | 12 of 12 | 822 of 822 |
@@ -184,11 +184,11 @@ of command lines is run with both. Source: harness/BREAKERS.md. Linux x86-64, Cr
 | bat | 10 of 10 | 321 of 321 |
 | tokei | 8 of 8 | 141 of 141 |
 
-### `cargo rustd` against cargo (`cargo_rustd.py`)
+### `cargo ra-jit` against cargo (`cargo_ra_jit.py`)
 
 Linux x86-64, 8 CPUs, 31 GB, Rust 1.99.0, Cranelift. Report at 13054e50d6 (the head of
-the cargo branch with `rustd-collate` b43304222b merged). Source: harness/CARGO-RUSTD.md.
-Seconds, `cargo rustd` / plain cargo, one run each. `(c)` marks a step cargo built in the
+the cargo branch with `ra-jit-collate` b43304222b merged). Source: harness/CARGO-RA_JIT.md.
+Seconds, `cargo ra-jit` / plain cargo, one run each. `(c)` marks a step cargo built in the
 daemon's place. "Differences" counts steps whose output, exit status or test results were
 not cargo's.
 
@@ -240,7 +240,7 @@ Twenty-one distinct problems were found, most of them miscompiles. Eighteen are 
 (believed to be LLVM bugs) are worked around, and one is open. The table stops at L10; the
 later runs, which found findings 17 to 21, are in FUZZ.md.
 
-| Run | rustd at | Programs | Functions generated | Compiled by rustd, each backend | Differences | Left to rustc |
+| Run | ra-jit at | Programs | Functions generated | Compiled by ra-jit, each backend | Differences | Left to rustc |
 |---|---|---:|---:|---:|---|---|
 | L1 | early fixes | 136 | 39,720 | 41,089 Cranelift, 38,984 LLVM | Cranelift 4, LLVM 7 | Cranelift 12 |
 | L3 | fixes 1 to 8 | 360 | 105,869 | 102,426 | 5 per backend | 0 |
@@ -252,7 +252,7 @@ later runs, which found findings 17 to 21, are in FUZZ.md.
 | L9 | 27a94f2770 | 360 | 106,116 | 101,848 | 0 | 0 |
 | L10 | 27920a4f69 (after the merge) | 60 | 17,297 | 16,734 | 0 | 0 |
 
-L2 is left out because L3 repeats its seed. No run crashed rustd. Up to L8, about one
+L2 is left out because L3 repeats its seed. No run crashed ra-jit. Up to L8, about one
 program in a few hundred still found something; L9 is the first full-size run that found
 nothing. The fuzzer builds whole programs only and has not been run on another platform.
 
@@ -284,25 +284,25 @@ Linux x86-64, 8 cores, Cranelift, MinIO over loopback behind a counting proxy. E
 host. One run each. Real AWS was not run. Source: REMOTE.md, report at 90017bf2d5.
 Harness: `remote.py --measure`.
 
-ripgrep 14.1.1, 9 crates by rustd, 22,340 functions compiled cold:
+ripgrep 14.1.1, 9 crates by ra-jit, 22,340 functions compiled cold:
 
-| Fresh machine | To a running program | cargo | rustd | Functions compiled | Requests | Bytes down |
+| Fresh machine | To a running program | cargo | ra-jit | Functions compiled | Requests | Bytes down |
 |---|---:|---:|---:|---:|---:|---:|
 | no remote | 16.8 s | 4.6 s | 12.2 s | 22,340 | 0 | 0 |
-| rustd's packs | 14.3 s | 4.8 s | 9.5 s | 0 | 3 | 7,355,315 |
+| ra-jit's packs | 14.3 s | 4.8 s | 9.5 s | 0 | 3 | 7,355,315 |
 | packs and cargo's units | 9.6 s | 2.0 s | 7.3 s | 0 | 45 | 59,161,263 |
 | the same, lazy | 10.0 s | 2.1 s | 7.6 s | 0 | 46 | 59,946,863 |
 
-cargo 0.92.0, 7 crates by rustd, 226,180 functions compiled cold:
+cargo 0.92.0, 7 crates by ra-jit, 226,180 functions compiled cold:
 
-| Fresh machine | To a running program | cargo | rustd | Functions compiled | Requests | Bytes down |
+| Fresh machine | To a running program | cargo | ra-jit | Functions compiled | Requests | Bytes down |
 |---|---:|---:|---:|---:|---:|---:|
 | no remote | 152.4 s | 42.0 s | 110.3 s | 226,180 | 0 | 0 |
-| rustd's packs | 117.1 s | 43.4 s | 73.6 s | 0 | 18 | 95,048,041 |
+| ra-jit's packs | 117.1 s | 43.4 s | 73.6 s | 0 | 18 | 95,048,041 |
 | packs and cargo's units | 94.4 s | 25.2 s | 67.4 s | 0 | 406 | 525,028,848 |
 | the same, lazy | 100.2 s | 25.5 s | 73.1 s | 0 | 422 | 532,207,920 |
 
-With every function served from the remote, rustd still takes 7.3 s on ripgrep and 67 s on
+With every function served from the remote, ra-jit still takes 7.3 s on ripgrep and 67 s on
 cargo. That is loading the workspace and walking every instance to find its key.
 
 The robustness part of `remote.py` (broken transfers, spoiled objects, forged manifests,
@@ -310,7 +310,7 @@ collection) passes on MinIO and on SeaweedFS; collection is 12 of 12 on both.
 
 ## 10. Edit and warm-up timings
 
-The warm-up and edit times of `cargo rustd` are in section 6. The numbers below are of the
+The warm-up and edit times of `cargo ra-jit` are in section 6. The numbers below are of the
 daemon driven directly, which leaves out the client.
 
 ### Full link against splice
@@ -321,7 +321,7 @@ daemon driven directly, which leaves out the client.
 | Windows x86-64 | regex-automata | 548 ms | 18 ms | same | WINDOWS.md |
 | macOS arm64 | small program | 50 ms | 23 ms | whole request, median of 100 | MACOS.md |
 | macOS arm64 | ripgrep 14.1.1 | 104.8 ms | 58.5 ms | daemon's edit to binary, median of 50 | MACOS.md |
-| Linux x86-64, AArch64 target | stress app | 131.3 ms | 6.1 ms | `rustd sync`, median of 10 | AARCH64.md |
+| Linux x86-64, AArch64 target | stress app | 131.3 ms | 6.1 ms | `ra-jit sync`, median of 10 | AARCH64.md |
 | Linux x86-64, AArch64 target | ripgrep 14.1.1 | 2018.5 ms | 18.9 ms | same; the full link is GNU ld | AARCH64.md |
 | Linux x86-64, wasm32-wasip1 | small std program | 57 ms | 11 ms | edit to a program that can be run | WASM32.md |
 | Linux x86-64, wasm32-unknown-unknown | Dioxus hello | 193 ms | 35 ms | same, before 0.27 to 0.36 s of wasm-bindgen | WASM32.md |
@@ -364,5 +364,5 @@ Where reports disagree, this file follows the later one.
 | `sym` in `naked_asm!` on Mach-O and COFF | "not read back" (AARCH64.md, WINDOWS.md) | compiled on all four platforms (PLAT-ABI2.md) |
 | Aggregates aligned to 16 bytes on the x86-64 stack | open bug (MACOS-ABI2.md) | fixed (PLAT-ABI2.md) |
 | Toolchain | `nightly-2026-05-10` (BREAKERS.md first passes, WINDOWS.md, MACOS.md, AARCH64.md first rounds, WASM.md, WASM32.md) | stable 1.99.0 everywhere else |
-| Goals | "Hot patching" and optimised code are "not goals"; "What to build next" lists the panic fixtures, the layout check, random programs and CI (RUSTD.md) | all four exist; the splice exists; RUSTD.md is the original plan and is out of date |
-| `cargo rustd -q` | listed among the flags handed to cargo (CARGO.md) | not in the list in `cargo/cli.rs`. Checked by hand: the first `-q` build is cargo's because `-q` makes it a different command line, and later ones are the daemon's |
+| Goals | "Hot patching" and optimised code are "not goals"; "What to build next" lists the panic fixtures, the layout check, random programs and CI (RA_JIT.md) | all four exist; the splice exists; RA_JIT.md is the original plan and is out of date |
+| `cargo ra-jit -q` | listed among the flags handed to cargo (CARGO.md) | not in the list in `cargo/cli.rs`. Checked by hand: the first `-q` build is cargo's because `-q` makes it a different command line, and later ones are the daemon's |

@@ -5,11 +5,11 @@ A daemon fills a store and ends. Then, many times over, one file of the store is
 bit flipped, the file cut short, bytes added to it, part of it zeroed or the whole file
 replaced) while no daemon runs or under a daemon that has already read it. Each time:
 
-  - `rustd cache verify` has to say so when a sealed pack was damaged;
+  - `ra-jit cache verify` has to say so when a sealed pack was damaged;
   - a daemon on the store has to build a program that prints what cargo's does, for a state
     of the workspace whose code was in the damaged store;
   - the daemon has to say it removed the pack;
-  - `rustd cache verify` has to find nothing wrong afterwards.
+  - `ra-jit cache verify` has to find nothing wrong afterwards.
 
 Then the same for a store that says it is of an older format, of none, and of a newer one.
 
@@ -28,7 +28,7 @@ def option(name, default):
 
 ROUNDS, SEED = option("--rounds", 40), option("--seed", int(time.time()))
 RNG = random.Random(SEED)
-SEALS = {"RUSTD_CACHE_SEAL_AT": "1", "RUSTD_CACHE_MAX": "off"}
+SEALS = {"RA_JIT_CACHE_SEAL_AT": "1", "RA_JIT_CACHE_MAX": "off"}
 # The states of the workspace the store is filled with.
 STATES = [0, 1, 2, 3]
 
@@ -154,7 +154,7 @@ def while_running(checkout, store, round):
 def open_pack(checkout, store, round):
     """Damages the pack a killed daemon left open."""
     checkout.set(RNG.randrange(100, 10**6))
-    daemon = Daemon(checkout, store, env={"RUSTD_CACHE_MAX": "off"})
+    daemon = Daemon(checkout, store, env={"RA_JIT_CACHE_MAX": "off"})
     checkout.check(daemon, f"round {round}: before the damage")
     daemon.kill()
     left = files(store, ".open")
@@ -173,13 +173,13 @@ def open_pack(checkout, store, round):
 
 
 def formats(checkout, store):
-    """A store that says it is of another format than this rustd writes."""
+    """A store that says it is of another format than this ra-jit writes."""
     version = os.path.join(store, "version")
     fill(checkout, store)
     current = open(version).read()
 
-    for text, name in [("rustd store 1\n", "an older format"), ("", "an empty version"),
-                       ("rustd store two\n", "a version that is no number"), (None, "no version at all")]:
+    for text, name in [("ra-jit store 1\n", "an older format"), ("", "an empty version"),
+                       ("ra-jit store two\n", "a version that is no number"), (None, "no version at all")]:
         fill(checkout, store)
         os.remove(version) if text is None else open(version, "w").write(text)
         before = set(files(store, ".pack"))
@@ -198,7 +198,7 @@ def formats(checkout, store):
         clean(store, name)
 
     packs = fill(checkout, store)
-    open(version, "w").write("rustd store 999\n")
+    open(version, "w").write("ra-jit store 999\n")
     before = sorted(os.listdir(store))
     daemon = Daemon(checkout, store, env=SEALS)
     checkout.set(RNG.randrange(100, 10**6))
@@ -219,7 +219,7 @@ def formats(checkout, store):
 
 def main():
     start = time.time()
-    work = scratch("rustd-storecorrupts-")
+    work = scratch("ra-jit-storecorrupts-")
     store = os.path.join(work, "store")
     checkout = Checkout(work)
     counts = {"with no daemon": 0, "under a daemon": 0, "an open pack": 0}

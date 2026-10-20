@@ -10,7 +10,7 @@
     "speed"
   ],
   "verb": "bench",
-  "rustd": [
+  "ra-jit": [
     "--dev-deps",
     "--profile",
     "bench"

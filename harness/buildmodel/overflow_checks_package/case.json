@@ -6,6 +6,6 @@
     "dep"
   ],
   "cargo": [],
-  "rustd": [],
+  "ra-jit": [],
   "expect": "supported"
 }

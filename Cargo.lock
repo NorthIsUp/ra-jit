@@ -3048,7 +3048,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rustd"
+name = "ra-jit"
 version = "0.0.0"
 dependencies = [
  "anyhow",

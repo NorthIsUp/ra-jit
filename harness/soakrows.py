@@ -5,18 +5,18 @@
 
 Each row copies the `soak/` workspace (a build script, three kinds of proc macro, a program
 and its tests), has a daemon of its own load it, does the thing the row is named for, and
-then compares `cargo rustd run` (or `test`) with a cold `cargo run` of the same tree. A row
+then compares `cargo ra-jit run` (or `test`) with a cold `cargo run` of the same tree. A row
 is right when the two agree at every comparison and neither the daemon nor a worker logged
-a panic; who built each one, the daemon or cargo with the reason rustd gave, is in the
+a panic; who built each one, the daemon or cargo with the reason ra-jit gave, is in the
 table. A build cargo did in place of the daemon is right: that is the contract.
 
 Writes SOAKROWS.md next to this file.
 """
 import argparse, glob, os, re, shutil, signal, subprocess, sys, tempfile, time
 
-from cargo_rustd import HERE, RUSTD, Side, base_env, difference, how_built, program_output, test_results, wait_warm
+from cargo_ra_jit import HERE, RA_JIT, Side, base_env, difference, how_built, program_output, test_results, wait_warm
 
-GIT = ["git", "-c", "user.name=rustd", "-c", "user.email=rustd@localhost", "-c", "advice.detachedHead=false"]
+GIT = ["git", "-c", "user.name=ra-jit", "-c", "user.email=ra-jit@localhost", "-c", "advice.detachedHead=false"]
 OTHER_TOOLCHAIN = "1.94.0"
 MARK = re.compile(r"pub fn mark\(\) -> u64 \{ \d+ \}")
 
@@ -33,7 +33,7 @@ class Row:
         self.ws = os.path.realpath(at or os.path.join(self.dir, "ws"))
         self.home = os.path.join(self.dir, "home")
         os.makedirs(self.dir, exist_ok=True)
-        self.env = dict(base_env(self.home), RUSTD_CACHE=os.path.join(self.dir, "store"), **(env or {}))
+        self.env = dict(base_env(self.home), RA_JIT_CACHE=os.path.join(self.dir, "store"), **(env or {}))
         self.built, self.notes, self.mark = [], [], 1000
         self.copy(self.ws)
 
@@ -74,7 +74,7 @@ class Row:
         return states
 
     def both(self, label, command="run", ws=None, env=None, args=(), want=None):
-        """Compares `cargo rustd COMMAND` with a cold `cargo COMMAND` of the tree."""
+        """Compares `cargo ra-jit COMMAND` with a cold `cargo COMMAND` of the tree."""
         ws, env = ws or self.ws, dict(self.env, **(env or {}))
         _, ours = Side(ws, env, True).cargo(command, *args, timeout=1800)
         reference = self.path("target-ref", ws=os.path.realpath(ws))
@@ -380,7 +380,7 @@ def non_utf8_root(row):
     shutil.copytree(row.ws.encode(), ws, ignore=lambda _, names: [it for it in names if it.startswith(b"target")])
     run = lambda argv, env: subprocess.run(argv, cwd=ws, env=env, capture_output=True, text=True, errors="replace", timeout=1800)
     for label in ("cold", "edited"):
-        ours = run(["cargo", "rustd", "run"], row.env)
+        ours = run(["cargo", "ra-jit", "run"], row.env)
         theirs = run(["cargo", "run"], dict(row.env, CARGO_TARGET_DIR=os.path.join(ws, b"target-ref")))
         how = how_built(ours.stderr)
         row.built.append(f"{label}: {how}" + ("" if theirs.returncode == 0 else f" (cargo itself exits {theirs.returncode})"))
@@ -392,7 +392,7 @@ def non_utf8_root(row):
 
 
 def other_filesystem(row):
-    here, there = os.stat(row.ws).st_dev, os.stat(row.env["RUSTD_CACHE"] if os.path.isdir(row.env["RUSTD_CACHE"]) else row.dir).st_dev
+    here, there = os.stat(row.ws).st_dev, os.stat(row.env["RA_JIT_CACHE"] if os.path.isdir(row.env["RA_JIT_CACHE"]) else row.dir).st_dev
     if here == there:
         raise Wrong("the workspace and the store are on one filesystem here; name another with --other-fs")
     row.warm()
@@ -401,7 +401,7 @@ def other_filesystem(row):
         row.both(f"edited, {round}", want=f"mark {row.mark}")
     row.both("tests", command="test")
     # A pack is open for as long as the worker that writes it lives.
-    packs = [it for kind in ("*.pack", "*.open") for it in glob.glob(os.path.join(row.env["RUSTD_CACHE"], kind))]
+    packs = [it for kind in ("*.pack", "*.open") for it in glob.glob(os.path.join(row.env["RA_JIT_CACHE"], kind))]
     stored = sum(os.path.getsize(it) for it in packs)
     row.notes.append(f"{stored} bytes in {len(packs)} packs in the store on the other filesystem")
     if not stored:
@@ -430,7 +430,7 @@ def toolchain_switched(row):
     ours(row.env["RUSTUP_TOOLCHAIN"])
     row.env.pop("RUSTUP_TOOLCHAIN")
     row.warm()
-    row.both("the toolchain rustd is built for", want=f"rustc {TOOLCHAIN}")
+    row.both("the toolchain ra-jit is built for", want=f"rustc {TOOLCHAIN}")
     ours(OTHER_TOOLCHAIN)
     how, _ = row.both(f"the file now says {OTHER_TOOLCHAIN}", want=f"rustc {OTHER_TOOLCHAIN}")
     if how == "daemon":
@@ -461,8 +461,8 @@ def toolchains_in_turn(row):
 
 
 def another_build(source, bin):
-    """A rustd that is another build: the same program with bytes after its end."""
-    for name in ("rustd", "cargo-rustd"):
+    """A ra-jit that is another build: the same program with bytes after its end."""
+    for name in ("ra-jit", "cargo-ra-jit"):
         other = os.path.join(bin, name + ".new")
         shutil.copy(os.path.join(source, name), other)
         with open(other, "ab") as file:
@@ -471,10 +471,10 @@ def another_build(source, bin):
 
 
 def binary_replaced(row):
-    source, bin, old = os.path.dirname(RUSTD), os.path.join(row.dir, "bin"), os.path.join(row.dir, "bin-old")
+    source, bin, old = os.path.dirname(RA_JIT), os.path.join(row.dir, "bin"), os.path.join(row.dir, "bin-old")
     for dir in (bin, old):
         os.makedirs(dir)
-        for name in ("rustd", "cargo-rustd"):
+        for name in ("ra-jit", "cargo-ra-jit"):
             shutil.copy2(os.path.join(source, name), os.path.join(dir, name))
     path = row.env["PATH"]
     row.env["PATH"] = bin + os.pathsep + path
@@ -509,7 +509,7 @@ def binary_replaced(row):
     twin = os.path.join(row.dir, "bin-twin")
     shutil.copytree(bin, twin, copy_function=shutil.copy2)
     daemon = row.status()[0]
-    os.remove(os.path.join(bin, "rustd"))
+    os.remove(os.path.join(bin, "ra-jit"))
     second_ws = os.path.join(row.dir, "ws2")
     row.copy(second_ws)
     apart = {"PATH": twin + os.pathsep + path}
@@ -560,7 +560,7 @@ def memory_ceiling(row):
     time.sleep(3)
     row.notes.append("after the first was asked again:\n" + row.status()[2])
     log = open(os.path.join(row.home, "daemon.log"), errors="replace").read()
-    row.notes.append("\n".join(l for l in log.splitlines() if "RUSTD_MEMORY_MAX" in l))
+    row.notes.append("\n".join(l for l in log.splitlines() if "RA_JIT_MEMORY_MAX" in l))
 
 
 def no_ceiling(row):
@@ -740,8 +740,8 @@ ROWS = {
     "toolchain file switched": (toolchain_switched, {}),
     "two toolchains in turn": (toolchains_in_turn, {}),
     "daemon binary replaced": (binary_replaced, {}),
-    "memory ceiling": (memory_ceiling, {"RUSTD_MEMORY_MAX": "1M"}),
-    "no memory ceiling": (no_ceiling, {"RUSTD_MEMORY_MAX": "off"}),
+    "memory ceiling": (memory_ceiling, {"RA_JIT_MEMORY_MAX": "1M"}),
+    "no memory ceiling": (no_ceiling, {"RA_JIT_MEMORY_MAX": "off"}),
     "tests of a proc macro": (proc_macro_tests, {}),
     "a function that is another under test": (another_under_test, {}),
     "functions rustc keeps to an object": (kept_to_an_object, {"CARGO_INCREMENTAL": "0"}),
@@ -755,12 +755,12 @@ def main():
     parser.add_argument("--other-fs", default="/dev/shm")
     parser.add_argument("--keep", action="store_true")
     args = parser.parse_args()
-    if not shutil.which("cargo-rustd", path=os.path.dirname(RUSTD)):
-        sys.exit("no cargo-rustd beside the rustd of RUSTD_BIN")
+    if not shutil.which("cargo-ra-jit", path=os.path.dirname(RA_JIT)):
+        sys.exit("no cargo-ra-jit beside the ra-jit of RA_JIT_BIN")
     unknown = [wanted for wanted in args.rows if not any(wanted in name for name in ROWS)]
     if unknown:
         sys.exit(f"no row is named like {unknown}; the rows are: {', '.join(ROWS)}")
-    work = args.work or tempfile.mkdtemp(prefix="rustd-soakrows-")
+    work = args.work or tempfile.mkdtemp(prefix="ra-jit-soakrows-")
     table, failed = [], 0
     for name, (run, env) in ROWS.items():
         if args.rows and not any(wanted in name for wanted in args.rows):
@@ -768,7 +768,7 @@ def main():
         slug = re.sub(r"\W+", "-", name)
         at = None
         if run is other_filesystem:
-            at = os.path.join(tempfile.mkdtemp(prefix="rustd-soakrows-", dir=args.other_fs), "ws")
+            at = os.path.join(tempfile.mkdtemp(prefix="ra-jit-soakrows-", dir=args.other_fs), "ws")
         row, began = Row(work, slug, env, at), time.time()
         try:
             run(row)
@@ -788,7 +788,7 @@ def main():
         print(f"{'ok ' if result == 'right' else 'NOT'} {name}  {time.time() - began:.0f}s  {result if result != 'right' else ''}", flush=True)
         for line in row.built:
             print(f"      {line}", flush=True)
-    backend = os.environ.get("RUSTD_BACKEND", "cranelift")
+    backend = os.environ.get("RA_JIT_BACKEND", "cranelift")
     with open(os.path.join(HERE, "SOAKROWS.md"), "w") as out:
         out.write(f"# soakrows.py\n\n{len(table) - failed} of {len(table)} rows right, {backend}.\n\n| row | result | who built each comparison |\n|---|---|---|\n")
         for name, result, built, _ in table:

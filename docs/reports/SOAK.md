@@ -1,6 +1,6 @@
 # Soak and robustness of the daemon
 
-Branch `rustd-soak`, from `rustd-security` c0dfb021cb merged with `rustd-collate` 8f21942505.
+Branch `ra-jit-soak`, from `ra-jit-security` c0dfb021cb merged with `ra-jit-collate` 8f21942505.
 Everything here was run on one Linux x86-64 machine (8 cores, 31 GB, Rust 1.99.0, LLVM 20).
 Where a sentence is something I measured it gives the command or the number; where it is
 something I read off the code or concluded, it says so.
@@ -13,12 +13,12 @@ something I read off the code or concluded, it says so.
   fixture of the rows.
 - `harness/soakrows.py`: twenty-two file, toolchain and memory edge cases, one row each.
   `harness/SOAKROWS.md` is what it wrote last.
-- `RUSTD_MEMORY_MAX`: a ceiling on what the daemon's workers hold, with eviction.
+- `RA_JIT_MEMORY_MAX`: a ceiling on what the daemon's workers hold, with eviction.
 - Fixes for what the soak, the rows and the lock audit found (listed below with their tests).
 
 ## The soak
 
-    RUSTD_MEMORY_MAX=6G RUSTD_BIN=.../rustd python3 soak.py --seed 101 --hours 3 \
+    RA_JIT_MEMORY_MAX=6G RA_JIT_BIN=.../ra-jit python3 soak.py --seed 101 --hours 3 \
         --worktrees 2 --work /dev/shm/soak-cl --sample 0.25
 
 It copies ripgrep 15.1.0, fd v10.3.0, bat v0.26.0, axum axum-v0.8.6 (its `hello-world`
@@ -34,13 +34,13 @@ step draws from the seed:
 | macros | 6 | the build script, its input, or the proc macro edited |
 | git | 12 | commit and checkout of another branch, rebase, stash and pop, a checkout that touches many files |
 | worktree | 4 | a worktree added, or removed (and sometimes made again at the same path) |
-| burst | 8 | 12 to 40 clients at once, `cargo rustd build`/`test`/`run` and the direct client mixed, over several trees |
+| burst | 8 | 12 to 40 clients at once, `cargo ra-jit build`/`test`/`run` and the direct client mixed, over several trees |
 | cancel | 8 | clients sent SIGINT or SIGKILL at a random moment of their request |
 | kill | 4 | the daemon or a worker sent SIGKILL, then the next request |
-| collect | 4 | `rustd cache gc --max` while builds run |
+| collect | 4 | `ra-jit cache gc --max` while builds run |
 
 After a step, with probability `--sample`, each tree it touched is built or tested with
-`cargo rustd` and with cargo into an empty target directory, and the program's output or
+`cargo ra-jit` and with cargo into an empty target directory, and the program's output or
 the list of test results is compared. Every request records who built it (the daemon, or
 cargo and the reason the daemon gave). Every step appends a line to `metrics.jsonl`: the
 resident memory, descriptors and threads of the workers and of the daemon, the size of the
@@ -56,7 +56,7 @@ work directories are on a 16 GB tmpfs, which holds two worktrees per workspace a
 more; the soak deletes target directories when the disk runs low. And a soak ran beside
 the regression gates for part of the time, so latencies are not benchmark numbers.
 
-The runs, all with seed 101 under Cranelift, `RUSTD_MEMORY_MAX=6G`, two worktrees per
+The runs, all with seed 101 under Cranelift, `RA_JIT_MEMORY_MAX=6G`, two worktrees per
 workspace and a quarter of the steps compared with cargo
 (`python3 soak.py --seed 101 --hours 2 --worktrees 2 --work /dev/shm/soak-cl --sample 0.25 --quiet`;
 `python3 soak.py --report DIR` prints the tables these numbers come from):
@@ -70,7 +70,7 @@ workspace and a quarter of the steps compared with cargo
 That is about 4.4 hours and 783 steps of soak, all under Cranelift. No soak has run on the
 head with the fix for step 137, and no soak has run under LLVM: the one LLVM attempt
 (seed 202) stopped in its first comparison with an exception in the harness
-(`cargo_rustd.py`, `difference` given an exit code where it expects text), which I have not
+(`cargo_ra_jit.py`, `difference` given an exit code where it expects text), which I have not
 fixed. A two and a half hour run under each backend on the fixed binaries was queued behind
 the gates and was stopped before it began when this session was wound down.
 
@@ -101,7 +101,7 @@ thousands of steps is needed before a slope means anything, and has not been don
 
 Fixed, each with the test or row that holds it:
 
-1. `cargo rustd test` ran the test binary of a proc-macro crate without the toolchain's
+1. `cargo ra-jit test` ran the test binary of a proc-macro crate without the toolchain's
    library directory on the loader's path: exit 101 where cargo gives 0. The path cargo
    sets (toolchain, profile and dependency directories) is now set. Row `tests of a proc
    macro`.
@@ -109,7 +109,7 @@ Fixed, each with the test or row that holds it:
 3. A worker panicked while loading a package that holds a file with no text. bat's tests
    create and delete a file while the daemon loads; a `.rs` file that is not UTF-8 is the
    same path. Such a file is no source of a crate. Row `names and text that are not UTF-8`.
-4. Every `.lock().unwrap()` in `crates/rustd` and the store's two locks: one build that
+4. Every `.lock().unwrap()` in `crates/ra-jit` and the store's two locks: one build that
    unwound holding one made every later build of that worker panic, or turned the store off
    without saying so. See the audit. Tests
    `a_lock_a_thread_panicked_with_is_still_taken` and
@@ -118,7 +118,7 @@ Fixed, each with the test or row that holds it:
    outline and by `probe` in the patcher. It now goes on unwinding. Test
    `a_probe_that_is_interrupted_goes_on_unwinding_and_one_that_panics_finds_nothing`.
 6. Workers were never released before their idle time, and the worker of a deleted
-   worktree lived as long: 16.8 GB after eight steps. `RUSTD_MEMORY_MAX` and the check for
+   worktree lived as long: 16.8 GB after eight steps. `RA_JIT_MEMORY_MAX` and the check for
    a checkout that is gone. Rows `memory ceiling`, `no memory ceiling`,
    `worktree deleted and recreated`.
 7. A link that failed said only "the link failed (exit status: 1)": the linker's output
@@ -136,7 +136,7 @@ Fixed, each with the test or row that holds it:
    Row `worktrees whose libraries were built apart`.
 9. The rest of the edge-case table below (symlinked root, stale-id panic reports, a daemon
    whose executable is gone, a workspace under a non-UTF-8 name).
-10. Wrong output. Seed 101, Cranelift, step 211: `cargo rustd run -p soak-app --features soak` in the
+10. Wrong output. Seed 101, Cranelift, step 211: `cargo ra-jit run -p soak-app --features soak` in the
    build-script workspace printed `Reading/7 ... alpha 12` where cargo's cold build printed
    `Reading/18 ... alpha 23`: the output of another worktree. A worker that held
    several checkouts ran cargo for every one after the first in the first one's target
@@ -153,7 +153,7 @@ Fixed, each with the test or row that holds it:
    the one asked second having the older files. It is WRONG on the build before the fix
    (`Reading/5` for the worktree that should print `Reading/7`) and right after.
 
-11. Wrong output. Seed 101, Cranelift, step 137, in every run of that seed: `cargo rustd
+11. Wrong output. Seed 101, Cranelift, step 137, in every run of that seed: `cargo ra-jit
    test` in fd reported `filter::time::tests::is_time_filter_applicable` failed where
    cargo's cold run passed it. The test sets a clock through a `cfg(test)`
    `thread_local!` and the code under test reads it. The cause is wider than the thread
@@ -164,9 +164,9 @@ Fixed, each with the test or row that holds it:
    and compiled its own beside rustc's (`342 unsupported: no rustc symbol for function` of
    367 in the worker's log). What rustc compiled went on calling rustc's copy. Measured on
    the fd tree of that step with the build before the fix (`CARGO_INCREMENTAL=0
-   CARGO_PROFILE_TEST_DEBUG=0 cargo rustd test --bin fd`, wait for the daemon, edit,
-   again): after a function was added to `filter/time.rs` the test above failed (rustd's
-   copy of a function read rustd's copy of the thread local, rustc's test wrote
+   CARGO_PROFILE_TEST_DEBUG=0 cargo ra-jit test --bin fd`, wait for the daemon, edit,
+   again): after a function was added to `filter/time.rs` the test above failed (ra-jit's
+   copy of a function read ra-jit's copy of the thread local, rustc's test wrote
    rustc's), and an `assert_eq!(1 + 1, 3)` added to the body of a test was answered
    `Finished` by the daemon with the test still passing: the edit was lost. With the
    default incremental build none of this happens (the same two edits were right), which
@@ -174,7 +174,7 @@ Fixed, each with the test or row that holds it:
    the functions an object keeps to itself, and such a function is left to rustc with the
    reason "rustc's object keeps the function to itself"; the machinery that already
    existed for functions left to rustc then finds its statics to be rustc's and refuses
-   an edit of it ("is not compiled by rustd and rustc's copy is from before the edit,
+   an edit of it ("is not compiled by ra-jit and rustc's copy is from before the edit,
    build with cargo"). After the fix the same commands give 137 passed after the added
    function, and the failing assertion is reported, built by cargo. What it costs: in a
    test program built without incremental compilation nearly every function is kept to
@@ -201,9 +201,9 @@ Not fixed:
 
 ## Edge cases
 
-    RUSTD_BIN=.../rustd python3 soakrows.py
+    RA_JIT_BIN=.../ra-jit python3 soakrows.py
 
-Each row builds or tests with `cargo rustd` and with cold cargo and compares, and most also
+Each row builds or tests with `cargo ra-jit` and with cold cargo and compares, and most also
 require that the daemon (not the fallback to cargo) did the last build. The table is in `harness/SOAKROWS.md`: 22 of 22 right under Cranelift on 4eaebf61f2; under
 LLVM 21 of 21 on 9cef93dc14, with the newest row not yet run there.
 
@@ -228,21 +228,21 @@ LLVM 21 of 21 on 9cef93dc14, with the newest row not yet run there.
 
 ## Locks and cancellation
 
-I read every `Mutex`, `RwLock`, `Condvar`, `Once`, `OnceLock` and `LazyLock` in `crates/rustd`
+I read every `Mutex`, `RwLock`, `Condvar`, `Once`, `OnceLock` and `LazyLock` in `crates/ra-jit`
 and `crates/hir-ty/src/mir/codegen*`, and every place that catches an unwind. The tables are
 what the code does, read, with a test where one is named; I did not edit
-`crates/rustd/src/socket.rs`.
+`crates/ra-jit/src/socket.rs`.
 
 How a build is cancelled. A worker process holds one database. Builds read it from threads
 of their own; a write to it (an edit arrived) calls `trigger_cancellation`
-(`Builds::settle`, `crates/rustd/src/main.rs`), which makes every query on every reading
+(`Builds::settle`, `crates/ra-jit/src/main.rs`), which makes every query on every reading
 thread unwind with `salsa::Cancelled`. So "the holder is cancelled" and "the holder
 panics" are the same event for a lock: the thread unwinds through whatever guard it holds,
 and std marks the lock poisoned. A client that disappears is not seen by the worker at all:
 the daemon's handler thread waits for the worker's answer, then fails to write it to the
 closed socket and ends; the build itself runs to its end and its result is kept.
 
-The rule the code now follows everywhere: no lock in `crates/rustd` or the codegen store
+The rule the code now follows everywhere: no lock in `crates/ra-jit` or the codegen store
 is held across a query, so what it guards is whole between any two statements, and a
 poisoned lock is taken again (`crate::lock`, `PoisonError::into_inner`). The one lock whose
 contents may be half-done is the store's writer, which has its own rule below.
@@ -258,19 +258,19 @@ contents may be half-done is the store's writer, which has its own rule below.
 | `Ahead` mutex + `idle` condvar | `codegen.rs` `compile_ahead` | queue ops; `compiled_instance` runs outside it | a thread unwinding sets `stopped` in a drop guard and wakes the rest, so no thread waits for a count that never drops | fine (the poisoned lock found earlier) | unchanged |
 | `SELECTED`, `TARGET` x3, `TOOLCHAIN`, `FETCH_MISSING`, `STORE`, `LEAN`, `TALLY` (OnceLock/LazyLock) | codegen | initialisers read the environment or build an ISA; none runs a query | cannot be cancelled; a panicking `OnceLock` initialiser leaves it empty and the next caller runs it again; `LazyLock` would poison but its initialisers cannot panic | fine | unchanged |
 | `DISABLED` (Once) | `codegen/llvm.rs` | one FFI call | cannot be cancelled | fine | unchanged |
-| `Contents::crates`, `places`, `HASHES` | `rustd/content.rs` | map ops; `file_text` is read before the lock | poisoned | already taken again | unchanged |
-| `Contents::cargo_home` (OnceLock) | `rustd/content.rs` | reads the environment | no query | fine | unchanged |
-| `Listed::functions`, `Listed::built` | `rustd/main.rs` | map ops; the listing query runs outside | poisoned | `.lock().unwrap()`: one cancelled build while another thread held it made every later build of the worker panic | `crate::lock`. Test `a_lock_a_thread_panicked_with_is_still_taken` |
-| `LINKED` (LazyLock<Mutex>) | `rustd/main.rs` | map ops; the link and the splice run outside | poisoned | `.lock().unwrap()` | `crate::lock` |
-| `as_built` | `rustd/main.rs` | map ops | poisoned | `.lock().unwrap()` | `crate::lock` |
-| outline's maps | `rustd/outline.rs` | map ops | poisoned | `.lock().unwrap()` | `crate::lock` |
-| `sent` | `rustd/deps.rs` | an insert, from tokio tasks | a task that panics | the insert was skipped, so a unit that was pushed was pushed again next time | taken again |
-| `Keeper::lazy` (RwLock), `Keeper::seen` (Mutex) | `rustd/remote/keeper.rs` | pointer swap, a digest | poisoned | lazy hydration refused for the life of the worker | taken again |
+| `Contents::crates`, `places`, `HASHES` | `ra-jit/content.rs` | map ops; `file_text` is read before the lock | poisoned | already taken again | unchanged |
+| `Contents::cargo_home` (OnceLock) | `ra-jit/content.rs` | reads the environment | no query | fine | unchanged |
+| `Listed::functions`, `Listed::built` | `ra-jit/main.rs` | map ops; the listing query runs outside | poisoned | `.lock().unwrap()`: one cancelled build while another thread held it made every later build of the worker panic | `crate::lock`. Test `a_lock_a_thread_panicked_with_is_still_taken` |
+| `LINKED` (LazyLock<Mutex>) | `ra-jit/main.rs` | map ops; the link and the splice run outside | poisoned | `.lock().unwrap()` | `crate::lock` |
+| `as_built` | `ra-jit/main.rs` | map ops | poisoned | `.lock().unwrap()` | `crate::lock` |
+| outline's maps | `ra-jit/outline.rs` | map ops | poisoned | `.lock().unwrap()` | `crate::lock` |
+| `sent` | `ra-jit/deps.rs` | an insert, from tokio tasks | a task that panics | the insert was skipped, so a unit that was pushed was pushed again next time | taken again |
+| `Keeper::lazy` (RwLock), `Keeper::seen` (Mutex) | `ra-jit/remote/keeper.rs` | pointer swap, a digest | poisoned | lazy hydration refused for the life of the worker | taken again |
 | `Keeper::steps` (OnceLock) | same | channel creation | no query | fine | unchanged |
-| pack `OnceLock` in `remote.rs` | `rustd/remote.rs` | key list of a pack, fetched once | initialiser fails: stays empty, next caller fetches again | fine | unchanged |
-| `Worker::child`, `checkouts`, `asked`; `Daemon::workers`, `asked` | `rustd/cargo/daemon.rs` | map ops, `kill`/`try_wait`; `Daemon::warm` holds `workers` while it stops one worker process and starts another (no wait on a build) | the daemon runs no query; a handler thread that panics | already taken again | unchanged |
+| pack `OnceLock` in `remote.rs` | `ra-jit/remote.rs` | key list of a pack, fetched once | initialiser fails: stays empty, next caller fetches again | fine | unchanged |
+| `Worker::child`, `checkouts`, `asked`; `Daemon::workers`, `asked` | `ra-jit/cargo/daemon.rs` | map ops, `kill`/`try_wait`; `Daemon::warm` holds `workers` while it stops one worker process and starts another (no wait on a build) | the daemon runs no query; a handler thread that panics | already taken again | unchanged |
 | store `lock` file (flock) | `codegen/store.rs`, `remote.rs` | collection, format change | the process dies: the kernel drops the lock | fine (`storekills.py`) | unchanged |
-| `daemon.sock.lock` (flock) | `rustd/cargo` | daemon start | same | fine | unchanged |
+| `daemon.sock.lock` (flock) | `ra-jit/cargo` | daemon start | same | fine | unchanged |
 
 Cancellation points and what catches the unwind:
 
@@ -283,7 +283,7 @@ Cancellation points and what catches the unwind:
 | corpus build per crate, `main.rs` | a panic of one crate's build in a batch | written to the report as `panicked:` |
 
 Left as it is, on purpose:
-- `Worker::ask` reads the worker's answer with no timeout. A build has no upper bound, so there is no right number; a worker that hangs holds one daemon thread and its client until the client is interrupted. `RUSTD_MEMORY_MAX` and the idle time never stop a worker that is answering, so a hung worker is not reaped either. This is the one thing in the audit I would still change (a watchdog on a worker that makes no progress), and did not.
+- `Worker::ask` reads the worker's answer with no timeout. A build has no upper bound, so there is no right number; a worker that hangs holds one daemon thread and its client until the client is interrupted. `RA_JIT_MEMORY_MAX` and the idle time never stop a worker that is answering, so a hung worker is not reaped either. This is the one thing in the audit I would still change (a watchdog on a worker that makes no progress), and did not.
 - A client that is killed does not cancel its build. The result is kept and the next client gets it, so the work is not lost, but nothing is saved either.
 - `Daemon::warm` holds the map of workers while it kills one worker and spawns another (not timed; a status request waits for it).
 
@@ -292,13 +292,13 @@ Left as it is, on purpose:
 Measured before the ceiling (commit 1d70c30788, Cranelift, seed 101, the five workspaces in
 two worktrees each): eight steps in, the daemon had ten workers that held 16.8 GB resident
 together, 118 descriptors and 120 threads. The daemon process itself was 19 MB. Nothing was
-released: a worker lived until `RUSTD_IDLE_SECS` (1800 s) without a request, and the worker
+released: a worker lived until `RA_JIT_IDLE_SECS` (1800 s) without a request, and the worker
 of a worktree that had been deleted lived as long. A worker is one process per workspace and
 build configuration (`dev` and `test` are two), and holds the whole analysis of the
 workspace and its dependencies: about 0.9 GB for the small build-script workspace and 1.3
-to 2.5 GB for the others, as `cargo rustd status` now prints per worker.
+to 2.5 GB for the others, as `cargo ra-jit status` now prints per worker.
 
-What was added. `RUSTD_MEMORY_MAX` (a size such as `6G`, or `off`; by default half of the
+What was added. `RA_JIT_MEMORY_MAX` (a size such as `6G`, or `off`; by default half of the
 machine's memory) is the most the workers may have resident together. Once a second the
 daemon sums what they hold, and while it is over, stops the worker that was asked longest
 ago, never one that is answering a request and never the one asked last. It also stops a
@@ -327,8 +327,8 @@ evicted; I did not run it there).
 ## Validation
 
 Everything here is on Linux x86-64, run locally; CI has not run on this branch. The branch
-is from `rustd-collate` at 8f21942505 with `rustd-security` merged; it does not have
-`rustd-collate-next` merged.
+is from `ra-jit-collate` at 8f21942505 with `ra-jit-security` merged; it does not have
+`ra-jit-collate-next` merged.
 
 The last whole gate that passed under both backends was on 9cef93dc14, the commit before
 the fix for step 137: all 21 commands under Cranelift and all 24 under LLVM exited 0,
@@ -340,7 +340,7 @@ On 4eaebf61f2, which adds the fix for step 137:
 - Cranelift: every command of the gate exited 0, `soakrows.py` 22 of 22 and `remote.py`
   117 of 117 among them, except `keys.py`, 44 of 46.
 - LLVM: the gate was stopped in `fuzz/fuzz.py smoke`. The 18 commands before it exited 0,
-  except `keys.py`, the same 44 of 46. `cargo_rustd.py`, `buildmodel.py`, `backends.py`
+  except `keys.py`, the same 44 of 46. `cargo_ra_jit.py`, `buildmodel.py`, `backends.py`
   and `soakrows.py` did not run on this commit under LLVM.
 - The two `keys.py` cases are the row "a cfg of RUSTFLAGS" in its two modes. The row sets
   `RUSTFLAGS`, which replaces the `-C link-dead-code` every harness gets from
@@ -348,11 +348,11 @@ On 4eaebf61f2, which adds the fix for step 137:
   since the fix those are counted as left to rustc where before they were quietly taken to
   have no copy. The head changes the row to keep `-C link-dead-code` beside its cfg. That
   change has not been seen to pass: both reruns were cut short.
-- `cargo test -p rustd --release kept_to_its_object` passes. The whole
-  `cargo test --release -p hir-ty -p hir-def -p parser -p syntax -p rustd` last passed on
+- `cargo test -p ra-jit --release kept_to_its_object` passes. The whole
+  `cargo test --release -p hir-ty -p hir-def -p parser -p syntax -p ra-jit` last passed on
   9cef93dc14 and was not rerun after the fix; nor was clippy, which was clean there.
-- `cargo xtask tidy` fails on two `#[should_panic]` tests in `crates/rustd/src/main.rs`
-  that come from `rustd-collate`.
+- `cargo xtask tidy` fails on two `#[should_panic]` tests in `crates/ra-jit/src/main.rs`
+  that come from `ra-jit-collate`.
 - `cargo fmt --all -- --check` was not confirmed clean on the head.
 
 ## What is left
@@ -365,7 +365,7 @@ Half done:
 - That fix has a cost that is not measured. In a build where rustc keeps private functions
   to their object (`CARGO_INCREMENTAL=0`, or one codegen unit, without `-C link-dead-code`),
   an edit to such a function is refused and built by cargo. How often that happens in an
-  ordinary `cargo rustd` session with incremental on should be counted before this is
+  ordinary `cargo ra-jit` session with incremental on should be counted before this is
   merged. The better fix is to have the daemon own every caller of such a function, so it
   can replace the function and its callers together.
 - No soak on the fixed head and none under LLVM.
@@ -375,12 +375,12 @@ Open, found by the soak and not fixed:
 - Step 71 (seed 101, head 260255fa9b): a worker panicked at `span/ast_id.rs:852` while
   loading bat during a burst of 31 clients. The client fell back to cargo and the output was
   right. Not reduced, because the worker's log is overwritten when the worker restarts.
-- Step 265 (same run): after the package version of ripgrep was edited, `rustd sync`
+- Step 265 (same run): after the package version of ripgrep was edited, `ra-jit sync`
   printed a value that folds `env!("CARGO_PKG_VERSION")` from before the edit. It did not
   reproduce by hand on the later binary with one or two worktrees, and the rerun on
   9cef93dc14 ended at step 215, before reaching it. It may be the same cause as step 211
   (fixed); that is a guess.
-- The LLVM soak's harness exception in `cargo_rustd.py` `difference`.
+- The LLVM soak's harness exception in `cargo_ra_jit.py` `difference`.
 
 Open, from the audit:
 
@@ -392,13 +392,13 @@ Open, from the audit:
 - A single workspace larger than the ceiling is not helped by the ceiling, and the ceiling
   only works on Linux.
 
-To restart the soak (binaries from `cargo build -p rustd --release`, and with
+To restart the soak (binaries from `cargo build -p ra-jit --release`, and with
 `--features llvm` for the second; `--resume` continues a work directory that was stopped):
 
     cd harness
-    RUSTD_MEMORY_MAX=6G RUSTD_BIN=.../rustd python3 soak.py --seed 101 --hours 2.5 \
+    RA_JIT_MEMORY_MAX=6G RA_JIT_BIN=.../ra-jit python3 soak.py --seed 101 --hours 2.5 \
         --worktrees 2 --work /dev/shm/soak-cl --sample 0.25 --quiet
-    RUSTD_BACKEND=llvm RUSTD_OPT=2 RUSTD_EMIT=fast RUSTD_MEMORY_MAX=6G RUSTD_BIN=.../rustd \
+    RA_JIT_BACKEND=llvm RA_JIT_OPT=2 RA_JIT_EMIT=fast RA_JIT_MEMORY_MAX=6G RA_JIT_BIN=.../ra-jit \
         python3 soak.py --seed 202 --hours 2.5 --worktrees 2 --work /dev/shm/soak-ll \
         --sample 0.25 --quiet
 

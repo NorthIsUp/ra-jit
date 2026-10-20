@@ -1,6 +1,6 @@
 """Compares the size and alignment rust-analyzer computes for types against rustc's.
 
-rustc's side is `-Zprint-type-sizes`; rustd's is the `RUSTD_LAYOUTS` log of every type its
+rustc's side is `-Zprint-type-sizes`; ra-jit's is the `RA_JIT_LAYOUTS` log of every type its
 backend laid out. The two print types differently, so both are reduced to a common spelling
 and only types that reduce to one unambiguous rustc layout are compared. A mismatch here is a
 miscompile found without running anything.
@@ -41,7 +41,7 @@ def rustc_layouts(workspace, crate):
     return layouts
 
 
-def rustd_layouts(path):
+def ra_jit_layouts(path):
     layouts = {}
     for line in open(path):
         name, size, align = line.rstrip("\n").rsplit("\t", 2)
@@ -56,7 +56,7 @@ def diff(workspace, crates, log):
     for crate in crates:
         for name, sizes in rustc_layouts(workspace, crate).items():
             theirs.setdefault(name, set()).update(sizes)
-    ours = rustd_layouts(log)
+    ours = ra_jit_layouts(log)
     compared, wrong = 0, []
     for name, sizes in sorted(ours.items()):
         want = theirs.get(name)

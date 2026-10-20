@@ -4,11 +4,11 @@
 usage: backends.py WORKSPACE PACKAGE CRATE[,CRATE...] [--bin NAME] [--project DIR]
                    [--levels 0,2] [--runs N] [--kernels] [--out FILE] [-- ARGS]
 
-Builds the program with cargo, then has rustd compile the crates once with Cranelift and once
+Builds the program with cargo, then has ra-jit compile the crates once with Cranelift and once
 with LLVM at each level, links each object ahead of rustc's and compares what the program prints
 with cargo's. Reports, for each producer: how many functions it compiled and how many LLVM left
 to Cranelift and why, the time spent producing code (summed over threads) and per function, the
-size of the code, and rustd's wall time and peak memory. With `--kernels` the program is
+size of the code, and ra-jit's wall time and peak memory. With `--kernels` the program is
 harness/corpus/kernels: each kernel is then run `--runs` times and its best time reported, next
 to cargo's debug and release builds.
 """
@@ -16,11 +16,11 @@ import os, re, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from difftest import Fixture, RUSTD, sysroot_rlibs
+from difftest import Fixture, RA_JIT, sysroot_rlibs
 
 
 class Compiled:
-    """One run of rustd over the crates with one producer."""
+    """One run of ra-jit over the crates with one producer."""
 
     def __init__(self, fx, name, env, project):
         self.name = name
@@ -28,9 +28,9 @@ class Compiled:
         symbols = [x for rlib in fx.rlibs + sysroot_rlibs() for x in ("--symbols", rlib)]
         crates = [x for c in fx.crates for x in ("--crate", c)]
         start = time.monotonic()
-        child = subprocess.Popen([RUSTD, project, *crates, "--out", obj, *symbols],
+        child = subprocess.Popen([RA_JIT, project, *crates, "--out", obj, *symbols],
                                  stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, encoding="utf-8",
-                                 env={**os.environ, "RUSTD_STATS": "1", **env})
+                                 env={**os.environ, "RA_JIT_STATS": "1", **env})
         self.stderr = child.stderr.read()
         if hasattr(os, "wait4"):
             _, status, usage = os.wait4(child.pid, 0)
@@ -42,9 +42,9 @@ class Compiled:
             status, self.rss_mb = child.wait(), 0
         self.wall = time.monotonic() - start
         if status != 0:
-            raise SystemExit(f"rustd failed with {name}:\n{self.stderr[-3000:]}")
+            raise SystemExit(f"ra-jit failed with {name}:\n{self.stderr[-3000:]}")
         open(os.path.join(fx.work, name.replace(" ", "") + ".stderr"), "w", encoding="utf-8").write(self.stderr)
-        # A program rustd cannot link with any producer still says what each producer costs.
+        # A program ra-jit cannot link with any producer still says what each producer costs.
         try:
             fx.link([obj])
             self.binary = os.path.join(fx.work, "bin-" + name.replace(" ", ""))
@@ -105,18 +105,18 @@ def main():
     lines = [f"cargo build: {time.monotonic() - start:.1f} s (whatever was not built already), work in {fx.work}", ""]
     expected = run(fx.reference, run_args)
     project = os.path.join(workspace, opt("--project", ""))
-    producers = [("cranelift", {"RUSTD_BACKEND": "cranelift"})]
+    producers = [("cranelift", {"RA_JIT_BACKEND": "cranelift"})]
     # A level with an `f` after it is that level's passes with LLVM's fast code selection.
     for level in levels:
         fast = level.endswith("f")
-        env = {"RUSTD_BACKEND": "llvm", "RUSTD_OPT": level.rstrip("f"), "RUSTD_EMIT": "fast" if fast else "optimized"}
+        env = {"RA_JIT_BACKEND": "llvm", "RA_JIT_OPT": level.rstrip("f"), "RA_JIT_EMIT": "fast" if fast else "optimized"}
         producers.append((f"llvm -O{level.rstrip('f')}" + (" fast emit" if fast else ""), env))
     built = []
     for name, env in producers:
         compiled = Compiled(fx, name, env, project)
         built.append(compiled)
         print(f"{name}: {compiled.wall:.1f} s", file=sys.stderr)
-    lines += ["| producer | functions | share by this producer | producing code, s (all threads) | µs per function | code bytes | rustd wall, s | rustd peak RSS, MB |",
+    lines += ["| producer | functions | share by this producer | producing code, s (all threads) | µs per function | code bytes | ra-jit wall, s | ra-jit peak RSS, MB |",
               "|---|---:|---:|---:|---:|---:|---:|---:|"]
     lines += [it.row() for it in built]
     lines.append("")

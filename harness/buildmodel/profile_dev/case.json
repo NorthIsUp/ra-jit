@@ -5,5 +5,5 @@
     "app"
   ],
   "cargo": [],
-  "rustd": []
+  "ra-jit": []
 }

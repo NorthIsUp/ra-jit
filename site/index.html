@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>rustd: a Rust compiler daemon</title>
-<meta name="description" content="rustd keeps rust-analyzer's analysis and compiled functions between builds, and compiles only the functions an edit changed.">
+<title>ra-jit: a Rust compiler daemon</title>
+<meta name="description" content="ra-jit keeps rust-analyzer's analysis and compiled functions between builds, and compiles only the functions an edit changed.">
 <style>
 :root { --bg: #fbfaf7; --fg: #1c1b19; --dim: #6b6862; --line: #e3dfd6; --code: #f1eee7; --accent: #b4441c; }
 @media (prefers-color-scheme: dark) {
@@ -50,7 +50,7 @@ footer { margin-top: 64px; color: var(--dim); font-size: 14px; }
 <body>
 <main>
 <nav>
-  <strong>rustd</strong>
+  <strong>ra-jit</strong>
   <a href="#install">Install</a>
   <a href="#use">Use</a>
   <a href="#numbers">Numbers</a>
@@ -58,7 +58,7 @@ footer { margin-top: 64px; color: var(--dim); font-size: 14px; }
   <a href="https://github.com/DioxusLabs/rustd">GitHub</a>
 </nav>
 
-<h1 class="hero">rustd</h1>
+<h1 class="hero">ra-jit</h1>
 <p class="lede">A Rust compiler that stays running. After an edit it compiles the functions
 that changed and links them into the program rustc already built.</p>
 
@@ -68,7 +68,7 @@ that changed and links them into the program rustc already built.</p>
     <button role="tab" id="tab-windows" aria-selected="false" aria-controls="command" type="button">Windows</button>
   </div>
   <pre><code id="command">curl -fsSL https://dioxuslabs.github.io/rustd/install.sh | sh</code><button id="copy" type="button">Copy</button></pre>
-  <small>Then <code>cargo rustd run</code> in a workspace. Needs Rust 1.99.0 with
+  <small>Then <code>cargo ra-jit run</code> in a workspace. Needs Rust 1.99.0 with
   <code>rust-src</code>; <a href="#install">the details</a>.</small>
 </div>
 
@@ -93,27 +93,27 @@ that changed and links them into the program rustc already built.</p>
     </div>
   </div>
 </section>
-<p class="caption">This is rustd itself, built as WebAssembly and compiling the program on the
+<p class="caption">This is ra-jit itself, built as WebAssembly and compiling the program on the
 left in your browser. Edit it while it runs. <a href="playground/">The full playground</a> shows
 each build and says what the browser version cannot do.</p>
 
 <h2>What it is</h2>
-<p>rustd is a daemon that keeps rust-analyzer's analysis of your workspaces in memory and
+<p>ra-jit is a daemon that keeps rust-analyzer's analysis of your workspaces in memory and
 compiled functions on disk.</p>
 
-<pre><code>$ cargo rustd run          # first build is cargo's; the daemon loads behind it
+<pre><code>$ cargo ra-jit run          # first build is cargo's; the daemon loads behind it
 $ $EDITOR src/main.rs
-$ cargo rustd run          # the daemon compiles what changed, no cargo process runs</code></pre>
+$ cargo ra-jit run          # the daemon compiles what changed, no cargo process runs</code></pre>
 
 <p>cargo and rustc start from the file system on every build. They parse, resolve, type-check
 and generate code for a whole crate again when one function in it changed, and a second
-checkout of the same repository starts from nothing. rustd keeps that work. Git worktrees of
+checkout of the same repository starts from nothing. ra-jit keeps that work. Git worktrees of
 one repository share one database, and a function compiled once is found again by the hash of
 what it was compiled from, in any workspace on the machine or, through an S3 bucket, on
 another machine.</p>
 
 <p class="note">This is a prototype, published for the first time. rustc still does the first
-build, rustd has no diagnostics and no borrow checker of its own, and it is pinned to Rust
+build, ra-jit has no diagnostics and no borrow checker of its own, and it is pinned to Rust
 1.99.0. Read the <a href="https://github.com/DioxusLabs/rustd#status">Status section</a> before
 relying on it.</p>
 
@@ -123,11 +123,11 @@ relying on it.</p>
 <p>Windows x86-64, in PowerShell:</p>
 <pre><code>irm https://dioxuslabs.github.io/rustd/install.ps1 | iex</code></pre>
 <p>Both download the latest <a href="https://github.com/DioxusLabs/rustd/releases">release</a>,
-check it against the release's SHA-256 sums and put <code>rustd</code>, <code>cargo-rustd</code>
-and <code>rustd-rustc</code> in <code>~/.cargo/bin</code>. Set <code>RUSTD_VERSION=nightly</code>
-for the newest build of <code>main</code>. rustd also needs the toolchain it is pinned to:</p>
+check it against the release's SHA-256 sums and put <code>ra-jit</code>, <code>cargo-ra-jit</code>
+and <code>ra-jit-rustc</code> in <code>~/.cargo/bin</code>. Set <code>RA_JIT_VERSION=nightly</code>
+for the newest build of <code>main</code>. ra-jit also needs the toolchain it is pinned to:</p>
 <pre><code>rustup toolchain install 1.99.0 --component rust-src</code></pre>
-<p>On macOS and Windows the daemon runs and is tested, but <code>cargo rustd</code> does not
+<p>On macOS and Windows the daemon runs and is tested, but <code>cargo ra-jit</code> does not
 link programs there yet, so every build is handed to cargo with a line saying so. Linux is where
 the numbers below come from.</p>
 <p>The downloads have the Cranelift backend. The LLVM backend needs LLVM 20 on the machine and
@@ -135,31 +135,31 @@ is <a href="https://github.com/DioxusLabs/rustd#build-from-source">built from so
 
 <h2 id="use">Use</h2>
 <p>There are two ways in. The first is a cargo subcommand, in any project built with 1.99.0:</p>
-<pre><code>cargo rustd build
-cargo rustd run -- --some-flag
-cargo rustd test
-cargo rustd check</code></pre>
+<pre><code>cargo ra-jit build
+cargo ra-jit run -- --some-flag
+cargo ra-jit test
+cargo ra-jit check</code></pre>
 <p>The second switches it on for plain cargo, for agents and scripts that call cargo themselves.
-<code>rustd enable</code> adds one key to <code>~/.cargo/config.toml</code> and
-<code>rustd disable</code> puts the file back as it was.</p>
-<pre><code>rustd enable
+<code>ra-jit enable</code> adds one key to <code>~/.cargo/config.toml</code> and
+<code>ra-jit disable</code> puts the file back as it was.</p>
+<pre><code>ra-jit enable
 cargo run
-rustd status
-rustd disable</code></pre>
-<p>When rustd cannot build something, cargo or rustc builds it and one line on stderr says why.
+ra-jit status
+ra-jit disable</code></pre>
+<p>When ra-jit cannot build something, cargo or rustc builds it and one line on stderr says why.
 Release builds, other profiles and <code>RUSTFLAGS</code> are handed to cargo unchanged.
 The <a href="https://github.com/DioxusLabs/rustd/blob/main/docs/cargo.md">cargo guide</a> has
 the details, and <a href="https://github.com/DioxusLabs/rustd/blob/main/docs/platforms.md">the
 platform notes</a> say what has been run where.</p>
 
 <h2 id="numbers">Numbers</h2>
-<p>Linux x86-64, 8 CPUs, Cranelift, seconds, plain cargo against <code>cargo rustd</code>. Both
+<p>Linux x86-64, 8 CPUs, Cranelift, seconds, plain cargo against <code>cargo ra-jit</code>. Both
 use the same linker, cargo is warm and incremental, the daemon is warm, and the program both
-produce is run and compared. No <code>cargo check</code> runs beside a rustd build and nothing
+produce is run and compared. No <code>cargo check</code> runs beside a ra-jit build and nothing
 is handed back to cargo, so the numbers that used to be here no longer apply.</p>
 <p>Edits in a generated workspace of 200 crates, median of three:</p>
 <table>
-<tr><th>Edit</th><th>cargo</th><th>rustd</th><th></th></tr>
+<tr><th>Edit</th><th>cargo</th><th>ra-jit</th><th></th></tr>
 <tr><td>A function body in the program's crate</td><td>1.76</td><td><b>0.42</b></td><td>4.2x</td></tr>
 <tr><td>A function body in the crate every other depends on</td><td>6.33</td><td><b>0.60</b></td><td>10.6x</td></tr>
 <tr><td>Function bodies in 30 crates at once</td><td>6.26</td><td><b>0.62</b></td><td>10.1x</td></tr>
@@ -175,22 +175,22 @@ again. That is open.</p>
 <tr><td>fd 10.3.0</td><td>0.41 / <b>0.03</b></td><td>0.52 / <b>0.17</b></td></tr>
 <tr><td>hyperfine 1.19.0</td><td>0.33 / <b>0.03</b></td><td>0.36 / <b>0.15</b></td></tr>
 </table>
-<p>First build from an empty target directory with <code>RUSTD_FIRST_BUILD=1</code>, where cargo
-builds the dependencies and rustd the workspace's crates, one run each except nushell:</p>
+<p>First build from an empty target directory with <code>RA_JIT_FIRST_BUILD=1</code>, where cargo
+builds the dependencies and ra-jit the workspace's crates, one run each except nushell:</p>
 <table>
-<tr><th>Project</th><th><code>cargo build</code></th><th><code>cargo rustd build</code></th></tr>
+<tr><th>Project</th><th><code>cargo build</code></th><th><code>cargo ra-jit build</code></th></tr>
 <tr><td>ripgrep 15.1.0</td><td>5.43</td><td>6.05</td></tr>
 <tr><td>fd 10.3.0</td><td>20.5</td><td>22.0</td></tr>
 <tr><td>nushell 0.108.0</td><td>42.7, 42.9</td><td>66.4, 68.1, 89.9</td></tr>
 </table>
-<p>rustd is behind on first builds, and far behind on nushell. How correctness is checked
+<p>ra-jit is behind on first builds, and far behind on nushell. How correctness is checked
 against rustc is in <a href="https://github.com/DioxusLabs/rustd/blob/main/docs/results.md">the
 results</a>.</p>
 
 <h2>What it does not do</h2>
 <ul>
-<li>It does not replace rustc. rustc builds the dependencies, and the first build unless <code>RUSTD_FIRST_BUILD=1</code> is set.</li>
-<li>It finds no borrow or move errors. <code>cargo rustd check</code> is <code>cargo check</code>.</li>
+<li>It does not replace rustc. rustc builds the dependencies, and the first build unless <code>RA_JIT_FIRST_BUILD=1</code> is set.</li>
+<li>It finds no borrow or move errors. <code>cargo ra-jit check</code> is <code>cargo check</code>.</li>
 <li>It does not optimise across functions. The code is for the edit loop, not for release.</li>
 <li>It has been wrong: a fuzzer found twenty-one problems, most of them miscompiles. The ones
 still open are listed in <a href="https://github.com/DioxusLabs/rustd/blob/main/docs/support.md">the

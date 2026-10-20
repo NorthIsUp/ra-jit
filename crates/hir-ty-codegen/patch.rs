@@ -487,7 +487,7 @@ pub(super) struct Patch {
 /// An object that defines nothing.
 pub(super) fn empty_object() -> Result<Vec<u8>> {
     let builder =
-        ObjectBuilder::new(target()?.clone(), "rustd", cranelift_module::default_libcall_names())?;
+        ObjectBuilder::new(target()?.clone(), "ra-jit", cranelift_module::default_libcall_names())?;
     let object = ObjectModule::new(builder)
         .finish()
         .emit()
@@ -697,7 +697,7 @@ impl Base {
     /// Walking to them is slow, and nothing changes where the walk goes but the code of what
     /// it went through.
     fn their_statics(&mut self, db: &dyn HirDatabase, found: &mut [Stale]) {
-        let check_all = std::env::var_os("RUSTD_CHECK_ALL").is_some();
+        let check_all = std::env::var_os("RA_JIT_CHECK_ALL").is_some();
         let changed = found.iter().any(|it| it.their_walk_changed);
         let Some(first) = found.first_mut() else { return };
         if !changed && !check_all {
@@ -773,7 +773,7 @@ impl Base {
         let every = |len: usize| (part..len).step_by(parts);
         // A check of the skipping below: looks at what no edit can have changed too, and says
         // so if one did.
-        let check_all = std::env::var_os("RUSTD_CHECK_ALL").is_some();
+        let check_all = std::env::var_os("RA_JIT_CHECK_ALL").is_some();
         for i in every(self.rejected.len()) {
             let (instance, env) = &self.rejected[i];
             let compiles = probe(|| compiled_instance(db, instance.clone(), env.clone()).is_ok());

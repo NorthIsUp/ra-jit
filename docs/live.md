@@ -5,9 +5,9 @@ the save and the new code running, and what is refused.
 
 ## The two halves
 
-- **The daemon** (`crates/rustd/src/live.rs`, `crates/rustd/src/splice/macho.rs`). Every edit
+- **The daemon** (`crates/ra-jit/src/live.rs`, `crates/ra-jit/src/splice/macho.rs`). Every edit
   it answers with a patch (the functions that changed, linked against the executable of the
-  last full link) is spliced into the executable on disk as rustd always did. If a program
+  last full link) is spliced into the executable on disk as ra-jit always did. If a program
   that runs that executable has said where it wants patches, the daemon also lays the same
   patch out for that place (`Patch::place_live`) and writes it next to the program.
 - **The program** (`crates/ra-jit-live`). `Live::start` reads the executable's `LC_UUID`,

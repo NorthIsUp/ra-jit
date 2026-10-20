@@ -9,7 +9,7 @@
   "cargo": [
     "--all-features"
   ],
-  "rustd": [
+  "ra-jit": [
     "--all-features"
   ]
 }

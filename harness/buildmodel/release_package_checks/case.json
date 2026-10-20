@@ -8,7 +8,7 @@
   "cargo": [
     "--release"
   ],
-  "rustd": [
+  "ra-jit": [
     "--release"
   ],
   "expect": "supported"

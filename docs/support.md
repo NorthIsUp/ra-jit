@@ -12,7 +12,7 @@ will build without fallbacks.
 
 ## Toolchain
 
-Rust 1.99.0 only. rustd links against what rustc built, so it must agree with that rustc on
+Rust 1.99.0 only. ra-jit links against what rustc built, so it must agree with that rustc on
 symbol mangling, type layout, the unstable Rust ABI, vtable layout and `TypeId` hashes. The
 layout code is rustc's own `rustc_abi` crate from the 1.99.0 tag. Nothing has been run on
 another stable version. Some reports were measured on `nightly-2026-05-10` before the move
@@ -27,12 +27,12 @@ to stable; those are marked where they are used.
 | Full link | yes (1) | yes (1) | yes (1) | yes (1) | yes, older branch (2) |
 | Splice | yes (3) | yes (3) | yes (4) | yes, with a limit (5) | yes, older branch (2) |
 | Debug info | yes (6) | yes (6) | lines only (7) | unverified (7) | no |
-| `cargo rustd` | yes (8) | unverified (9) | no: goes to cargo (9) | no: goes to cargo (9) | no |
+| `cargo ra-jit` | yes (8) | unverified (9) | no: goes to cargo (9) | no: goes to cargo (9) | no |
 | Disk store | yes (10) | yes (10) | yes (10) | yes (10) | unverified |
 | Remote store | yes, not real AWS (11) | unverified | unverified | unverified | unverified |
 | Fuzzed | yes (12) | no | no | no | no |
 
-1. CI: `difftest.py corpus --layouts` compiles every function of the corpus with rustd and
+1. CI: `difftest.py corpus --layouts` compiles every function of the corpus with ra-jit and
    matches rustc under both backends: 822 of 822 functions on Linux x86-64, 825 of 825 on
    native AArch64, 830 of 830 on Windows, 828 of 828 on macOS, with 0 type layouts
    differing. `programs`, `stress`, `breakers`, `unwinds`, `splices`, `asmedits`,
@@ -40,8 +40,8 @@ to stable; those are marked where they are used.
    corpus function left to Cranelift on any of the four. Local: 822 of 822 under both.
 2. wasm32 uses its own lowering from Cranelift IR, not Cranelift's or LLVM's code
    generation. [reports/WASM32.md](reports/WASM32.md) measured `wasm32-wasip1` under
-   wasmtime on the `rustd-wasm32-target` branch with `nightly-2026-05-10`: corpus MATCH with
-   655 of 656 functions from rustd, stress 99 of 99, splices 71 of 71 with 62 spliced. wasm
+   wasmtime on the `ra-jit-wasm32-target` branch with `nightly-2026-05-10`: corpus MATCH with
+   655 of 656 functions from ra-jit, stress 99 of 99, splices 71 of 71 with 62 spliced. wasm
    is not in CI and nobody has recorded a run since the move to 1.99.0. No unwinding is
    emitted; the wasm targets are `panic=abort`. `wasm32-unknown-unknown` was only exercised
    through one Dioxus page.
@@ -57,15 +57,15 @@ to stable; those are marked where they are used.
 6. [reports/DEBUGINFO.md](reports/DEBUGINFO.md) for x86-64 and PLAT-ABI2 for native
    AArch64: `debuginfo.py` passes under both backends. See "Debug info" below for what that
    covers.
-7. On Windows rustd writes CodeView procedures and line tables, checked by `debuginfo.py`
+7. On Windows ra-jit writes CodeView procedures and line tables, checked by `debuginfo.py`
    with `llvm-pdbutil` and `cdb` (WINDOWS.md). There are no types, parameters or locals,
    and the PDB is stale after a splice until the next full link. On macOS debug info is
    not checked here.
-8. `harness/cargo_rustd.py`, Cranelift only: seven real projects with no difference from
+8. `harness/cargo_ra_jit.py`, Cranelift only: seven real projects with no difference from
    cargo, 66 of 66 flag steps, 11 of 11 lifecycle checks
    ([reports/CARGO.md](reports/CARGO.md)). Not in CI. Run by hand for these docs on a new
    project and on ripgrep 15.1.0.
-9. `cargo rustd` hands any target that is not ELF to cargo (`unsupported_target` in
+9. `cargo ra-jit` hands any target that is not ELF to cargo (`unsupported_target` in
    `cargo/cli.rs`), and has not been built or run on macOS or Windows. Nobody recorded
    running it on Linux AArch64.
 10. CI: `storekills.py`, `storecorrupts.py` and `storeshared.py` on all four platforms.
@@ -85,9 +85,9 @@ harness below.
 
 ## Backends
 
-Cranelift is the default and needs nothing installed. LLVM needs LLVM 20 and a rustd built
-with `--features llvm`, and is selected with `RUSTD_BACKEND=llvm`. Everything that was
-measured under LLVM used `RUSTD_OPT=2 RUSTD_EMIT=fast`. Other levels are accepted and are
+Cranelift is the default and needs nothing installed. LLVM needs LLVM 20 and a ra-jit built
+with `--features llvm`, and is selected with `RA_JIT_BACKEND=llvm`. Everything that was
+measured under LLVM used `RA_JIT_OPT=2 RA_JIT_EMIT=fast`. Other levels are accepted and are
 not covered by the gate.
 
 Neither backend inlines one function into another, so LLVM at `-O2` is not comparable to a
@@ -96,7 +96,7 @@ worked around by turning off a vectoriser pass (finding 6 in FUZZ.md).
 
 ## Debug info
 
-On ELF, every function rustd compiles is described in DWARF 4 with line tables and a
+On ELF, every function ra-jit compiles is described in DWARF 4 with line tables and a
 subprogram entry. Checked on Linux x86-64 and native AArch64: backtraces with
 `RUST_BACKTRACE=1` have the same workspace frames as cargo's build, `llvm-dwarfdump
 --verify` finds no errors (also after a splice), and gdb stops and steps by line.
@@ -117,11 +117,11 @@ What is missing:
 
 ## Language
 
-rustd compiles what rust-analyzer can lower to MIR and what the code generator has an
+ra-jit compiles what rust-analyzer can lower to MIR and what the code generator has an
 explicit lowering for. The rest is refused per function, with a reason, and rustc's copy of
 that function is used. Measured on rustc's own tests
 ([reports/RUSTCSUITES.md](reports/RUSTCSUITES.md), Linux x86-64): of the `tests/ui`
-run-pass tests that can run on stable, rustd compiled 5558 of 5615 functions and refused
+run-pass tests that can run on stable, ra-jit compiled 5558 of 5615 functions and refused
 57; in the standard library's test suites it refused 11 of 2846.
 
 Known refusals:
@@ -136,35 +136,35 @@ Known refusals:
 | the `win64` calling convention on Linux | no lowering |
 | pattern matching on a union | not lowered from MIR |
 | upcasting a `dyn` type with bound regions | not lowered |
-| `Location::caller()` in a constant | rustd does not know what file name rustc uses there |
+| `Location::caller()` in a constant | ra-jit does not know what file name rustc uses there |
 | `type_name` of a function item or of a `dyn` type with a binder | rustc's exact text is not reproduced |
 | `%` on floats in a constant; `type_id` of a type with lifetimes in a constant | const evaluation gaps |
 | a body in which rust-analyzer's type inference fails or finds errors rustc does not | no MIR, so no code; examples are range patterns over associated constants and an empty array whose element type comes from a single `PartialEq` impl |
 | 15 functions of the `generic-array` crate | a trait-solver gap on `GenericArray<T, N>` |
 
-Nightly features are out of scope: rustd is tested against stable 1.99.0.
+Nightly features are out of scope: ra-jit is tested against stable 1.99.0.
 
-Known differences from rustc, where rustd does compile the code. These are the cases
+Known differences from rustc, where ra-jit does compile the code. These are the cases
 marked open in `harness/breakers.py`:
 
 | Case | Difference |
 |---|---|
 | `assert_message` | `assert!` of a condition longer than a line prints it on one line; rustc breaks it over several |
-| `future_unwind_flags` | a future can be one byte smaller than rustc's, because rustc keeps a drop flag rustd does not. Only code that depends on the exact size of a future sees it |
-| `raw_write_then_match` | a value written through a raw pointer into a local rustc believes is `None`, then partly moved out, is dropped by rustd and leaked by rustc |
-| `fragment_edition_through_macro` | rustd does what rustc's own test says rustc will do once rust-lang/rust#130484 is fixed |
+| `future_unwind_flags` | a future can be one byte smaller than rustc's, because rustc keeps a drop flag ra-jit does not. Only code that depends on the exact size of a future sees it |
+| `raw_write_then_match` | a value written through a raw pointer into a local rustc believes is `None`, then partly moved out, is dropped by ra-jit and leaked by rustc |
+| `fragment_edition_through_macro` | ra-jit does what rustc's own test says rustc will do once rust-lang/rust#130484 is fixed |
 
 The differential fuzzer found twenty-one problems in generated programs, most of them
 miscompiles in the order temporaries are dropped. Twenty are fixed or worked around and one
 is the first row above. Nearly every full-size run found something, so expect that more
 exist.
 
-rustd has no borrow checker and no diagnostics. The daemon refuses source in which
+ra-jit has no borrow checker and no diagnostics. The daemon refuses source in which
 rust-analyzer finds an error (a type mismatch, an unresolved name, a missing field), and
-under `cargo rustd` cargo then runs and rustc reports it. An error rust-analyzer does not
+under `cargo ra-jit` cargo then runs and rustc reports it. An error rust-analyzer does not
 find is not refused. Borrow-check errors are the main case: with a warm daemon,
-`cargo rustd run` built and ran a program that uses a `String` after moving it, which rustc
-rejects with E0382 (checked by hand at f191c6e42a). Run `cargo rustd check` or
+`cargo ra-jit run` built and ran a program that uses a `String` after moving it, which rustc
+rejects with E0382 (checked by hand at f191c6e42a). Run `cargo ra-jit check` or
 `cargo check` to get rustc's verdict.
 
 ## Cargo's build model
@@ -178,21 +178,21 @@ native AArch64, where four rows that need an x86-64 host are not run (CI on `513
 [reports/BUILDMODEL.md](reports/BUILDMODEL.md) has the table at 97 cases per backend, of
 which 92 were supported and 5 refused.
 
-`cargo rustd` is narrower. It serves the dev and test profiles and hands the rest to
+`cargo ra-jit` is narrower. It serves the dev and test profiles and hands the rest to
 cargo, as [cargo.md](cargo.md) lists.
 
-| Feature | Daemon (`buildmodel.py`) | `cargo rustd` |
+| Feature | Daemon (`buildmodel.py`) | `cargo ra-jit` |
 |---|---|---|
 | dev and test profiles | supported | served |
 | release and custom profiles, `opt-level`, `debug-assertions`, `overflow-checks`, `codegen-units`, `strip`, per-package overrides | supported | handed to cargo for `--release` and `--profile`; unverified for profile settings changed in the manifest |
 | `panic = "abort"` | supported | unverified |
-| `lto = true`, `lto = "thin"` | refused: rustc recompiles the whole program at link time and leaves no library to link rustd's functions against | cargo |
+| `lto = true`, `lto = "thin"` | refused: rustc recompiles the whole program at link time and leaves no library to link ra-jit's functions against | cargo |
 | `lto = "off"` | supported | unverified |
 | crate types `bin`, `lib`, `rlib`, `dylib`, `cdylib`, `staticlib` | supported | programs only; a `cdylib` or `staticlib` that is not linked into an executable has nothing to splice into |
-| proc macros (attribute, derive, function-like) | supported: rustc's build of the macro is loaded and its expansion is compiled by rustd | served; an edit to the proc-macro crate itself is cargo's |
+| proc macros (attribute, derive, function-like) | supported: rustc's build of the macro is loaded and its expansion is compiled by ra-jit | served; an edit to the proc-macro crate itself is cargo's |
 | build scripts (`rerun-if-changed`, `rerun-if-env-changed`, `rustc-cfg`, `rustc-env`, `rustc-link-lib`, `OUT_DIR`, `links`) | supported | served; a change to a script or its inputs is cargo's, then the daemon reloads |
 | unit tests, integration tests, examples, benches | supported | served; adding or removing a `#[test]` is cargo's |
-| doctests | supported through `cargo rustd test --doc` (`doctests.py`, 30 crates); documentation behind `cfg(doc)` is not seen | served; an example rustd cannot build is left to rustdoc with the reason |
+| doctests | supported through `cargo ra-jit test --doc` (`doctests.py`, 30 crates); documentation behind `cfg(doc)` is not seen | served; an example ra-jit cannot build is left to rustdoc with the reason |
 | features, optional and weak dependencies, feature unification under resolvers 1, 2 and 3 | supported | `--features` served; `--all-features` and `--no-default-features` handed to cargo |
 | path, git, registry, renamed, vendored, `[patch]` and `[replace]` dependencies | supported | served |
 | an edit to a path dependency the daemon was not asked to build | refused with a reason | cargo |
@@ -205,5 +205,5 @@ cargo, as [cargo.md](cargo.md) lists.
 | manifest, lock file or workspace membership changing under a running daemon (`git checkout` between commits) | supported | cargo builds, then the daemon reloads |
 
 "Supported" for a release profile means the program printed the same as cargo's. It does
-not mean the code is as fast: rustd's code is not optimised across functions under either
+not mean the code is as fast: ra-jit's code is not optimised across functions under either
 backend.

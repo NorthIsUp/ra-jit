@@ -10,7 +10,7 @@
     "--features",
     "weak,with-opt"
   ],
-  "rustd": [
+  "ra-jit": [
     "--features",
     "weak,with-opt"
   ]

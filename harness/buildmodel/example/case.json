@@ -9,7 +9,7 @@
     "--example",
     "demo"
   ],
-  "rustd": [
+  "ra-jit": [
     "--dev-deps"
   ]
 }

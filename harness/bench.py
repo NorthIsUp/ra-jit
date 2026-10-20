@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""bench.py: what a build costs through `cargo rustd`, phase by phase, against plain cargo.
+"""bench.py: what a build costs through `cargo ra-jit`, phase by phase, against plain cargo.
 
     bench.py [PROJECT...] [--backend cranelift|llvm]... [--runs N] [--out FILE] [--work DIR]
              [--reference DIR] [--keep]
     bench.py --compare BASELINE RESULT [--threshold PERCENT]
 
-Each project is one pinned checkout (cloned into `RUSTD_PROJECTS` as cargo_rustd.py does, and
+Each project is one pinned checkout (cloned into `RA_JIT_PROJECTS` as cargo_ra_jit.py does, and
 copied; the clone is never written to). Under each backend, with a store, a daemon and a home
 of its own, and plain cargo building the same source into a target directory of its own (under `--reference` when
 that is given, which lets the two be on different disks):
-  cold       `cargo rustd build` from nothing, then the wait until the daemon has the
+  cold       `cargo ra-jit build` from nothing, then the wait until the daemon has the
              workspace loaded and its first build linked
-  no-op      `cargo rustd build` with nothing changed
+  no-op      `cargo ra-jit build` with nothing changed
   body       one function's body is edited
   signature  a function gets another parameter, and every caller the argument
   leaf       a body in a crate of the workspace that the others depend on
@@ -32,12 +32,12 @@ over when it did.
 than in the first by more than the threshold, was built by cargo where the daemon built it,
 was linked again where it was added, or is missing. Differences under 50 ms are not counted.
 
-The rustd of a backend is `RUSTD_BIN` (cranelift) or `RUSTD_LLVM_BIN` (llvm).
+The ra-jit of a backend is `RA_JIT_BIN` (cranelift) or `RA_JIT_LLVM_BIN` (llvm).
 """
 import glob, json, os, platform, re, shutil, statistics, subprocess, sys, tempfile, time
 
-import cargo_rustd
-from cargo_rustd import HERE, ROOT, TOOLCHAIN, Side, fetch, how_built, program_output, wait_warm
+import cargo_ra_jit
+from cargo_ra_jit import HERE, ROOT, TOOLCHAIN, Side, fetch, how_built, program_output, wait_warm
 
 LET = "\n    let _bench_edit = 1u32;"
 
@@ -88,18 +88,18 @@ PROJECTS = {
 }
 
 BACKENDS = {
-    "cranelift": dict(RUSTD_BACKEND="cranelift"),
-    "llvm": dict(RUSTD_BACKEND="llvm", RUSTD_OPT="2", RUSTD_EMIT="fast"),
+    "cranelift": dict(RA_JIT_BACKEND="cranelift"),
+    "llvm": dict(RA_JIT_BACKEND="llvm", RA_JIT_OPT="2", RA_JIT_EMIT="fast"),
 }
 DURATION = re.compile(r"([0-9.]+)(ns|µs|ms|s)\b")
 UNITS = {"ns": 1e-9, "µs": 1e-6, "ms": 1e-3, "s": 1.0}
 FLOOR_SECS = 0.05
 
 
-def rustd_of(backend):
+def ra_jit_of(backend):
     if backend == "llvm":
-        return os.environ.get("RUSTD_LLVM_BIN") or os.path.join(ROOT, "target-llvm/release/rustd")
-    return cargo_rustd.RUSTD
+        return os.environ.get("RA_JIT_LLVM_BIN") or os.path.join(ROOT, "target-llvm/release/ra-jit")
+    return cargo_ra_jit.RA_JIT
 
 
 def seconds(text):
@@ -215,12 +215,12 @@ def compiled(text):
 
 def measure(name, spec, backend, runs, work, reference_dir):
     """Runs every phase of one project under one backend. The result is the phases by name."""
-    rustd = rustd_of(backend)
+    ra-jit = ra_jit_of(backend)
     ws = os.path.realpath(os.path.join(work, f"{name}-{backend}"))
     shutil.copytree(fetch(name, spec), ws, symlinks=True, ignore=shutil.ignore_patterns("target", "target-ref", ".git"))
-    env = cargo_rustd.base_env(os.path.join(work, f"home-{name}-{backend}"))
-    env["PATH"] = os.path.dirname(rustd) + os.pathsep + env["PATH"]
-    env.update(BACKENDS[backend], RUSTD_STATS="1", RUSTD_CACHE=os.path.join(work, f"store-{name}-{backend}"))
+    env = cargo_ra_jit.base_env(os.path.join(work, f"home-{name}-{backend}"))
+    env["PATH"] = os.path.dirname(ra-jit) + os.pathsep + env["PATH"]
+    env.update(BACKENDS[backend], RA_JIT_STATS="1", RA_JIT_CACHE=os.path.join(work, f"store-{name}-{backend}"))
     ours, theirs = Side(ws, env, True), Side(ws, env, False)
     if reference_dir:
         theirs.env["CARGO_TARGET_DIR"] = os.path.join(reference_dir, f"target-ref-{name}-{backend}")
@@ -230,7 +230,7 @@ def measure(name, spec, backend, runs, work, reference_dir):
 
     def both():
         (took, mine), (reference, other) = ours.cargo("build"), theirs.cargo("build")
-        for side, ran in (("rustd", mine), ("cargo", other)):
+        for side, ran in (("ra-jit", mine), ("cargo", other)):
             if ran.returncode != 0:
                 raise SystemExit(f"{name} {backend}: the {side} build failed:\n{ran.stderr[-3000:]}")
         built = how_built(mine.stderr)
@@ -246,7 +246,7 @@ def measure(name, spec, backend, runs, work, reference_dir):
 
     def report(label, phase):
         phases[label] = phase
-        print(f"  {label:10} rustd {phase['wall_s']:8.3f}s  cargo {phase['cargo_s']:8.3f}s  rss {phase['rss_mb']:6} MB  "
+        print(f"  {label:10} ra-jit {phase['wall_s']:8.3f}s  cargo {phase['cargo_s']:8.3f}s  rss {phase['rss_mb']:6} MB  "
               f"{phase['built'][:60]}  {phase.get('link') or ''}", flush=True)
 
     # Cargo's own cold build waits until the daemon is warm: the two would share the cores.
@@ -345,7 +345,7 @@ def main():
         sys.exit(1 if worse else 0)
     backends, runs = options(argv, "--backend") or list(BACKENDS), int(options(argv, "--runs", "3")[0])
     out = options(argv, "--out", os.path.join(HERE, "bench.json"))[0]
-    work = (options(argv, "--work") or [None])[0] or tempfile.mkdtemp(prefix="rustd-bench-")
+    work = (options(argv, "--work") or [None])[0] or tempfile.mkdtemp(prefix="ra-jit-bench-")
     reference_dir = (options(argv, "--reference") or [None])[0]
     keep = "--keep" in argv
     names = [a for a in argv if not a.startswith("--")] or list(PROJECTS)
@@ -353,7 +353,7 @@ def main():
     result = dict(toolchain=TOOLCHAIN, machine=platform.machine(), cores=os.cpu_count(), runs=runs, results={})
     for name in names:
         for backend in backends:
-            print(f"{name} {backend} ({rustd_of(backend)}; work {work})", flush=True)
+            print(f"{name} {backend} ({ra_jit_of(backend)}; work {work})", flush=True)
             result["results"][f"{name}/{backend}"] = measured = measure(name, PROJECTS[name], backend, runs, work, reference_dir)
             for line in measured["wrong"]:
                 print(f"  WRONG {line}", flush=True)

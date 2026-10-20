@@ -3,7 +3,7 @@
 
 The stress workspace is copied COUNT times. The daemon is started in the first copy with the
 others as `--also`; each step edits files of some checkouts and asks for the program of some by
-`rustd sync SOCKET --project ...`. Every program asked for is run and compared with what
+`ra-jit sync SOCKET --project ...`. Every program asked for is run and compared with what
 `cargo build` of that checkout prints.
 
 With `--join` the daemon is started in the first copy alone, and the others join it when they
@@ -14,7 +14,7 @@ import os, shlex, shutil, subprocess, sys, tempfile, time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import linkline
-from difftest import Fixture, RUSTD, sysroot_rlibs, RUNNER, TARGET_ARGS, built
+from difftest import Fixture, RA_JIT, sysroot_rlibs, RUNNER, TARGET_ARGS, built
 
 COUNT = 3
 MID, APP = "mid/src/lib.rs", "app/src/main.rs"
@@ -25,7 +25,7 @@ NOTE = "app/src/note.txt"
 MORE = "app/src/more.rs"
 # Of the workspace and of no package.
 SHARED = "shared.txt"
-# Not the same in any two runs either: with `RUSTD_CACHE` a run has what the last one compiled.
+# Not the same in any two runs either: with `RA_JIT_CACHE` a run has what the last one compiled.
 RUN = os.getpid()
 # (what the step is, [(checkout, file, old or None to write it, new or None to remove it)], checkouts asked for in order, the ones cargo rejects)
 STEPS = [
@@ -85,19 +85,19 @@ THIN = "--thin" in sys.argv
 # With `--slow` every build of a checkout read as another counts as a long one, so that the
 # daemon gives up on reading them so and loads them.
 if "--slow" in sys.argv:
-    os.environ["RUSTD_SLOW_SWITCH_MS"] = "0"
+    os.environ["RA_JIT_SLOW_SWITCH_MS"] = "0"
 JOIN = "--join" in sys.argv or SPLIT or THIN
 
 
 def splice(program):
-    """Edits are added to the linked binary where that can be done; RUSTD_SPLICE=0 links each in full."""
+    """Edits are added to the linked binary where that can be done; RA_JIT_SPLICE=0 links each in full."""
     return ["--binary", program["bin"]]
 
 
 def main():
     # cargo names a checkout by its real path, and the temporary directory of macOS is a link.
-    work = os.path.realpath(tempfile.mkdtemp(prefix="rustd-worktrees-"))
-    socket, log_path = os.path.join(work, "rustd.sock"), os.path.join(work, "daemon.log")
+    work = os.path.realpath(tempfile.mkdtemp(prefix="ra-jit-worktrees-"))
+    socket, log_path = os.path.join(work, "ra-jit.sock"), os.path.join(work, "daemon.log")
     crates = ["sapp", "sbase", "smid"]
     checkouts = []
     for at in range(COUNT):
@@ -121,18 +121,18 @@ def main():
             fx.rustc_build()
         obj, patch, binary = (os.path.join(work, f"sapp{at}.{n}") for n in ("o", "patch.o", "bin"))
         link = list(fx.link_args)
-        link = linkline.with_output(linkline.ahead(link, [patch, obj], RUSTD), binary)
+        link = linkline.with_output(linkline.ahead(link, [patch, obj], RA_JIT), binary)
         symbols = [x for rlib in fx.rlibs + sysroot_rlibs() for x in ("--symbols", rlib)]
         checkouts.append({"ws": ws, "obj": obj, "patch": patch, "bin": binary, "link": linkline.join(link),
                           "symbols": symbols, "reference": os.path.join(work, f"reference{at}")})
     first = checkouts[0]
     out = open(log_path, "a")
     daemon = subprocess.Popen(
-        [RUSTD, first["ws"], *TARGET_ARGS, *[x for c in crates for x in ("--crate", c)], "--out", first["obj"], "--socket", socket,
+        [RA_JIT, first["ws"], *TARGET_ARGS, *[x for c in crates for x in ("--crate", c)], "--out", first["obj"], "--socket", socket,
          "--patch", first["patch"], "--link-cmd", first["link"], *splice(first), *first["symbols"],
          *[x for other in checkouts[1:] if not JOIN and not OVERLAY for x in ("--also", other["ws"])]],
         stderr=out, stdout=out,
-        env={**os.environ, **({"RUSTD_OVERLAY": "1"} if OVERLAY else {}), "RUSTD_SPLIT": "1" if SPLIT else "0"})
+        env={**os.environ, **({"RA_JIT_OVERLAY": "1"} if OVERLAY else {}), "RA_JIT_SPLIT": "1" if SPLIT else "0"})
     while "watching" not in open(log_path).read():
         if daemon.poll() is not None:
             raise SystemExit(f"the daemon did not start: {log_path}")
@@ -165,7 +165,7 @@ def main():
         def ask(at):
             checkout = checkouts[at]
             return time.time(), subprocess.Popen(
-                [RUSTD, "sync", socket, "--project", checkout["ws"], "--crate", "sapp", "--out", checkout["obj"],
+                [RA_JIT, "sync", socket, "--project", checkout["ws"], "--crate", "sapp", "--out", checkout["obj"],
                  "--patch", checkout["patch"], "--link-cmd", checkout["link"], *splice(checkout), *checkout["symbols"]],
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 

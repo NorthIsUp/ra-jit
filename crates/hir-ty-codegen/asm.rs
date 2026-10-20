@@ -23,10 +23,10 @@ use super::{Arch, ObjectFormat, Target, store::Store};
 mod aarch64;
 
 /// The name of the function in the text of a [`Wrapper`].
-const SYMBOL: &str = "rustd_asm_block";
+const SYMBOL: &str = "ra_jit_asm_block";
 
 /// What the name of an [`Operand::Sym`] starts with.
-const SYM: &str = "rustd_sym_";
+const SYM: &str = "ra_jit_sym_";
 
 /// A function of one instruction that Cranelift does not have: `xgetbv` reads the extended
 /// control register its argument numbers.
@@ -137,12 +137,12 @@ fn sym(index: usize) -> String {
 
 /// The name in a [`Wrapper`] of the label that is operand `index`.
 fn label(format: ObjectFormat, index: usize) -> String {
-    format!("{}rustd_label_{index}", format.local_label())
+    format!("{}ra_jit_label_{index}", format.local_label())
 }
 
 /// The name in a [`Wrapper`] of where every way out of the block meets.
 fn done(format: ObjectFormat) -> String {
-    format!("{}rustd_done", format.local_label())
+    format!("{}ra_jit_done", format.local_label())
 }
 
 /// The labels among the operands, by index.
@@ -644,7 +644,7 @@ impl Assembled {
 pub(super) fn assemble(triple: &str, text: &str) -> Result<Arc<Assembled>, String> {
     static ASSEMBLED: OnceLock<Mutex<FxHashMap<[u8; 32], Arc<Assembled>>>> = OnceLock::new();
     let mut hasher = Sha256::new();
-    hasher.update(b"rustd asm 3");
+    hasher.update(b"ra-jit asm 3");
     hasher.update(triple);
     hasher.update([0]);
     hasher.update(text);
@@ -708,7 +708,7 @@ fn run_assembler(triple: &str, text: &str, key: &[u8; 32]) -> Result<Assembled, 
     let run = RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let name: String =
         key[..8].iter().map(|it| format!("{it:02x}")).chain([format!("-{run}")]).collect();
-    let dir = std::env::temp_dir().join(format!("rustd-asm-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("ra-jit-asm-{}", std::process::id()));
     let failed = |what: &str, e: &dyn std::fmt::Display| format!("inline assembly: {what}: {e}");
     std::fs::create_dir_all(&dir).map_err(|e| failed("no directory to assemble in", &e))?;
     let [assembly, source, object] = ["s", "rs", "o"].map(|it| dir.join(format!("{name}.{it}")));
@@ -730,7 +730,7 @@ fn run_assembler(triple: &str, text: &str, key: &[u8; 32]) -> Result<Assembled, 
     let output = Command::new(rustc)
         .current_dir(&dir)
         .args(["--edition=2021", "--crate-type=lib", "--emit=obj", "-Cpanic=abort"])
-        .args(["--crate-name=rustd_asm", "--target", triple, "-o"])
+        .args(["--crate-name=ra_jit_asm", "--target", triple, "-o"])
         .arg(&object)
         .arg(&source)
         .output();

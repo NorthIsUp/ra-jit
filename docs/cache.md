@@ -1,13 +1,13 @@
 # The disk store and the remote
 
-rustd keeps compiled functions in memory while a daemon runs. Two more layers keep them
+ra-jit keeps compiled functions in memory while a daemon runs. Two more layers keep them
 longer. The disk store is a directory on this machine that every daemon of the user can
 share. The remote is a directory or an S3 bucket that several machines push to and pull
 from. Both are off until you configure them.
 
 The reports behind this file are [reports/DISKCACHE.md](reports/DISKCACHE.md) and
 [reports/REMOTE.md](reports/REMOTE.md). The variables and commands below were checked
-against `crates/hir-ty-codegen/store.rs` and `crates/rustd/src/remote.rs`.
+against `crates/hir-ty-codegen/store.rs` and `crates/ra-jit/src/remote.rs`.
 
 ## What is stored and under what key
 
@@ -28,8 +28,8 @@ one running daemon, unchanged functions of an edited crate are kept by the datab
 instead.
 
 Before a record is written, the store hashes that key together with the store format, a
-hash of the rustd executable and the toolchain's commit. An entry is therefore only ever
-found by the same rustd binary, for the same toolchain. Upgrading rustd makes the old
+hash of the ra-jit executable and the toolchain's commit. An entry is therefore only ever
+found by the same ra-jit binary, for the same toolchain. Upgrading ra-jit makes the old
 entries unreachable; they are removed over time as least recently used.
 
 `harness/keys.py` tests the keying: it changes, one at a time, each thing code can depend
@@ -38,19 +38,19 @@ change still prints what cargo's build prints.
 
 ## The disk store
 
-Set `RUSTD_CACHE` to a directory. The daemon reads the variable when it starts, so under
-`cargo rustd` it has to be set in the environment of the command that starts the daemon;
-run `cargo rustd stop` first if one is running.
+Set `RA_JIT_CACHE` to a directory. The daemon reads the variable when it starts, so under
+`cargo ra-jit` it has to be set in the environment of the command that starts the daemon;
+run `cargo ra-jit stop` first if one is running.
 
-    export RUSTD_CACHE=~/.cache/rustd-store
-    cargo rustd stop
-    cargo rustd build
+    export RA_JIT_CACHE=~/.cache/ra-jit-store
+    cargo ra-jit stop
+    cargo ra-jit build
 
 | Variable | Meaning | Default |
 |---|---|---|
-| `RUSTD_CACHE` | the store's directory | not set: no store |
-| `RUSTD_CACHE_MAX` | the most the sealed packs may take: bytes, or a number with `K`, `M` or `G`, or `off` | 8G |
-| `RUSTD_CACHE_SEAL_AT` | size at which an open pack is sealed at the end of a build; exists for the harnesses | 4M |
+| `RA_JIT_CACHE` | the store's directory | not set: no store |
+| `RA_JIT_CACHE_MAX` | the most the sealed packs may take: bytes, or a number with `K`, `M` or `G`, or `off` | 8G |
+| `RA_JIT_CACHE_SEAL_AT` | size at which an open pack is sealed at the end of a build; exists for the harnesses | 4M |
 
 ### What is on disk
 
@@ -80,9 +80,9 @@ at all it prints `store: not used: ...` and runs without a store.
 ### Size and collection
 
 A collection runs when a daemon opens the store, after it seals a pack, and on
-`rustd cache gc`. It seals open packs left behind, removes old temporaries, merges sealed
+`ra-jit cache gc`. It seals open packs left behind, removes old temporaries, merges sealed
 packs smaller than 4M into one when there are more than 16 of them, and then removes the
-least recently used packs until the rest fit under `RUSTD_CACHE_MAX`. A pack counts as used
+least recently used packs until the rest fit under `RA_JIT_CACHE_MAX`. A pack counts as used
 when a daemon read a value from it during a build.
 
 Eviction is by pack, not by record. One recently used record keeps its whole pack, which
@@ -90,11 +90,11 @@ can be up to 64M, so a limit smaller than a few packs evicts nearly everything.
 
 ### Commands
 
-These act on the store `RUSTD_CACHE` names.
+These act on the store `RA_JIT_CACHE` names.
 
-    rustd cache stats                 format, packs, bytes, limit, oldest and newest use
-    rustd cache verify                read everything; exit 1 if a pack is not what was written
-    rustd cache gc [--max SIZE]       collect now, to RUSTD_CACHE_MAX or to SIZE
+    ra-jit cache stats                 format, packs, bytes, limit, oldest and newest use
+    ra-jit cache verify                read everything; exit 1 if a pack is not what was written
+    ra-jit cache gc [--max SIZE]       collect now, to RA_JIT_CACHE_MAX or to SIZE
 
 ### Limits
 
@@ -122,33 +122,33 @@ virtual-hosted addressing, IAM errors and role credentials are untested.
 
 ### By hand
 
-    rustd cache push REMOTE [PROJECT]
-    rustd cache pull REMOTE [PROJECT]
+    ra-jit cache push REMOTE [PROJECT]
+    ra-jit cache pull REMOTE [PROJECT]
 
 `push` sends the packs the manifest lacks and adds them to it. `pull` fetches the packs the
-manifest lists that are not in the local store, as many as fit under `RUSTD_CACHE_MAX`.
+manifest lists that are not in the local store, as many as fit under `RA_JIT_CACHE_MAX`.
 `PROJECT` picks the manifest and defaults to `default`.
 
 ### From the daemon
 
-With `RUSTD_REMOTE` set, the daemon pulls before its first build, pulls again when a build
+With `RA_JIT_REMOTE` set, the daemon pulls before its first build, pulls again when a build
 misses a key and the manifest has changed, and pushes what it compiled after the first
 build, then every five minutes, and once more when it is told to stop. No build waits for a
 push. A daemon killed with SIGKILL pushes nothing on its way out; the next push sends it.
 
 | Variable | Meaning | Default |
 |---|---|---|
-| `RUSTD_REMOTE` | the remote the daemon keeps its store in step with | not set |
-| `RUSTD_PROJECT` | which manifest | `default` |
-| `RUSTD_REMOTE_READONLY` | never write to the remote | off |
-| `RUSTD_REMOTE_LAZY` | fetch only the key lists, and a pack when a build first asks for a key in it | off |
-| `RUSTD_REMOTE_PUSH_EVERY` | how often a running daemon pushes (`90s`, `5m`, `1h`), or `off` | `5m` |
-| `RUSTD_REMOTE_JOBS` | requests in flight at once | 8 |
-| `RUSTD_REMOTE_TIMEOUT` | seconds a request may go without an answer | 30 |
-| `RUSTD_REMOTE_SIGN` | file holding the key this machine signs manifests with | not set |
-| `RUSTD_REMOTE_TRUST` | public keys this machine accepts manifests from, comma separated | not set |
+| `RA_JIT_REMOTE` | the remote the daemon keeps its store in step with | not set |
+| `RA_JIT_PROJECT` | which manifest | `default` |
+| `RA_JIT_REMOTE_READONLY` | never write to the remote | off |
+| `RA_JIT_REMOTE_LAZY` | fetch only the key lists, and a pack when a build first asks for a key in it | off |
+| `RA_JIT_REMOTE_PUSH_EVERY` | how often a running daemon pushes (`90s`, `5m`, `1h`), or `off` | `5m` |
+| `RA_JIT_REMOTE_JOBS` | requests in flight at once | 8 |
+| `RA_JIT_REMOTE_TIMEOUT` | seconds a request may go without an answer | 30 |
+| `RA_JIT_REMOTE_SIGN` | file holding the key this machine signs manifests with | not set |
+| `RA_JIT_REMOTE_TRUST` | public keys this machine accepts manifests from, comma separated | not set |
 
-`RUSTD_REMOTE` needs `RUSTD_CACHE` as well: the remote fills and reads the local store.
+`RA_JIT_REMOTE` needs `RA_JIT_CACHE` as well: the remote fills and reads the local store.
 
 ### S3 address and credentials
 
@@ -156,11 +156,11 @@ push. A daemon killed with SIGKILL pushes nothing on its way out; the next push 
 
 Whatever the address leaves out comes from where the AWS tools look: `AWS_ENDPOINT_URL`,
 `AWS_REGION`, `AWS_PROFILE`, `~/.aws/config`. An unknown option is refused by name. With an
-endpoint of its own, rustd addresses the bucket by path unless told `path-style=false`.
+endpoint of its own, ra-jit addresses the bucket by path unless told `path-style=false`.
 
-rustd does not hold credentials; the AWS SDK finds them (environment, shared config and
+ra-jit does not hold credentials; the AWS SDK finds them (environment, shared config and
 profiles, web identity, container and instance roles). They are not printed. The harness
-searches everything rustd printed in a run for the secret key.
+searches everything ra-jit printed in a run for the secret key.
 
 ### Trust and signing
 
@@ -171,25 +171,25 @@ hashed after the fetch and before it is put in the store. A remote, proxy or dis
 returns other bytes has them thrown away and reported, and the build compiles those
 functions itself. Key lists and cargo units are checked the same way.
 
-Can someone with write access make rustd use the wrong code? Without signing, yes. The
+Can someone with write access make ra-jit use the wrong code? Without signing, yes. The
 manifest is the one mutable object. Somebody who can write to the bucket can upload a
 well-formed pack with wrong code under real keys and list it. Content addressing does not
 catch that.
 
 Signing does. Make a key and note the public half it prints:
 
-    rustd cache keygen ~/.config/rustd/sign.key
+    ra-jit cache keygen ~/.config/ra-jit/sign.key
 
-A machine with `RUSTD_REMOTE_SIGN` naming that file signs each manifest it writes
-(Ed25519, over the manifest's name and body). A machine with `RUSTD_REMOTE_TRUST` listing
+A machine with `RA_JIT_REMOTE_SIGN` naming that file signs each manifest it writes
+(Ed25519, over the manifest's name and body). A machine with `RA_JIT_REMOTE_TRUST` listing
 public keys refuses any manifest not signed by one of them. A machine that trusts keys but
 has none to sign with refuses to push.
 
-So: with `RUSTD_REMOTE_TRUST` set, nobody without a trusted signing key can make rustd emit
+So: with `RA_JIT_REMOTE_TRUST` set, nobody without a trusted signing key can make ra-jit emit
 code other than what a local build gives, whatever they do to the bucket. Without it,
 whoever can write to the bucket is trusted, as with sccache or a registry mirror. A trusted
-signer is trusted completely; rustd does not compile again to check them. Under all of it
-sits one assumption: two machines with the same rustd binary compile the same key to
+signer is trusted completely; ra-jit does not compile again to check them. Under all of it
+sits one assumption: two machines with the same ra-jit binary compile the same key to
 equivalent code.
 
 The harness checks, against both servers: a pack truncated, extended, emptied or with one
@@ -200,7 +200,7 @@ There is no `SECURITY.md` in the repository at the commit these docs were writte
 
 ### Collecting a remote
 
-    rustd cache gc --remote REMOTE [--unlisted-after AGE] [--older-than AGE] [--dry-run]
+    ra-jit cache gc --remote REMOTE [--unlisted-after AGE] [--older-than AGE] [--dry-run]
 
 An age is a number and `s`, `m`, `h` or `d`. The run first takes lines out of manifests:
 with `--older-than`, the lines of packs written longer ago than that, and always the lines
@@ -215,8 +215,8 @@ outside what it promises. Nothing runs a remote collection on its own.
 
 ### Dependencies built by cargo
 
-    rustd deps push REMOTE DIR [PROJECT]
-    rustd deps pull REMOTE DIR [PROJECT]
+    ra-jit deps push REMOTE DIR [PROJECT]
+    ra-jit deps pull REMOTE DIR [PROJECT]
 
 Run in the directory of `Cargo.lock`, where `DIR` is the directory cargo builds a profile
 in, such as `target/debug`. This sends and fetches what cargo built of registry and git
@@ -228,9 +228,9 @@ cargo build finds them fresh. It is separate from the function store and is test
 
 On one machine over loopback, a fresh second "machine" (another home directory, checkout
 and store) building ripgrep 14.1.1 took 16.8 s to a running program with no remote, 14.3 s
-with rustd's packs, and 9.6 s with packs and cargo's units. For cargo 0.92.0 the same three
-were 152.4 s, 117.1 s and 94.4 s. In each case with a remote, rustd compiled 0 functions.
-What is left is cargo running build scripts and proc macros, and rustd loading the
+with ra-jit's packs, and 9.6 s with packs and cargo's units. For cargo 0.92.0 the same three
+were 152.4 s, 117.1 s and 94.4 s. In each case with a remote, ra-jit compiled 0 functions.
+What is left is cargo running build scripts and proc macros, and ra-jit loading the
 workspace and walking every instance to find its key. Lazy fetching was slightly slower
 than fetching everything in both. Transfer times over loopback are a lower bound and say
 nothing about a real network. The full tables are in [results.md](results.md).

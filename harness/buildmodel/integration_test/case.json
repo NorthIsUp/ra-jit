@@ -10,7 +10,7 @@
     "it"
   ],
   "verb": "test",
-  "rustd": [
+  "ra-jit": [
     "--dev-deps",
     "--profile",
     "test"

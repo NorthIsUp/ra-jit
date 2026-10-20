@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""heap.py FOLDED [ROWS]: attributes a heap profile to salsa queries and to rustd's own structures.
+"""heap.py FOLDED [ROWS]: attributes a heap profile to salsa queries and to ra-jit's own structures.
 
 FOLDED is what `jeprof --collapsed` makes of a profile the daemon wrote: build it with
-`--features heap-profile`, run it with `RUSTD_MEMORY=DIR _RJEM_MALLOC_CONF=prof:true`.
+`--features heap-profile`, run it with `RA_JIT_MEMORY=DIR _RJEM_MALLOC_CONF=prof:true`.
 """
 import re, sys, collections
 QUERY = re.compile(r"<(.+?) as salsa::function::Configuration>::execute")
@@ -14,7 +14,7 @@ def short(name):
     return name.replace("<", "").replace(">", "")
 OWN = [("symbol table", "SymbolTable"), ("vfs / file loading", "vfs::"), ("vfs / file loading", "load_cargo"),
        ("project model", "project_model"), ("object emission", "cranelift_object"), ("object emission", "object::write"),
-       ("codegen driver (outside queries)", "hir_ty::mir::codegen"), ("rustd main (other)", "rustd::")]
+       ("codegen driver (outside queries)", "hir_ty::mir::codegen"), ("ra-jit main (other)", "ra_jit::")]
 def bucket(stack):
     frames = stack.split(";")
     for frame in reversed(frames):

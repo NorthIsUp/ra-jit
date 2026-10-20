@@ -1,6 +1,6 @@
 name: release
 
-# Builds rustd for the four platforms CI tests and attaches the archives to a GitHub release.
+# Builds ra-jit for the four platforms CI tests and attaches the archives to a GitHub release.
 # A tag `v*` makes a release of that name. A push to main replaces the prerelease `nightly`,
 # and a manual run makes or replaces the prerelease named by its input.
 on:
@@ -49,28 +49,28 @@ jobs:
       - run: rustup toolchain install 1.99.0 --profile minimal && rustup default 1.99.0
       # Without the `llvm` feature: that one links libLLVM dynamically, which a machine that
       # downloads the binary does not have.
-      - run: cargo build -p rustd --release --locked
+      - run: cargo build -p ra-jit --release --locked
         env:
           MACOSX_DEPLOYMENT_TARGET: "13.0"
       - name: Archive
         run: |
-          name=rustd-${{ matrix.target }}
+          name=ra-jit-${{ matrix.target }}
           mkdir "$name"
           cp LICENSE-APACHE LICENSE-MIT README.md "$name"
           if [ "$RUNNER_OS" = Windows ]; then
-            cp target/release/{rustd,cargo-rustd,rustd-rustc}.exe "$name"
+            cp target/release/{ra-jit,cargo-ra-jit,ra-jit-rustc}.exe "$name"
             7z a "$name.zip" "$name"
           else
-            cp target/release/{rustd,cargo-rustd,rustd-rustc} "$name"
+            cp target/release/{ra-jit,cargo-ra-jit,ra-jit-rustc} "$name"
             tar czf "$name.tar.gz" "$name"
           fi
-          "$name/rustd" --help > /dev/null
+          "$name/ra-jit" --help > /dev/null
       - uses: actions/upload-artifact@v4
         with:
-          name: rustd-${{ matrix.target }}
+          name: ra-jit-${{ matrix.target }}
           path: |
-            rustd-${{ matrix.target }}.tar.gz
-            rustd-${{ matrix.target }}.zip
+            ra-jit-${{ matrix.target }}.tar.gz
+            ra-jit-${{ matrix.target }}.zip
           if-no-files-found: error
 
   publish:
@@ -84,12 +84,12 @@ jobs:
           merge-multiple: true
       - name: Checksums
         working-directory: out
-        run: sha256sum rustd-* > SHA256SUMS && cat SHA256SUMS
+        run: sha256sum ra-jit-* > SHA256SUMS && cat SHA256SUMS
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          notes="Built from ${GITHUB_SHA}. Cranelift backend only; the LLVM backend is built from source. See the README for what rustd does and does not do yet."
+          notes="Built from ${GITHUB_SHA}. Cranelift backend only; the LLVM backend is built from source. See the README for what ra-jit does and does not do yet."
           if [ "${{ github.ref_type }}" = tag ]; then
             gh release create "$RELEASE" --title "$RELEASE" --notes "$notes" --verify-tag out/*
           else

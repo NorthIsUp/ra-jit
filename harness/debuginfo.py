@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""debuginfo.py: what a debugger and a backtrace are told of rustd's code, against rustc's.
+"""debuginfo.py: what a debugger and a backtrace are told of ra-jit's code, against rustc's.
 
-Four programs are built by cargo and again with their crates from rustd: the corpus runner, the
+Four programs are built by cargo and again with their crates from ra-jit: the corpus runner, the
 stress workspace and rung2 with a panic put into a copy of each, and a small program of its own
 that a daemon then follows through edits, each added to the linked binary where that can be done.
 Every one is run with RUST_BACKTRACE=1 and has to print, for each panic, the frames of the
 workspace's own files that the cargo build prints: the same functions at the same file and line.
 `llvm-dwarfdump --verify` has to find nothing wrong with any of the binaries, and gdb has to stop
-at a line of a function rustd compiled, say where it is, and step to other lines of it.
+at a line of a function ra-jit compiled, say where it is, and step to other lines of it.
 
 On Windows what a debugger reads is the PDB `link.exe /DEBUG` writes from the CodeView of the
 objects, so `llvm-pdbutil` reads it in place of `llvm-dwarfdump`, and `cdb` is the debugger. Only
@@ -17,9 +17,9 @@ held against the cargo build's by the last part of each, which the two spell dif
 of it: the old lines stay true, and the code that was added has no line rather than a wrong one.
 
 Then the cost: the time and the size of the corpus's object with and without debug info, and
-whether rustd leaves it out when the profile says `debug = false`.
+whether ra-jit leaves it out when the profile says `debug = false`.
 
-RUSTD_BACKEND=llvm   the same of LLVM's code. Its optimizer turns calls in tail position into
+RA_JIT_BACKEND=llvm   the same of LLVM's code. Its optimizer turns calls in tail position into
                      jumps, so a frame the cargo build prints may be missing: those are counted.
 --only NAME          one of: corpus stress rung2 edits callers locals types scopes rich profile cost
 """
@@ -29,15 +29,15 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 os.environ.setdefault("CARGO_PROFILE_DEV_DEBUG", "true")
 import linkline
-from difftest import Fixture, RUSTD, WINDOWS, sysroot_rlibs, built
+from difftest import Fixture, RA_JIT, WINDOWS, sysroot_rlibs, built
 
-LLVM = os.environ.get("RUSTD_BACKEND") == "llvm"
+LLVM = os.environ.get("RA_JIT_BACKEND") == "llvm"
 DWARFDUMP = shutil.which("llvm-dwarfdump") or shutil.which("llvm-dwarfdump-20") or "/usr/lib/llvm-20/bin/llvm-dwarfdump"
 PDBUTIL = shutil.which("llvm-pdbutil") or os.path.join(os.environ.get("LLVM_SYS_201_PREFIX", r"C:\llvm20"), "bin", "llvm-pdbutil.exe")
 CDB = shutil.which("cdb") or r"C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe"
 DEBUGGER = "cdb" if WINDOWS else "gdb"
 PANIC = 'if std::env::var_os("DEBUGINFO_PANIC").is_some() { drop(std::panic::take_hook()); panic!("deliberate"); }'
-# What rustc calls the code that drops a coroutine, which rustd has the coroutine itself do.
+# What rustc calls the code that drops a coroutine, which ra-jit has the coroutine itself do.
 DROP_GLUE = re.compile(r"^core::ptr::drop_glue::<(.*)>$")
 # The same in CodeView, where rustc calls a coroutine `async_fn$0` and what it keeps `async_fn_env$0`.
 COROUTINE = re.compile(r"\b(?:async_gen|async|gen)_(?:fn|block)\$(\d+)")
@@ -418,7 +418,7 @@ class Tally:
 
 
 def jumps_away(binary, name):
-    """Whether the function rustd compiled under that name leaves by jumping to another one
+    """Whether the function ra-jit compiled under that name leaves by jumping to another one
     rather than calling it, so that it has no frame while the other runs. Its range is what the
     debug info says, and the jump is read from the disassembly; None where that cannot be read."""
     said = dumped(binary, f"--name={name}")
@@ -447,7 +447,7 @@ def jumps_away(binary, name):
 
 
 def compare(tally, what, theirs, ours, binary=None):
-    """Holds the frames of each panic of rustd's binary against the cargo build's."""
+    """Holds the frames of each panic of ra-jit's binary against the cargo build's."""
     differ, fewer, frames, shown, absent = 0, 0, 0, "", set()
     for (their_at, their_frames), (our_at, our_frames) in zip(theirs, ours):
         want, got = own(their_frames), own(our_frames)
@@ -536,7 +536,7 @@ class Image:
 
 
 class Pdb:
-    """What the PDB beside an executable tells a debugger of rustd's objects: the procedures
+    """What the PDB beside an executable tells a debugger of ra-jit's objects: the procedures
     as (address, end, name), the lines as (file, line, address), and how many variables."""
     read = {}
 
@@ -560,7 +560,7 @@ class Pdb:
         ours = set()
         self.procedures, self.lines, self.variables = [], [], 0
         for module in re.split(r"^\s*Mod (?=\d{4} \|)", symbols, flags=re.M)[1:]:
-            if "Ver = rustd " not in module:
+            if "Ver = ra-jit " not in module:
                 continue
             ours.add(module[:4])
             self.variables += len(re.findall(r"\| S_(?:LOCAL|REGREL32|BPREL32|REGISTER) ", module))
@@ -613,13 +613,13 @@ def verify(tally, what, binary):
     if WINDOWS:
         pdb = Pdb.of(binary)
         verdict = "INVALID" if not pdb.sound else "NOT ITS PDB" if not pdb.same else "sound" if pdb.modules else "NO UNIT"
-        return tally.say(f"{what}: llvm-pdbutil reads the PDB", verdict, f"{pdb.modules} modules of rustd's")
+        return tally.say(f"{what}: llvm-pdbutil reads the PDB", verdict, f"{pdb.modules} modules of ra-jit's")
     read = subprocess.run([DWARFDUMP, "--verify", binary], capture_output=True, text=True)
-    ours = sum(bool(re.search(r'DW_AT_producer\s+\("rustd ', unit)) for unit in units(binary))
+    ours = sum(bool(re.search(r'DW_AT_producer\s+\("ra-jit ', unit)) for unit in units(binary))
     wrong = read.returncode != 0 or "No errors." not in read.stdout
     said = next((l for l in read.stdout.splitlines() if "error" in l.lower()), "")
     verdict = "INVALID" if wrong else "sound" if ours else "NO UNIT"
-    tally.say(f"{what}: llvm-dwarfdump --verify", verdict, said[:80] or f"{ours} units of rustd's")
+    tally.say(f"{what}: llvm-dwarfdump --verify", verdict, said[:80] or f"{ours} units of ra-jit's")
 
 
 def frames_of(binary):
@@ -678,16 +678,16 @@ def frames_of(binary):
 
 
 def own_ranges(binary):
-    """Where the code of each function of rustd's is, as its units say."""
+    """Where the code of each function of ra-jit's is, as its units say."""
     ours = set()
     for unit in units(binary):
-        if re.search(r'DW_AT_producer\s+\("rustd ', unit):
+        if re.search(r'DW_AT_producer\s+\("ra-jit ', unit):
             ours |= {(int(a, 16), int(b, 16)) for a, b in re.findall(r"\[0x([0-9a-f]+), 0x([0-9a-f]+)\)", unit)}
     return ours
 
 
 def unlined(binary):
-    """The runs of code in rustd's functions that no row of the line table gives a line.
+    """The runs of code in ra-jit's functions that no row of the line table gives a line.
 
     A row is of the code from its address to the next row's in its sequence, and a row of line 0
     gives none. A function is looked at as far as the unwinder has it: past that it is filled, and
@@ -723,14 +723,14 @@ def unlined(binary):
 def unwinding(tally, what, binary):
     """Whether the functions a debugger is told of are the ones an unwinder is told of.
 
-    Every run of code in a unit of rustd's has to begin where a frame of the unwinder's begins and
+    Every run of code in a unit of ra-jit's has to begin where a frame of the unwinder's begins and
     end no earlier than it. It may end later: a function shorter than a jump to another place is
     filled up to the length of one, for an edit to put that jump there, and the fill is not code
     to unwind from. A `#[naked]` function is its assembly, which says nothing of unwinding and has
     no lines either: one with no entry and no line is that.
 
     On Windows the frames are the entries of `.pdata` and the functions are the procedures of
-    rustd's modules in the PDB."""
+    ra-jit's modules in the PDB."""
     if WINDOWS:
         pdb = Pdb.of(binary)
         ours, ends = {(begin, end) for begin, end, _ in pdb.procedures}, pdb.image.frames()
@@ -765,7 +765,7 @@ def profiler(tally, what, binary, cwd, crates):
     if WINDOWS:
         return tally.say(f"{what}: perf", "not run", "perf is of Linux")
     perf = shutil.which("perf")
-    data = os.path.join(tempfile.mkdtemp(prefix="rustd-debuginfo-perf-"), "perf.data")
+    data = os.path.join(tempfile.mkdtemp(prefix="ra-jit-debuginfo-perf-"), "perf.data")
     record = perf and subprocess.run([perf, "record", "-o", data, "-F", "5000", "--call-graph", "dwarf", binary],
                                      cwd=cwd, capture_output=True, text=True)
     if not perf or record.returncode != 0 or not os.path.exists(data):
@@ -782,7 +782,7 @@ def profiler(tally, what, binary, cwd, crates):
     through = sum(bool(re.search(r"4main\b|::main\b", stack)) for stack in stacks)
     verdict = "NO SAMPLES" if not mine else "NO LINE" if lost else "NOT UNWOUND" if not through else "named"
     tally.say(f"{what}: perf, unwinding by .eh_frame", verdict,
-              f"{len(mine)} frames of rustd's functions in {len(stacks)} samples, {len(lost)} without a line, {through} samples back to main"
+              f"{len(mine)} frames of ra-jit's functions in {len(stacks)} samples, {len(lost)} without a line, {through} samples back to main"
               + (f": {lost[0][:60]}" if lost else ""))
 
 
@@ -823,8 +823,8 @@ def debugger(tally, what, binary, cwd, place, env=None):
     # The file's address of the code, whether or not the program is loaded where it says.
     pc, base = int(value.group(1), 16), int(base.group(1), 16)
     producers = [unit_of(binary, address) for address in (pc - base, pc)]
-    if not any(it.startswith("rustd") for it in producers):
-        return tally.say(said, "NOT RUSTD'S", f"the code is of {producers[0]}")
+    if not any(it.startswith("ra-jit") for it in producers):
+        return tally.say(said, "NOT RA_JIT'S", f"the code is of {producers[0]}")
     name = re.search(r"^#0\s+(.*?) \(", out.split("<where>")[1], re.M)
     if f"Line {line} of" not in out.split("<line>")[1]:
         return tally.say(said, "NO LINE", out.split("<line>")[1].strip()[:80])
@@ -839,14 +839,14 @@ def debugger(tally, what, binary, cwd, place, env=None):
 def cdb(tally, what, binary, cwd, place, env=None):
     """The same of cdb. It names a line of several places as ambiguous and stops at none of
     them, and rustc's own copy of the code is in the program too, so it is asked which places
-    the line is, and then to stop at the ones of them the PDB says are rustd's."""
+    the line is, and then to stop at the ones of them the PDB says are ra-jit's."""
     file, line = place.rsplit(":", 1)
     said = f"{what}: cdb at {os.path.basename(file)}:{line}"
     pdb = Pdb.of(binary)
     file = file.replace("/", "\\")
     ours = sorted({address for path, n, address in pdb.lines if n == int(line) and path.endswith("\\" + file)})
     if not ours:
-        return tally.say(said, "NOT RUSTD'S", "no line of a module of rustd's is that one")
+        return tally.say(said, "NOT RA_JIT'S", "no line of a module of ra-jit's is that one")
     # The program is loaded where it likes: places are counted from where it starts.
     base = f"@$exentry-{pdb.image.entry:#x}"
     commands = ["l+t", ".echo <break>", f"bu `{file}:{line}`", "bl", "bc *", *[f"bp {base}+{address:#x}" for address in ours],
@@ -865,7 +865,7 @@ def cdb(tally, what, binary, cwd, place, env=None):
     asked = out.split("<break>")[1].split("<where>")[0]
     by_line = {int(a.replace("`", ""), 16) - start for a in re.findall(r"\b([0-9a-f]{8}`[0-9a-f]{8})\b", asked.split("Breakpoint ")[0])}
     if not by_line & set(ours):
-        return tally.say(said, "NOT BY LINE", f"cdb finds the line at {len(by_line)} places, none of them rustd's")
+        return tally.say(said, "NOT BY LINE", f"cdb finds the line at {len(by_line)} places, none of them ra-jit's")
     where = out.split("<where>")[1].split("<step>")[0]
     stop = re.search(r"^00 \S+ \S+\s+(\S.*?)(?:\+0x[0-9a-f]+)? \[(.*) @ (\d+)\]", where, re.M)
     if "Breakpoint" not in asked or not stop or stop.group(3) != line or not stop.group(2).endswith(file):
@@ -890,7 +890,7 @@ def call_site(ours):
 def program(tally, what, workspace, crates, package, inject=None):
     ws = workspace
     if inject:
-        ws = tempfile.mkdtemp(prefix=f"rustd-debuginfo-{what}-")
+        ws = tempfile.mkdtemp(prefix=f"ra-jit-debuginfo-{what}-")
         shutil.copytree(workspace, ws, dirs_exist_ok=True, ignore=shutil.ignore_patterns("target"))
         path, old, new = inject
         text = open(os.path.join(ws, path)).read()
@@ -899,7 +899,7 @@ def program(tally, what, workspace, crates, package, inject=None):
     env = {"DEBUGINFO_PANIC": "1"} if inject else {}
     fx = Fixture(ws, crates, ["-p", package])
     fx.rustc_build()
-    fx.rustd_build()
+    fx.ra_jit_build()
     theirs, ours = backtraces(fx.reference, fx.ws, env), backtraces(fx.binary, fx.ws, env)
     compare(tally, f"{what}: frames of each panic", theirs, ours, fx.binary)
     verify(tally, what, fx.binary)
@@ -928,21 +928,21 @@ def edits(tally, apart=False):
 
 
 def edited(tally, part):
-    ws = tempfile.mkdtemp(prefix="rustd-debuginfo-edits-")
+    ws = tempfile.mkdtemp(prefix="ra-jit-debuginfo-edits-")
     os.makedirs(os.path.join(ws, "src"))
     for path, text in (("Cargo.toml", EDITS_TOML), (MAIN, EDITS_MAIN)):
         open(os.path.join(ws, path), "w").write(text)
-    work = tempfile.mkdtemp(prefix="rustd-debuginfo-out-")
-    socket, log_path = os.path.join(work, "rustd.sock"), os.path.join(work, "daemon.log")
+    work = tempfile.mkdtemp(prefix="ra-jit-debuginfo-out-")
+    socket, log_path = os.path.join(work, "ra-jit.sock"), os.path.join(work, "daemon.log")
     reference = os.path.join(work, "reference")
     fx = Fixture(ws, ["sline"], ["-p", "sline"])
     fx.rustc_build()
     obj, patch, binary = (os.path.join(work, f"sline.{n}") for n in ("o", "patch.o", "bin"))
-    link = linkline.with_output(linkline.ahead(list(fx.link_args), [patch, obj], RUSTD), binary)
+    link = linkline.with_output(linkline.ahead(list(fx.link_args), [patch, obj], RA_JIT), binary)
     symbols = [x for rlib in fx.rlibs + sysroot_rlibs() for x in ("--symbols", rlib)]
     ask = ["--crate", "sline", "--out", obj, "--patch", patch, "--link-cmd", linkline.join(link), "--binary", binary, *symbols]
     out = open(log_path, "a")
-    daemon = subprocess.Popen([RUSTD, ws, "--socket", socket, *ask], stderr=out, stdout=out)
+    daemon = subprocess.Popen([RA_JIT, ws, "--socket", socket, *ask], stderr=out, stdout=out)
     while "watching" not in open(log_path).read():
         if daemon.poll() is not None:
             raise SystemExit(f"the daemon did not start: {open(log_path).read()[-2000:]}")
@@ -956,7 +956,7 @@ def edited(tally, part):
             text = text.replace(old, new, 1)
         open(os.path.join(ws, MAIN), "w").write(text)
         time.sleep(0.02)
-        reply = subprocess.run([RUSTD, "sync", socket, *ask], capture_output=True, text=True, timeout=120)
+        reply = subprocess.run([RA_JIT, "sync", socket, *ask], capture_output=True, text=True, timeout=120)
         cargo = subprocess.run(["cargo", "build", "-q"], cwd=ws, capture_output=True, text=True,
                                env={**os.environ, "CARGO_TARGET_DIR": reference})
         assert cargo.returncode == 0, cargo.stderr[-2000:]
@@ -979,7 +979,7 @@ def edited(tally, part):
     ours = backtraces(binary, ws)
     if WINDOWS and how == "spliced":
         # The lines the PDB has are of code a jump now leads away from.
-        tally.say(f"{part}: the last binary: cdb", "not asked", "its PDB is of the code before the splices: RUSTD_SPLICE=0 asks")
+        tally.say(f"{part}: the last binary: cdb", "not asked", "its PDB is of the code before the splices: RA_JIT_SPLICE=0 asks")
     elif place := call_site(ours):
         debugger(tally, f"{part}: the last binary", binary, ws, place[2:])
     if not WINDOWS:
@@ -988,37 +988,37 @@ def edited(tally, part):
         right = mine == theirs or (LLVM and mine == "<optimized out>")
         tally.say(f"{part}: the last binary: gdb prints an argument", "as cargo's" if right else "NOT AS CARGO'S", f"at = {mine}")
     if os.environ.get("CARGO_PROFILE_DEV_SPLIT_DEBUGINFO"):
-        kept = sum("DW_AT_GNU_dwo_name" in unit and bool(re.search(r'DW_AT_producer\s+\("rustd ', unit)) for unit in units(binary))
+        kept = sum("DW_AT_GNU_dwo_name" in unit and bool(re.search(r'DW_AT_producer\s+\("ra-jit ', unit)) for unit in units(binary))
         tally.say(f"{part}: units of the last binary kept apart", "some" if kept else "NONE", str(kept))
     daemon.kill()
-    if os.environ.get("RUSTD_SPLICE") != "0":
+    if os.environ.get("RA_JIT_SPLICE") != "0":
         tally.say(f"{part}: added to the linked binary", "spliced" if spliced else "NONE SPLICED", f"{spliced} of {len(EDITS)} steps")
 
 
 def described(binary):
-    """How many functions rustd's units tell a debugger of, and how many variables in them."""
+    """How many functions ra-jit's units tell a debugger of, and how many variables in them."""
     if WINDOWS:
         pdb = Pdb.of(binary)
         return len(pdb.procedures), pdb.variables
     functions = variables = 0
     for unit in dumped(binary, "--debug-info").split("DW_TAG_compile_unit")[1:]:
-        if re.search(r'DW_AT_producer\s+\("rustd', unit):
+        if re.search(r'DW_AT_producer\s+\("ra-jit', unit):
             functions += unit.count("DW_TAG_subprogram")
             variables += unit.count("DW_TAG_variable") + unit.count("DW_TAG_formal_parameter")
     return functions, variables
 
 
 def variables(tally):
-    """Whether gdb prints the parameters and locals of a function of rustd's as they are.
+    """Whether gdb prints the parameters and locals of a function of ra-jit's as they are.
 
     A value the optimizer did away with is to be said to be so, and is not counted as wrong."""
-    ws = tempfile.mkdtemp(prefix="rustd-debuginfo-locals-")
+    ws = tempfile.mkdtemp(prefix="ra-jit-debuginfo-locals-")
     os.makedirs(os.path.join(ws, "src"))
     for path, text in (("Cargo.toml", EDITS_TOML), (MAIN, LOCALS_MAIN)):
         open(os.path.join(ws, path), "w").write(text)
     fx = Fixture(ws, ["sline"], ["-p", "sline"])
     fx.rustc_build()
-    fx.rustd_build()
+    fx.ra_jit_build()
     verify(tally, "locals", fx.binary)
     if WINDOWS:
         functions, count = described(fx.binary)
@@ -1044,13 +1044,13 @@ def variables(tally):
 def callers(tally):
     """Whether panics behind inlined and `#[track_caller]` functions say where they were, and
     have the frames a cargo build's have."""
-    ws = tempfile.mkdtemp(prefix="rustd-debuginfo-callers-")
+    ws = tempfile.mkdtemp(prefix="ra-jit-debuginfo-callers-")
     os.makedirs(os.path.join(ws, "src"))
     for path, text in (("Cargo.toml", EDITS_TOML), (MAIN, CALLERS_MAIN)):
         open(os.path.join(ws, path), "w").write(text)
     fx = Fixture(ws, ["sline"], ["-p", "sline"])
     fx.rustc_build()
-    fx.rustd_build()
+    fx.ra_jit_build()
     compare(tally, "callers: frames of each panic", backtraces(fx.reference, ws), backtraces(fx.binary, ws), fx.binary)
     verify(tally, "callers", fx.binary)
 
@@ -1066,14 +1066,14 @@ def printed_by(debugger, binary, cwd, place, names):
 
 
 def kept_by_rustc(ws, asked):
-    """Which of the values the optimizer of rustd's build did away with rustc's keeps: the
+    """Which of the values the optimizer of ra-jit's build did away with rustc's keeps: the
     names gdb prints a value for at the same place of `rustc -O -g` on the same source, at
-    the level rustd optimizes at. `asked` is the names by their place. What rustc keeps,
-    rustd has to: LLVM has the value. The result is those names, each with its place."""
+    the level ra-jit optimizes at. `asked` is the names by their place. What rustc keeps,
+    ra-jit has to: LLVM has the value. The result is those names, each with its place."""
     if not asked:
         return []
     env = dict(os.environ, CARGO_PROFILE_RELEASE_DEBUG="true", CARGO_TARGET_DIR=os.path.join(ws, "target-optimized"),
-               CARGO_PROFILE_RELEASE_OPT_LEVEL=os.environ.get("RUSTD_OPT", "2"))
+               CARGO_PROFILE_RELEASE_OPT_LEVEL=os.environ.get("RA_JIT_OPT", "2"))
     out = subprocess.run(["cargo", "build", "--release", "-p", "sline"], cwd=ws, capture_output=True, text=True, env=env)
     if out.returncode != 0:
         raise SystemExit(f"cargo failed:\n{out.stderr[-3000:]}")
@@ -1142,20 +1142,20 @@ def agreement(names, theirs, ours, lost=()):
 def rich(tally):
     """Whether closures, the states of an `async fn`, pointers to `dyn` and enums are shown as
     those of a rustc build are, by the toolchain's gdb and by its lldb."""
-    ws = tempfile.mkdtemp(prefix="rustd-debuginfo-rich-")
+    ws = tempfile.mkdtemp(prefix="ra-jit-debuginfo-rich-")
     os.makedirs(os.path.join(ws, "src"))
     for path, text in (("Cargo.toml", EDITS_TOML), (MAIN, RICH_MAIN)):
         open(os.path.join(ws, path), "w").write(text)
     fx = Fixture(ws, ["sline"], ["-p", "sline"])
     fx.rustc_build()
-    fx.rustd_build()
+    fx.ra_jit_build()
     verify(tally, "rich", fx.binary)
     reference = os.path.join(ws, "target", "debug", "sline")
     line = RICH_MAIN[:RICH_MAIN.index('println!("{}", sum)')].count("\n") + 1
     gone = []
     if shutil.which("rust-gdb"):
         theirs = printed_by("rust-gdb", reference, ws, f"{MAIN}:{line}", RICH)
-        # A name of rustd's own for the table a `dyn` pointer has is no part of what is shown.
+        # A name of ra-jit's own for the table a `dyn` pointer has is no part of what is shown.
         ours = {name: it and re.sub(r" <\.L[^>]*>", "", it)
                 for name, it in printed_by("rust-gdb", fx.binary, ws, f"{MAIN}:{line}", RICH).items()}
         same, gone, said = agreement(RICH, theirs, ours)
@@ -1185,13 +1185,13 @@ def shapes(tally):
     debugger = shutil.which("rust-gdb")
     if not debugger:
         return tally.say("types: the debugger shows them", "not looked at", "no rust-gdb to ask")
-    ws = tempfile.mkdtemp(prefix="rustd-debuginfo-types-")
+    ws = tempfile.mkdtemp(prefix="ra-jit-debuginfo-types-")
     os.makedirs(os.path.join(ws, "src"))
     for path, text in (("Cargo.toml", EDITS_TOML), (MAIN, TYPES_MAIN)):
         open(os.path.join(ws, path), "w").write(text)
     fx = Fixture(ws, ["sline"], ["-p", "sline"])
     fx.rustc_build()
-    fx.rustd_build()
+    fx.ra_jit_build()
     verify(tally, "types", fx.binary)
     place = f"{MAIN}:{TYPES_MAIN[:TYPES_MAIN.index('println!')].count(chr(10)) + 1}"
     theirs = printed_by(debugger, os.path.join(ws, "target", "debug", "sline"), ws, place, TYPES)
@@ -1212,13 +1212,13 @@ def scopes(tally):
     debugger = shutil.which("rust-gdb")
     if not debugger:
         return tally.say("scopes: names by their block", "not looked at", "no rust-gdb to ask")
-    ws = tempfile.mkdtemp(prefix="rustd-debuginfo-scopes-")
+    ws = tempfile.mkdtemp(prefix="ra-jit-debuginfo-scopes-")
     os.makedirs(os.path.join(ws, "src"))
     for path, text in (("Cargo.toml", EDITS_TOML), (MAIN, SCOPES_MAIN)):
         open(os.path.join(ws, path), "w").write(text)
     fx = Fixture(ws, ["sline"], ["-p", "sline"])
     fx.rustc_build()
-    fx.rustd_build()
+    fx.ra_jit_build()
     verify(tally, "scopes", fx.binary)
     stops = [at + 1 for at, line in enumerate(SCOPES_MAIN.split("\n")) if "// stop" in line]
     asked = right = unknown = 0
@@ -1244,7 +1244,7 @@ def scopes(tally):
 
 def settings(tally):
     """Whether the profile's settings for what a debugger reads are followed, or refused with the reason."""
-    ws = tempfile.mkdtemp(prefix="rustd-debuginfo-profile-")
+    ws = tempfile.mkdtemp(prefix="ra-jit-debuginfo-profile-")
     os.makedirs(os.path.join(ws, "src"))
     for path, text in (("Cargo.toml", EDITS_TOML), (MAIN, LOCALS_MAIN)):
         open(os.path.join(ws, path), "w").write(text)
@@ -1252,11 +1252,11 @@ def settings(tally):
     fx.rustc_build()
 
     def built(**profile):
-        """The object rustd writes under the settings: whether it has anything for a debugger, and how many variables."""
+        """The object ra-jit writes under the settings: whether it has anything for a debugger, and how many variables."""
         names = {f"CARGO_PROFILE_DEV_{name.upper()}": value for name, value in profile.items()}
         os.environ.update(names)
         try:
-            fx.rustd_build()
+            fx.ra_jit_build()
             return sections(fx.objects[0])[1] > 0, described(fx.objects[0])[1], None
         except SystemExit as refused:
             return None, None, str(refused)
@@ -1272,8 +1272,8 @@ def settings(tally):
         return printed_by("gdb", fx.binary, ws, f"{MAIN}:{line}", names)
 
     def apart():
-        """How many units of rustd's in the program have their entries in a file beside its object, which is there."""
-        named = re.findall(rf'DW_AT_producer\s+\("rustd .*?DW_AT_GNU_dwo_name\s+\("({re.escape(fx.objects[0])}[^"]*\.dwo)"\)', "".join(units(fx.binary)), re.S)
+        """How many units of ra-jit's in the program have their entries in a file beside its object, which is there."""
+        named = re.findall(rf'DW_AT_producer\s+\("ra-jit .*?DW_AT_GNU_dwo_name\s+\("({re.escape(fx.objects[0])}[^"]*\.dwo)"\)', "".join(units(fx.binary)), re.S)
         return sum(os.path.exists(name) for name in named)
 
     linked = None
@@ -1319,14 +1319,14 @@ def cost(tally):
     fx.rustc_build()
     measured = {}
     for setting in ("0", "1"):
-        os.environ["RUSTD_DEBUGINFO"] = setting
+        os.environ["RA_JIT_DEBUGINFO"] = setting
         times = []
         for _ in range(3):
             began = time.time()
-            fx.rustd_build()
+            fx.ra_jit_build()
             times.append(time.time() - began)
         measured[setting] = (min(times), *sections(fx.objects[0]), os.path.getsize(fx.binary))
-    del os.environ["RUSTD_DEBUGINFO"]
+    del os.environ["RA_JIT_DEBUGINFO"]
     (t0, s0, d0, b0), (t1, s1, d1, b1) = measured["0"], measured["1"]
     told = f"{d1} of sections a debugger reads, {s1 - s0 - d1} of their relocations"
     tally.say("cost: the corpus's object without debug info", "measured", f"{t0:.2f} s to compile and link, object {s0} bytes, binary {b0} bytes")
@@ -1334,7 +1334,7 @@ def cost(tally):
               f"{t1:.2f} s ({(t1 / t0 - 1) * 100:+.1f}%), object {s1} bytes ({(s1 / s0 - 1) * 100:+.1f}%, {told}), binary {b1} bytes")
     for setting, expected in (("false", False), ("true", True), ("line-tables-only", True)):
         os.environ["CARGO_PROFILE_DEV_DEBUG"] = setting
-        fx.rustd_build()
+        fx.ra_jit_build()
         has = sections(fx.objects[0])[1] > 0
         tally.say(f"cost: the profile says debug = {setting}", ("described" if has else "left out") if has == expected else "NOT FOLLOWED")
     os.environ["CARGO_PROFILE_DEV_DEBUG"] = "true"

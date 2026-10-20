@@ -1,6 +1,6 @@
 # Security
 
-rustd is a prototype and has not had a security review. This page says where the parts
+ra-jit is a prototype and has not had a security review. This page says where the parts
 that matter for security are described and how to report a problem.
 
 ## Reporting
@@ -12,7 +12,7 @@ promised response time.
 <!-- SECURITY-CONTACT: confirm that private vulnerability reporting is enabled on the
      repository, or replace this with an address. -->
 
-A miscompile, where a program built with rustd behaves differently from the one rustc
+A miscompile, where a program built with ra-jit behaves differently from the one rustc
 builds, is a correctness bug and can be reported in a normal issue.
 
 ## What to know before using it
@@ -27,13 +27,13 @@ builds, is a correctness bug and can be reported in a normal issue.
   [docs/cargo.md](docs/cargo.md), "The daemon".
 - **A shared store is trusted input unless you turn signing on.** Packs fetched from a
   remote are checked against the hash in their name, so storage cannot alter them. But
-  whoever can write to the bucket can list a pack of their own making, and rustd will link
-  that code into your programs. With `RUSTD_REMOTE_TRUST` set, only manifests signed by
+  whoever can write to the bucket can list a pack of their own making, and ra-jit will link
+  that code into your programs. With `RA_JIT_REMOTE_TRUST` set, only manifests signed by
   keys you list are accepted. See [docs/cache.md](docs/cache.md), "Trust and signing".
 - **The local store is trusted.** Its records carry checksums against damage, not against
-  tampering: anyone who can write to the directory `RUSTD_CACHE` names can put code into
+  tampering: anyone who can write to the directory `RA_JIT_CACHE` names can put code into
   your builds. Keep it writable by you alone.
-- **Credentials.** rustd does not hold S3 credentials; the AWS SDK finds and uses them, and
+- **Credentials.** ra-jit does not hold S3 credentials; the AWS SDK finds and uses them, and
   they are not printed.
-- **rustd is not a sandbox and not a checker.** It builds programs rustc would reject for
+- **ra-jit is not a sandbox and not a checker.** It builds programs rustc would reject for
   borrow or move errors. See [docs/support.md](docs/support.md).

@@ -8,11 +8,11 @@ Every `tests/ui` file marked `//@ run-pass` is accounted for: it is either run, 
 revision, or left out with a reason that is counted. A test that is run becomes a package
 whose library is the test and whose binary calls its `main`; its `//@ aux-build`, `aux-crate`
 and `proc-macro` files become packages it depends on, and the files it names with `mod`,
-`#[path]` and `include!` are copied beside it. rustc builds the package, rustd rebuilds the
+`#[path]` and `include!` are copied beside it. rustc builds the package, ra-jit rebuilds the
 library, and the two programs have to exit and print the same.
 
 Tests are built a workspace at a time, `--jobs` workspaces at once. The result of a workspace
-is kept under `<work>/results`, named by the tests in it, the rustd binary and the backend, so
+is kept under `<work>/results`, named by the tests in it, the ra-jit binary and the backend, so
 a run that is stopped picks up where it was; `--fresh` forgets them.
 
 The summary lists differences first, then what was left out and why, then why functions were
@@ -28,7 +28,7 @@ LINE = r"^//@ *(?:\[(?P<rev>[\w-]+)\] *)?"
 DIRECTIVE = re.compile(LINE + r"(?P<name>[\w-]+)(?: *: *| +|$)(?P<value>.*)$", re.M)
 # How many more times a program that differed once is run, to tell a race from a difference.
 RERUNS = 6
-# How long rustc's program is run over and over to see whether it too does what rustd's did.
+# How long rustc's program is run over and over to see whether it too does what ra-jit's did.
 RACE_SECONDS = 20
 MAIN = re.compile(r"^(pub )?fn +main *\(\)(?P<returns> *->)?", re.M)
 FEATURE = re.compile(r"#!\[(cfg_attr\(.*, *)?feature\(")
@@ -62,7 +62,7 @@ INERT = re.compile(
     r"|-C ?target-feature=-crt-static|-C ?debug[-_]assertions(=(yes|on|y|true))?|-C ?overflow-checks(=(yes|on|y|true))?"
     r"|-C ?lto=(no|off)|--error-format(=| )\S+|--diagnostic-width(=| )\S+|-C ?symbol-mangling-version=v0|-C ?panic=unwind"
     r"|--remap-path-prefix(=| )\S+|-C ?link-dead-code|-l ?rust_test_helpers)$")
-# Flags that say how the code is generated, which rustc and rustd are both given.
+# Flags that say how the code is generated, which rustc and ra-jit are both given.
 HONOURED = re.compile(r"^(-O|-C ?opt-level=\S+|-C ?debug[-_]assertions(=\S+)?|-C ?overflow-checks(=\S+)?|-C ?panic=abort"
                       r"|-C ?target-(feature|cpu)=\S+)$")
 # What an auxiliary crate's flags may ask of its own package's profile.
@@ -73,7 +73,7 @@ STALL = 20
 
 
 # What the program calls in a test whose `main` is not written where the harness can make it public.
-ENTRY = "rustd_harness_entry"
+ENTRY = "ra_jit_harness_entry"
 
 
 class Unit:
@@ -92,7 +92,7 @@ class Unit:
     @property
     def build(self):
         """What a workspace of tests has to share: how its members are compiled."""
-        # A profile setting of one package changes what rustd can say of the others.
+        # A profile setting of one package changes what ra-jit can say of the others.
         alone = self.label if any(aux.settings for aux in self.aux) else None
         return (tuple(self.cfgs), tuple(self.flags), tuple(sorted(self.rustc_env.items(), key=str)), alone)
 
@@ -132,7 +132,7 @@ def refuse(flag):
     if flag.startswith("-Cpanic"):
         return f"compile flag: {flag}"
     if flag.startswith(("-Clto", "-Clinker-plugin-lto", "-Cembed-bitcode")):
-        return "compile flag: LTO (rustc would inline the test into the program, leaving nothing of rustd's to run)"
+        return "compile flag: LTO (rustc would inline the test into the program, leaving nothing of ra-jit's to run)"
     return f"compile flag: {flag.split('=')[0].split(' ')[0]}"
 
 
@@ -357,50 +357,50 @@ def beside(source, directory):
     return None
 
 
-def run_rustd(ws, work, built, rlib, symbols, env):
-    """Builds the libraries of `built` with one rustd. One program can make rustd hang or
+def run_ra_jit(ws, work, built, rlib, symbols, env):
+    """Builds the libraries of `built` with one ra-jit. One program can make ra-jit hang or
     exit: the batch is watched for progress, and when it stalls or ends early the program it
-    was on is recorded and the rest are started again without it. Returns the programs rustd
+    was on is recorded and the rest are started again without it. Returns the programs ra-jit
     hung on and what it said last when it exited."""
     pending, hung, failure = list(built), set(), None
     while pending:
         crates = [x for name in pending for x in ("--crate", name)]
         files = [x for file in [rlib[n] for n in pending] + symbols for x in ("--symbols", file)]
-        rustd = subprocess.Popen([difftest.RUSTD, ws, *crates, "--out", work, "--report", work, *files],
+        ra-jit = subprocess.Popen([difftest.RA_JIT, ws, *crates, "--out", work, "--report", work, *files],
                                  stdout=subprocess.DEVNULL, stderr=open(f"{work}/stderr.txt", "w"), env=env)
         done = lambda: [n for n in pending if os.path.exists(f"{work}/{n}.tsv") or os.path.exists(f"{work}/{n}.error")]
         seen, since = 0, time.time()
-        while rustd.poll() is None:
+        while ra-jit.poll() is None:
             time.sleep(0.5)
             if len(done()) != seen:
                 seen, since = len(done()), time.time()
             elif time.time() - since > (STALL if seen else 300):
-                rustd.kill()
-                rustd.wait()
+                ra-jit.kill()
+                ra-jit.wait()
                 break
         finished = set(done())
         rest = [n for n in pending if n not in finished]
-        if rustd.returncode == 0 or not rest:
+        if ra-jit.returncode == 0 or not rest:
             break
-        if rustd.returncode < 0:
+        if ra-jit.returncode < 0:
             hung.add(rest[0])
         else:
             failure = open(f"{work}/stderr.txt").read()[-300:]
-            open(f"{work}/{rest[0]}.error", "w").write(f"rustd exited: {failure}")
+            open(f"{work}/{rest[0]}.error", "w").write(f"ra-jit exited: {failure}")
         pending = rest[1:]
     return hung, failure
 
 
 def run_alone(ws, work, name, link, env):
-    """Builds the library of one program with a rustd of its own. Returns whether rustd hung."""
+    """Builds the library of one program with a ra-jit of its own. Returns whether ra-jit hung."""
     symbols = [x for a in link if a.endswith(".rlib") for x in ("--symbols", a)]
     try:
-        run = subprocess.run([difftest.RUSTD, ws, "--crate", name, "--out", f"{work}/{name}.o", "--report",
+        run = subprocess.run([difftest.RA_JIT, ws, "--crate", name, "--out", f"{work}/{name}.o", "--report",
                               f"{work}/{name}.tsv", *symbols], capture_output=True, text=True, timeout=300, env=env)
     except subprocess.TimeoutExpired:
         return True
     if run.returncode != 0:
-        open(f"{work}/{name}.error", "w").write(f"rustd exited: {run.stderr[-300:]}")
+        open(f"{work}/{name}.error", "w").write(f"ra-jit exited: {run.stderr[-300:]}")
     return False
 
 
@@ -415,7 +415,7 @@ def races_to(reference, unit, got):
 
 def behaviour(binary, unit):
     """What the program does: status, stdout and stderr, run in a directory of its own."""
-    cwd = tempfile.mkdtemp(prefix="rustd-ui-run-")
+    cwd = tempfile.mkdtemp(prefix="ra-jit-ui-run-")
     try:
         run = subprocess.run([binary, *unit.args], capture_output=True, timeout=60, cwd=cwd,
                              env=environment(unit.env))
@@ -450,8 +450,8 @@ def held(unit, got):
 
 
 def relinked(link, binary, unit):
-    """What the program does when linked again from rustc's objects with nothing of rustd's: a
-    difference here is one of the link line and not of rustd's code."""
+    """What the program does when linked again from rustc's objects with nothing of ra-jit's: a
+    difference here is one of the link line and not of ra-jit's code."""
     link = list(link)
     link[link.index("-o") + 1] = binary
     if subprocess.run(link, capture_output=True).returncode != 0:
@@ -485,7 +485,7 @@ def errors_of(output):
 
 
 def count_functions(result, report):
-    """Adds what the report says of each function: from rustd, or left to rustc and why."""
+    """Adds what the report says of each function: from ra-jit, or left to rustc and why."""
     rows = [line.rstrip("\n").split("\t") for line in open(report)]
     for row in rows:
         if row[0] == "skipped" and "no rustc symbol for function" not in row[2]:
@@ -498,8 +498,8 @@ def count_functions(result, report):
 
 
 def run_chunk(key, units, base):
-    """Builds a workspace of tests with one cargo run and one rustd run, then links, runs and
-    compares each. Loading std into rustd is most of what a test costs, so it is shared."""
+    """Builds a workspace of tests with one cargo run and one ra-jit run, then links, runs and
+    compares each. Loading std into ra-jit is most of what a test costs, so it is shared."""
     ws = f"{base}/ws-{key}"
     shutil.rmtree(ws, ignore_errors=True)
     names = {f"t{key}_{i}": unit for i, unit in enumerate(units)}
@@ -540,14 +540,14 @@ def run_chunk(key, units, base):
     if not built:
         shutil.rmtree(ws, ignore_errors=True)
         return list(results.values())
-    work = f"{ws}/rustd"
+    work = f"{ws}/ra-jit"
     os.makedirs(work)
     rlib = {name: next(a for a in links[name] if os.path.basename(a).startswith(f"lib{name}-")) for name in built}
-    # A test built against other crates is given to a rustd of its own, with the symbols of what
+    # A test built against other crates is given to a ra-jit of its own, with the symbols of what
     # it is linked with: in a batch every program would be shown the libraries of all of them.
     alone = [name for name in built if names[name].aux]
     batch = [name for name in built if name not in alone]
-    hung, failure = run_rustd(ws, work, batch, rlib, difftest.sysroot_rlibs(), env) if batch else (set(), None)
+    hung, failure = run_ra_jit(ws, work, batch, rlib, difftest.sysroot_rlibs(), env) if batch else (set(), None)
     with concurrent.futures.ThreadPoolExecutor(2) as pool:
         hung |= {name for name, stuck in zip(alone, pool.map(lambda n: run_alone(ws, work, n, links[n], env), alone)) if stuck}
 
@@ -555,7 +555,7 @@ def run_chunk(key, units, base):
         result, unit, args = results[name], names[name], list(links[name])
         result["outcome"] = "match"
         if name in hung:
-            result.update(outcome="hang", detail="rustd made no progress")
+            result.update(outcome="hang", detail="ra-jit made no progress")
             return
         report, obj = f"{work}/{name}.tsv", f"{work}/{name}.o"
         if os.path.exists(f"{work}/{name}.error") or not os.path.exists(report):
@@ -565,7 +565,7 @@ def run_chunk(key, units, base):
             return
         count_functions(result, report)
         reference = args[args.index("-o") + 1]
-        args = linkline.ahead(args, [obj], difftest.RUSTD)
+        args = linkline.ahead(args, [obj], difftest.RA_JIT)
         binary = f"{work}/{name}"
         args[args.index("-o") + 1] = binary
         link = subprocess.run(args, capture_output=True, text=True)
@@ -594,10 +594,10 @@ def run_chunk(key, units, base):
             detail = difftest.symptom(expected, got)
             # Said and counted on its own, never passed over: a difference that one run showed
             # and the next runs do not is of a program that races, under rustc as well or under
-            # rustd alone.
+            # ra-jit alone.
             again = sum(behaviour(binary, unit) == expected for _ in range(RERUNS))
             if races_to(reference, unit, got):
-                result.update(outcome="excluded", reason="races: rustc's own program is seen to do what rustd's did")
+                result.update(outcome="excluded", reason="races: rustc's own program is seen to do what ra-jit's did")
             elif again == RERUNS:
                 result.update(outcome="unsteady", detail=f"{detail} in one run, and in none of {RERUNS} more")
             else:
@@ -627,10 +627,10 @@ def chunks_of(units):
 
 
 def identity():
-    """What a kept result is a result of: this rustd and this backend."""
-    stat = os.stat(difftest.RUSTD)
-    backend = [os.environ.get(k, "") for k in ("RUSTD_BACKEND", "RUSTD_OPT", "RUSTD_EMIT")]
-    return f"{os.path.abspath(difftest.RUSTD)} {stat.st_size} {stat.st_mtime_ns} {backend}"
+    """What a kept result is a result of: this ra-jit and this backend."""
+    stat = os.stat(difftest.RA_JIT)
+    backend = [os.environ.get(k, "") for k in ("RA_JIT_BACKEND", "RA_JIT_OPT", "RA_JIT_EMIT")]
+    return f"{os.path.abspath(difftest.RA_JIT)} {stat.st_size} {stat.st_mtime_ns} {backend}"
 
 
 def run_kept(chunk, base, stamp):
@@ -649,18 +649,18 @@ def summarize(results):
     outcomes = collections.Counter(r["outcome"] for r in results)
     ran = [r for r in results if r["outcome"] != "excluded"]
     full = sum(r["outcome"] == "match" and not r["skipped"] for r in ran)
-    print(f"{len(ran)} tests: {outcomes['match']} match ({full} with every function from rustd), "
+    print(f"{len(ran)} tests: {outcomes['match']} match ({full} with every function from ra-jit), "
           f"{outcomes['mismatch']} mismatch, {outcomes['unsteady']} differing in one run only, "
-          f"{outcomes['crash']} rustd crashes, {outcomes['hang']} rustd hangs, "
+          f"{outcomes['crash']} ra-jit crashes, {outcomes['hang']} ra-jit hangs, "
           f"{outcomes['link']} link errors; {outcomes['excluded']} left out")
     pinned = sum(r["outcome"] == "mismatch" and bool(r.get("known_bug")) for r in ran)
     print(f"of the mismatches, {pinned} are of tests that are there to show a bug of rustc (`known-bug`)")
     checked = [r for r in ran if r.get("checked_output")]
     apart = [r["test"] for r in checked if not r.get("held")]
-    print(f"{len(checked)} of the tests run have `check-run-results`: rustd's program prints what "
+    print(f"{len(checked)} of the tests run have `check-run-results`: ra-jit's program prints what "
           f"the test's files say in {len(checked) - len(apart)}, not in {len(apart)} {sorted(set(apart))}")
     compiled, roots = sum(r["compiled"] for r in ran), sum(r["roots"] for r in ran)
-    print(f"functions: {compiled} of {roots} from rustd, {roots - compiled} left to rustc")
+    print(f"functions: {compiled} of {roots} from ra-jit, {roots - compiled} left to rustc")
     for outcome in ("mismatch", "unsteady", "crash", "hang", "link"):
         for r in ran:
             if r["outcome"] == outcome:
@@ -689,7 +689,7 @@ def main():
     ap.add_argument("--limit", type=int)
     ap.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) // 2), help="workspaces at a time")
     ap.add_argument("--rerun", help="only the tests that failed in this earlier --json output")
-    ap.add_argument("--work", default=os.path.expanduser("~/rustd-ui"), help="where the workspaces and results go")
+    ap.add_argument("--work", default=os.path.expanduser("~/ra-jit-ui"), help="where the workspaces and results go")
     ap.add_argument("--fresh", action="store_true", help="forget the results kept under --work")
     ap.add_argument("--json")
     a = ap.parse_args()

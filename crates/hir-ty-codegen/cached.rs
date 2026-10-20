@@ -211,7 +211,7 @@ impl StoredCode {
         let isa = super::target().ok()?;
         let ir = cranelift_codegen::incremental_cache::compute_cache_key(&**isa, func);
         let mut hasher = Sha256::new();
-        hasher.update(b"rustd llvm 5");
+        hasher.update(b"ra-jit llvm 5");
         hasher.update(super::Backend::Llvm(optimization).to_string());
         hasher.update(ir.to_string());
         // Nor does it tell which statement an instruction is of, which the code's lines do.
@@ -342,7 +342,7 @@ impl Entry {
             hasher.update((bytes.len() as u64).to_le_bytes());
             hasher.update(bytes);
         };
-        field(b"rustd entry 9");
+        field(b"ra-jit entry 9");
         field(program.map_or(&[][..], |it| it));
         // Code of one producer is not what another would have given.
         field(super::Backend::from_env().ok()?.to_string().as_bytes());
@@ -518,7 +518,7 @@ impl KeptTypes {
         }
         let bytes = postcard::to_allocvec(&**types).unwrap_or_default();
         let mut hasher = Sha256::new();
-        hasher.update(b"rustd types 1");
+        hasher.update(b"ra-jit types 1");
         hasher.update(&bytes);
         let key = hasher.finalize().into();
         store.insert(&key, &bytes);
@@ -588,7 +588,7 @@ impl Writer {
                 queued.into_iter().for_each(|kept| writer.write(kept));
                 std::mem::take(&mut writer.written)
             };
-            match std::thread::Builder::new().name("rustd store".to_owned()).spawn(work) {
+            match std::thread::Builder::new().name("ra-jit store".to_owned()).spawn(work) {
                 Ok(thread) => self.thread = Some((jobs, thread)),
                 Err(_) => self.alone = true,
             }

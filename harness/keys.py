@@ -44,11 +44,11 @@ def arg(*more):
     return lambda ws, env, args: args.extend(more)
 
 
-# What rustd says of a function it leaves to rustc because the copy of an instance it calls
-# is one rustc picked and rustd cannot tell which.
+# What ra-jit says of a function it leaves to rustc because the copy of an instance it calls
+# is one rustc picked and ra-jit cannot tell which.
 REFUSED = "overflow checks"
 
-# What rustd does not do yet: these differ, and are told apart when they do.
+# What ra-jit does not do yet: these differ, and are told apart when they do.
 OPEN = set()
 
 # (name, the change, the line of the program's output it has to show in or None for no line)
@@ -89,14 +89,14 @@ def size(directory):
 
 
 def build(ws, env, args):
-    """What cargo's program prints and what rustd's does, and the functions that were left to rustc."""
+    """What cargo's program prints and what ra-jit's does, and the functions that were left to rustc."""
     saved = dict(os.environ)
     os.environ.update(env)
     try:
         fx = Fixture(ws, ["kapp", "klib", "kdep"], ["-p", "kapp", *args])
-        fx.rustd_args = list(args)
+        fx.ra_jit_args = list(args)
         fx.rustc_build()
-        fx.rustd_build()
+        fx.ra_jit_build()
         skipped = [row for rows in fx.reports.values() for row in rows if row[0] == "skipped" and "no rustc symbol" not in row[2]]
         return fx.behaviour(fx.reference), fx.behaviour(fx.binary), skipped
     finally:
@@ -106,7 +106,7 @@ def build(ws, env, args):
 
 
 def main():
-    work = os.path.realpath(tempfile.mkdtemp(prefix="rustd-keys-"))
+    work = os.path.realpath(tempfile.mkdtemp(prefix="ra-jit-keys-"))
     chosen = sys.argv[1:]
     wrong = total = fixed = refusals = 0
     for name, change, line in CASES:
@@ -118,7 +118,7 @@ def main():
             store, first = os.path.join(at, "store"), os.path.join(at, "first")
             os.makedirs(store)
             shutil.copytree(os.path.join(HERE, "keys"), first, ignore=shutil.ignore_patterns("target"))
-            env, args = {"RUSTD_CACHE": store}, []
+            env, args = {"RA_JIT_CACHE": store}, []
             want, got, _ = build(first, env, args)
             problems = [] if want == got else ["the first build differs"]
             filled = size(store)
@@ -133,9 +133,9 @@ def main():
                 problems.append("the second build differs")
             if line and before == want:
                 problems.append("cargo's program is the same after the change")
-            # Where the crates differ in overflow checks, rustd leaves to rustc a function that
+            # Where the crates differ in overflow checks, ra-jit leaves to rustc a function that
             # calls a copy it cannot tell the checks of. The function the case is about has to
-            # be rustd's all the same, or the case shows nothing.
+            # be ra-jit's all the same, or the case shows nothing.
             refused = [row for row in left if REFUSED in row[2] and row[1].split("::")[-1] != line]
             if len(left) > len(refused):
                 problems.append(f"{len(left) - len(refused)} functions left to rustc")
@@ -152,9 +152,9 @@ def main():
                 ours, theirs = (it[1].decode(errors="replace").splitlines() for it in (got, want))
                 for a, b in zip(theirs, ours):
                     if a != b:
-                        print(f"    rustc: {a}\n    rustd: {b}")
+                        print(f"    rustc: {a}\n    ra-jit: {b}")
                 if len(ours) != len(theirs):
-                    print(f"    rustd: status {got[0]}, {len(ours)} lines of {len(theirs)}; {got[2].decode(errors='replace').strip()[-300:]}")
+                    print(f"    ra-jit: status {got[0]}, {len(ours)} lines of {len(theirs)}; {got[2].decode(errors='replace').strip()[-300:]}")
     still = sum(2 for name, _, _ in CASES if name in OPEN and (not chosen or any(it in name for it in chosen))) - fixed
     print(f"{total - wrong - still} of {total - still} right, {still} open, {refusals} functions refused; {work}")
     if fixed:

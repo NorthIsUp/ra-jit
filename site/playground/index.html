@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>rustd playground: the compiler in this page</title>
+<title>ra-jit playground: the compiler in this page</title>
 <link rel="icon" href="data:,">
-<meta name="description" content="Edit a Rust program and rustd compiles it to WebAssembly inside the page, a function at a time, while it runs.">
+<meta name="description" content="Edit a Rust program and ra-jit compiles it to WebAssembly inside the page, a function at a time, while it runs.">
 <style>
 :root { color-scheme: light dark; --bg: #fbfaf7; --fg: #1c1b19; --dim: #6b6862; --line: #e3dfd6; --code: #f1eee7; --accent: #b4441c; }
 @media (prefers-color-scheme: dark) {
@@ -35,7 +35,7 @@ footer { margin-top: 64px; color: var(--dim); font-size: 14px; }
 <body>
 <main>
 <nav>
-  <strong><a href="../">rustd</a></strong>
+  <strong><a href="../">ra-jit</a></strong>
   <a href="../#install">Install</a>
   <a href="../#use">Use</a>
   <a href="../#numbers">Numbers</a>
@@ -43,8 +43,8 @@ footer { margin-top: 64px; color: var(--dim); font-size: 14px; }
   <a href="https://github.com/DioxusLabs/rustd">GitHub</a>
 </nav>
 
-<h1>rustd, compiling in this page.</h1>
-<p class="lede">The program on the left is compiled to WebAssembly by rustd running in your
+<h1>ra-jit, compiling in this page.</h1>
+<p class="lede">The program on the left is compiled to WebAssembly by ra-jit running in your
 browser. Change it while it runs: only the functions the edit touched are compiled again and
 swapped in, and the program carries on from where it was.</p>
 
@@ -72,13 +72,13 @@ swapped in, and the program carries on from where it was.</p>
 </section>
 
 <h2>What runs here</h2>
-<p>The compiler is rustd's own: rust-analyzer's parser, name resolution and type inference,
-then rustd's code generator, built as one WebAssembly module of <span id="size-compiler">about
+<p>The compiler is ra-jit's own: rust-analyzer's parser, name resolution and type inference,
+then ra-jit's code generator, built as one WebAssembly module of <span id="size-compiler">about
 26 MB</span> (<span id="size-transfer">about 7 MB</span> to download, with the source of
 <code>core</code>). It runs in a worker in this page. No server compiles anything, and neither
 rustc nor LLVM is involved at any point.</p>
 <p>The first build of a program compiles it together with every function of <code>core</code>
-it reaches, from <code>core</code>'s source, which takes a few seconds. After an edit rustd
+it reaches, from <code>core</code>'s source, which takes a few seconds. After an edit ra-jit
 compiles the functions whose code changed, writes a small module with them, and the page
 puts them into the running program's function table. Statics are left alone, which is why the
 drops in the air stay where they are. An edit that changes the type of a static starts that static
@@ -91,11 +91,11 @@ file. There is no <code>std</code> and no <code>alloc</code>, so no <code>Vec</c
 <code>String</code> or <code>println!</code>, and no crates from crates.io.</li>
 <li><b>No macros of your own from other crates.</b> <code>macro_rules!</code> and the built-in
 macros work. Procedural macros do not, as there is no rustc here to build them.</li>
-<li><b>Few error messages.</b> rustd has no diagnostics of its own. A function that does not
+<li><b>Few error messages.</b> ra-jit has no diagnostics of its own. A function that does not
 parse or type-check is reported by name with a terse reason, and the program keeps running
 with the last version of it that compiled. Nothing checks borrows or moves, so code rustc
 would reject can compile here.</li>
-<li><b>Not the native code generator.</b> Natively rustd emits machine code with Cranelift or
+<li><b>Not the native code generator.</b> Natively ra-jit emits machine code with Cranelift or
 LLVM. For WebAssembly it lowers the same Cranelift IR with a lowering of its own, which is
 newer and less tested. Nothing is optimised across functions.</li>
 <li><b>It can be wrong.</b> The compiler is a prototype. If a program misbehaves here, check

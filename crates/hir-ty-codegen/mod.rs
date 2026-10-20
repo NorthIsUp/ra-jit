@@ -1,4 +1,4 @@
-//! rustd spike: lower RA MIR to native code with Cranelift.
+//! ra-jit spike: lower RA MIR to native code with Cranelift.
 //!
 //! Every local lives in memory. Calls follow rustc's (unstable) Rust ABI so the
 //! output can be linked against rustc-compiled objects.
@@ -542,7 +542,7 @@ impl CodegenUnit {
             let round = stdx::time::Instant::now();
             let mut start_over = |why: &str| {
                 discarded += round.elapsed();
-                if std::env::var_os("RUSTD_STATS").is_some() {
+                if std::env::var_os("RA_JIT_STATS").is_some() {
                     eprintln!("round {rounds}: {:.1?}, started over: {why}", round.elapsed());
                 }
             };
@@ -742,7 +742,7 @@ impl CodegenUnit {
                 if patching {
                     *base = patch::Base::record(db, &cg, roots.entries, &compiled, &skipped);
                 }
-                if let Some(path) = std::env::var_os("RUSTD_LAYOUTS") {
+                if let Some(path) = std::env::var_os("RA_JIT_LAYOUTS") {
                     let lines = cg
                         .layouts
                         .iter()
@@ -1114,11 +1114,11 @@ struct ObjectCodegen<'a, 'db> {
     on_demand_crates: FxHashSet<Crate>,
     /// Instances that failed in an earlier round, with the reason.
     rejected: &'a FxHashMap<Instance, Rejected>,
-    /// Size and alignment of every type laid out, collected when `RUSTD_LAYOUTS` names a file
+    /// Size and alignment of every type laid out, collected when `RA_JIT_LAYOUTS` names a file
     /// to write them to. The harness compares them with rustc's.
     layouts: FxHashMap<String, (u64, u64)>,
     phases: Phases,
-    /// One line per function for `harness/shapes.py`, when `RUSTD_SHAPES` is set.
+    /// One line per function for `harness/shapes.py`, when `RA_JIT_SHAPES` is set.
     shapes: Option<std::io::BufWriter<std::fs::File>>,
     /// How many compiled functions went into the object.
     bodies: usize,
@@ -1168,7 +1168,7 @@ struct Kept {
     unnamed: usize,
     /// Instances that refer to something an entry has no name for.
     unnamed_requests: usize,
-    /// Entries of the store that differ from what was compiled, with `RUSTD_CACHE_CHECK`.
+    /// Entries of the store that differ from what was compiled, with `RA_JIT_CACHE_CHECK`.
     differing: usize,
     same: usize,
     /// Why instances with a name were not added.
@@ -1499,7 +1499,7 @@ fn rows_of(db: &dyn HirDatabase, compiled: &CompiledFunction) -> Vec<Row> {
 #[salsa::tracked(returns(ref))]
 fn compiled_root<'db>(db: &'db dyn HirDatabase, func: FunctionId) -> Result<CompiledFunction> {
     let (body, env) = root_body(db, func)?;
-    if std::env::var("RUSTD_DUMP_MIR")
+    if std::env::var("RA_JIT_DUMP_MIR")
         .is_ok_and(|want| FunctionSignature::of(db, func).name.as_str() == want)
     {
         dump_mir(body);
@@ -1570,7 +1570,7 @@ fn compiled_instance<'db>(
             return compile(db, env, None, false, instance.checked, |fx| {
                 let ty = ty();
                 fx.drop_glue(ty)?;
-                if std::env::var_os("RUSTD_DUMP_CLIF").is_some() {
+                if std::env::var_os("RA_JIT_DUMP_CLIF").is_some() {
                     eprintln!("drop glue for {ty:?}\n{}", fx.builder.func.display());
                 }
                 Ok(())
@@ -1603,7 +1603,7 @@ fn compiled_instance<'db>(
         | InstanceDef::CoroutineByMove(_) => instance_body(db, &instance, stored_env)?,
     };
     let body = &*body;
-    let dump = std::env::var("RUSTD_DUMP_MIR").ok();
+    let dump = std::env::var("RA_JIT_DUMP_MIR").ok();
     let (tracked, abi, variadic) = match instance.def {
         InstanceDef::Fn(func) => {
             let signature = FunctionSignature::of(db, func);
@@ -1841,7 +1841,7 @@ impl Variadic {
 }
 
 /// The body of an instance that is not a shim, with the instance's types in place of the
-/// generic parameters. The database does not keep it unless `RUSTD_LEAN=0`: nothing but
+/// generic parameters. The database does not keep it unless `RA_JIT_LEAN=0`: nothing but
 /// compiling the instance reads it, and what was compiled is kept.
 fn instance_body<'db>(
     db: &'db dyn HirDatabase,
@@ -1849,7 +1849,7 @@ fn instance_body<'db>(
     env: StoredParamEnvAndCrate,
 ) -> Result<Cow<'db, MirBody<'db>>> {
     static LEAN: LazyLock<bool> =
-        LazyLock::new(|| std::env::var_os("RUSTD_LEAN").is_none_or(|it| it != "0"));
+        LazyLock::new(|| std::env::var_os("RA_JIT_LEAN").is_none_or(|it| it != "0"));
     let args = instance.args.clone();
     let tally = backend::Tally::global();
     let filled = |body, args: &StoredGenericArgs, env: &StoredParamEnvAndCrate| {
@@ -2974,9 +2974,9 @@ fn compile<'db>(
     let isa = &**target()?;
     let mut cg = Recorder::new(db, isa, selected_target()?, checked);
     let tally = backend::Tally::global();
-    /// `RUSTD_PROMOTE=0` leaves every local in its slot of the frame.
+    /// `RA_JIT_PROMOTE=0` leaves every local in its slot of the frame.
     static PROMOTE: LazyLock<bool> =
-        LazyLock::new(|| std::env::var_os("RUSTD_PROMOTE").is_none_or(|it| it != "0"));
+        LazyLock::new(|| std::env::var_os("RA_JIT_PROMOTE").is_none_or(|it| it != "0"));
     let mut ctx = tally.step(Step::Translate, || {
         let mut ctx = build(&mut cg, env, body, tracked, fill)?;
         inline(&mut ctx, &cg.inlined)?;
@@ -3367,7 +3367,7 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
         base: Option<&'a patch::Base>,
         hydrate: bool,
     ) -> Result<Self> {
-        let builder = ObjectBuilder::new(target()?.clone(), "rustd", default_libcall_names())?;
+        let builder = ObjectBuilder::new(target()?.clone(), "ra-jit", default_libcall_names())?;
         let mut module = ObjectModule::new(builder);
         let unwind = UnwindContext::new(&mut module).map_err(CodegenError::Backend)?;
         // A patch is added to a program that is linked already, and is read with it.
@@ -3412,7 +3412,7 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
             rejected,
             layouts: FxHashMap::default(),
             phases: Phases::default(),
-            shapes: std::env::var_os("RUSTD_SHAPES")
+            shapes: std::env::var_os("RA_JIT_SHAPES")
                 .and_then(|path| {
                     use std::io::Write;
                     let mut file =
@@ -3436,7 +3436,7 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
             kept: Kept::default(),
             // A patch gets these from its base, and a check compiles them to compare.
             entries: store
-                .filter(|_| base.is_none() && std::env::var_os("RUSTD_CACHE_CHECK").is_none())
+                .filter(|_| base.is_none() && std::env::var_os("RA_JIT_CACHE_CHECK").is_none())
                 .map(|store| {
                     let (home, library) = (symbols.cargo_home(), symbols.library_sources());
                     std::sync::Arc::new(cached::Entries::new(
@@ -3973,7 +3973,7 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
         };
         let key = cached::Entry::key(&name, debug.is_some(), program.flatten().as_ref());
         let Some(key) = key else { return };
-        let check = std::env::var_os("RUSTD_CACHE_CHECK");
+        let check = std::env::var_os("RA_JIT_CACHE_CHECK");
         let sets = || debug.iter().flat_map(|it| &it.types).cloned().collect::<Vec<_>>();
         if check.is_none() && store.has(&key) {
             let kept = cached::Kept::Types(sets());
@@ -4282,7 +4282,7 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
         if body.is_some_and(|it| it != entry.code.signature()) {
             return Ok(self.kept.unfound("an entry of another signature"));
         }
-        let symbol = format!("rustd::{}::n{}", entry.label, self.found.len());
+        let symbol = format!("ra_jit::{}::n{}", entry.label, self.found.len());
         let linkage = if self.patching { Linkage::Hidden } else { Linkage::Local };
         let id = self
             .module
@@ -4549,7 +4549,7 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
         }
         let triple = self.module.isa().triple().to_string();
         let assembled = asm::assemble(&triple, text).map_err(CodegenError::Unsupported)?;
-        let name = format!("rustd::asm::{}", self.assemblies.len());
+        let name = format!("ra_jit::asm::{}", self.assemblies.len());
         let id = self
             .module
             .declare_function(&name, Linkage::Local, sig)
@@ -4704,7 +4704,7 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
             // Nothing else defines the statics of a program compiled to WebAssembly, and
             // under its own name a static is the same one after a build in full.
             let own = if cfg!(feature = "wasm") { self.symbols.static_(id) } else { None };
-            let name = own.unwrap_or_else(|| format!("rustd::static::{}", self.location_counter));
+            let name = own.unwrap_or_else(|| format!("ra_jit::static::{}", self.location_counter));
             self.location_counter += 1;
             let linkage = if self.patching { Linkage::Hidden } else { Linkage::Local };
             self.module.declare_data(&name, linkage, compiled.writable, thread_local)?
@@ -4763,7 +4763,7 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
 
     /// A `core::panic::Location`, of no place in particular when the place is not known.
     fn define_location(&mut self, found: Option<(String, u32, u32)>) -> Result<DataId> {
-        let (file, line, col) = found.unwrap_or_else(|| ("<rustd>".to_owned(), 0u32, 0u32));
+        let (file, line, col) = found.unwrap_or_else(|| ("<ra-jit>".to_owned(), 0u32, 0u32));
         let mut bytes = vec![0u8; 2 * word() + 8];
         bytes[word()..2 * word()].copy_from_slice(&(file.len() as u64).to_le_bytes()[..word()]);
         bytes[2 * word()..2 * word() + 4].copy_from_slice(&line.to_le_bytes());
@@ -4884,7 +4884,7 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
             let id = self
                 .module
                 .declare_function(
-                    &format!("rustd::type_id::{}", self.instances.len()),
+                    &format!("ra_jit::type_id::{}", self.instances.len()),
                     Linkage::Local,
                     sig,
                 )
@@ -4940,7 +4940,7 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
         }
         // A patch is linked with its base, whose names these must not take.
         let env = &self.homes.home(self.db, instance, env);
-        let prefix = if self.base.is_some() { "rustd.patch" } else { "rustd" };
+        let prefix = if self.base.is_some() { "ra-jit.patch" } else { "ra-jit" };
         let symbol = format!("{prefix}::{name}::{}", self.instances.len());
         let linkage = if self.patching { Linkage::Hidden } else { Linkage::Local };
         let id = self
@@ -5185,7 +5185,7 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
         if let Some(&id) = self.type_id_shims.get(&hash) {
             return Ok(id);
         }
-        let name = format!("rustd::type_id::h{}", self.type_id_shims.len());
+        let name = format!("ra_jit::type_id::h{}", self.type_id_shims.len());
         let id = self
             .module
             .declare_function(&name, Linkage::Local, sig)
@@ -5388,7 +5388,7 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
         let n = self.location_counter;
         self.location_counter += 1;
         self.module
-            .declare_data(&format!(".Lrustd.const.{n}"), Linkage::Local, writable, false)
+            .declare_data(&format!(".Lra-jit.const.{n}"), Linkage::Local, writable, false)
             .map_err(|e| CodegenError::Backend(e.to_string()))
     }
 
@@ -11669,9 +11669,9 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         args: GenericArgs<'db>,
         sig: &Signature,
     ) -> Option<ir::FuncRef> {
-        /// `RUSTD_INLINE=0` calls every function.
+        /// `RA_JIT_INLINE=0` calls every function.
         static ENABLED: LazyLock<bool> =
-            LazyLock::new(|| std::env::var_os("RUSTD_INLINE").is_none_or(|it| it != "0"));
+            LazyLock::new(|| std::env::var_os("RA_JIT_INLINE").is_none_or(|it| it != "0"));
         let InstanceDef::Fn(func) = def else { return None };
         let db = self.cg.db;
         if !*ENABLED
@@ -14291,7 +14291,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
     }
 }
 
-/// Prints a body one statement a line, for debugging with `RUSTD_DUMP_MIR`.
+/// Prints a body one statement a line, for debugging with `RA_JIT_DUMP_MIR`.
 fn dump_mir(body: &MirBody<'_>) {
     let compact = |text: String| {
         let mut text = text

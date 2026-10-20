@@ -8,7 +8,7 @@
   "cargo": [
     "--no-default-features"
   ],
-  "rustd": [
+  "ra-jit": [
     "--no-default-features"
   ]
 }
