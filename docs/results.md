@@ -448,6 +448,98 @@ Commands, on the host:
 Dependencies were fetched with `cargo fetch` first and every timed build ran with
 `CARGO_NET_OFFLINE=true`.
 
+### Warm edits, before and after (2026-10-20)
+
+The cold rows above are still from 6a7d245e47. The warm rows were measured again on the same
+host, dev-aws-6, to compare two ra-jit builds. Before is 46aff2550e. After is the same code
+plus the two commits "where the time of a build goes" and "warm edits". The commits between
+46aff2550e and their base on main change only docs and the bench harness.
+
+Method: for each project, before ran and then after. Each got a new work directory, so no
+run could hit a store entry left by the other. Each started only when the one-minute load
+had been under 2.5 for 30 s. Another lane shared the host at low CPU weight. The load at the
+starts was 0.8 to 1.7. Median of 5 (min-max), seconds.
+
+| Project | Step | cargo | before | after |
+|---|---|---:|---:|---:|
+| ripgrep 15.1.0 | edit: body of `main` | 0.53 (0.51-0.61) | 0.11 (0.11-0.22) | 0.11 (0.10-0.22) |
+| | edit: body in a library | 0.79 (0.77-1.03) | 0.07 (0.06-0.10) | 0.07 (0.06-0.09) |
+| | edit: new function | 0.53 (0.51-0.61) | 0.12 (0.12-0.17) | 0.11 (0.11-0.13) |
+| just 1.43.0 | edit: body of `main` | 0.28 (0.28-0.29) | 0.04 (0.04-0.21) | 0.04 (0.04-0.20) |
+| | edit: body in a library | 0.83 (0.82-1.00) | 0.06 (0.06-0.10) | 0.06 (0.06-0.09) |
+| | edit: new function | 0.28 (0.28-0.29) | 0.05 (0.05-0.09) | 0.06 (0.05-0.08) |
+| nushell 0.108.0 | edit: body of `main` | 1.59 (1.52-1.85) | 0.40 (0.40-2.39) | 0.30 (0.30-2.40) |
+| | edit: body in a library | 6.33 (6.21-7.85) | 0.21 (0.20-0.44) | 0.18 (0.16-0.21) |
+| | edit: new function | 1.64 (1.60-1.65) | 0.41 (0.41-0.52) | 0.34 (0.32-0.38) |
+
+The cargo column is from the after run. Output was the same in 5 of 5 runs on every row, on
+both sides.
+
+Where the time goes, after, from `realbench.py --table` (the median run). The steps sum to
+the client's total, and "outside the client" is cargo and rustup starting up.
+
+| Project | Step | ra-jit | Where the time went (ms) |
+|---|---|---:|---|
+| ripgrep | edit: main | 0.107 | worker wait 38.4, check 17.8, apply 7.1, client checks 2.4, object 2.2, link 1.9, refuse 1.1, 20 more 8.9, outside the client 27.1 |
+| | edit: lib | 0.066 | check 13.8, apply 6.8, reach 2.6, client checks 2.5, compile-rest 1.7, link 1.6, refuse 1.4, 20 more 8.1, outside the client 27.0 |
+| just | edit: main | 0.043 | check 8.8, apply 1.4, client↔daemon 0.8, link 0.8, build-rest 0.7, 22 more 3.5, outside the client 26.9 |
+| | edit: lib | 0.062 | check 17.6, apply 7.2, reach 1.6, link 1.3, compile-rest 1.2, refuse 0.9, 21 more 5.9, outside the client 26.7 |
+| nushell | edit: main | 0.305 | check 209.6, apply 14.7, compile-rest 6.8, build-rest 6.8, link 6.4, object 4.9, refuse 4.9, 20 more 23.5, outside the client 27.0 |
+| | edit: lib | 0.178 | check 55.4, apply 29.4, compile-rest 9.2, refuse 8.4, reach 8.3, link 7.3, build-rest 6.8, 20 more 25.2, outside the client 27.8 |
+
+The before binary has no spans. The nushell steps before and after come from `RA_JIT_STATS=1`
+on two builds of the same tree, one without the fixes and one with them. They are medians
+of edits 2 to 6, in ms of the client's total. The library edit followed the main edits in the
+same daemon.
+
+| Step | main, before | main, after | lib, before | lib, after |
+|---|---:|---:|---:|---:|
+| check (type-check, translate, Cranelift of the edited functions) | 310 | 207 | 58.5 | 61.2 |
+| - of which translate (of which debuginfo types) | 72 (22) | 36 (8) | | |
+| - of which Cranelift | 75 | 47 | | |
+| compile-rest | 20.7 | 6.7 | 18.7 | 8.6 |
+| resolve | | | 22.7 | 2.0 |
+| reach | 3.1 | 3.3 | 10.7 | 2.3 |
+| apply | 15.9 | 15.0 | 25.6 | 25.8 |
+| build-rest, link, refuse, object | 22.1 | 21.2 | 26.4 | 25.0 |
+| total | 392.7 | 271.2 | 182.6 | 141.4 |
+
+The lines don't sum to the total. The other steps are under 5 ms each.
+
+What changed:
+
+- Shared paths are cached by the generation of the symbol table, not rebuilt on every edit
+  (resolve and reach on a library edit).
+- MIR lowering memoizes `is_copy`.
+- rust-analyzer's `lookup_impl_method` for trait methods is a salsa query, so an edit
+  doesn't solve it again for every call site in functions that did not change.
+- What the debugger is told of a type is a salsa query keyed by the environment and the type,
+  not built again per thread on every build.
+- A function of over 20,000 instructions gets Cranelift's single-pass register allocator
+  (`SINGLE_PASS`). nushell's `main`, of 35,780, compiles in 47 ms instead of 75 ms. Its code
+  grows from 148 KB to 311 KB.
+
+What is left:
+
+- On nushell's main edit, most of check is rust-analyzer type-checking the edited function
+  (about 100 ms). The time is spread over trait solving, and the solver's cache starts empty
+  in every revision.
+- Cranelift takes 47 ms on `main`, about 35,000 instructions. Translate takes 36 ms, which is
+  salsa verification and SSA building.
+- Apply takes 13 to 29 ms. Most of it is the outline of each changed file: types, the item
+  list, lowering, hashing.
+- ripgrep's worker wait (38 ms) is the rerun of build scripts through
+  `cargo check --compile-time-deps`. A build script with no `rerun-if-changed` runs again on
+  any change in its package, as cargo does. That check could run alongside type-checking,
+  and the build could be redone if a build script's output changed.
+
+Commands, on the host. A loop waited for a quiet host and ran this for each project and side:
+
+    RA_JIT_BIN=<before or after>/ra-jit RA_JIT_PROJECTS=~/rajit-warm/projects \
+        python3 -u harness/realbench.py <project> --runs 5 --parts noop,edits \
+        --work ~/rajit-warm/work-<side>
+    python3 harness/realbench.py --table ~/rajit-warm/work-<side>/realbench.json
+
 ## Disagreements
 
 Where reports disagree, this file follows the later one.
