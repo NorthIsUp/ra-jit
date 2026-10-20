@@ -5,6 +5,7 @@
 
 mod cargo;
 mod content;
+mod dep_info;
 mod deps;
 mod doctest;
 mod inputs;

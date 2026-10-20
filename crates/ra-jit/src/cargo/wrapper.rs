@@ -24,6 +24,7 @@ use super::{
     units::{Copied, Record, stamp_now},
 };
 use crate::{
+    dep_info,
     socket::{private_dir, private_file},
     stub::VALUED,
 };
@@ -455,7 +456,8 @@ impl Unit {
         // which it reads the first source: the root of the crate.
         let stem =
             format!("{}{}", self.crate_name, record.codegen("extra-filename").unwrap_or_default());
-        std::fs::write(to.join(format!("{stem}.d")), format!("{stem}: {}\n", compiled.display()))?;
+        let root = dep_info::escaped(&compiled.display().to_string());
+        std::fs::write(to.join(format!("{stem}.d")), format!("{stem}: {root}\n"))?;
         if self.script
             && let Some(linked) = record.outputs().first()
         {

@@ -49,6 +49,14 @@ All notable changes to ra-jit are written here. The format follows
   checks it.
 - An edit that arrives while a function is being compiled at a higher level no longer waits
   for LLVM: the compile lets go of the database before LLVM runs.
+- A workspace under a directory whose name has a space in it is built against what rustc
+  built of it ([#14](https://github.com/indexable-inc/ra-jit/issues/14)). The daemon cut
+  the dep-info file that names a crate's sources at every space, found none of the
+  workspace's crates among rustc's, and named their functions itself, so a function it
+  refused had no copy of rustc's to link to. Dep-info is now read and written as rustc writes
+  it, in one place: a space in a path is `\ `, and `$`, `#` and backslashes are themselves;
+  the values of the variables in it are unescaped too. `harness/spaces.py` builds a
+  workspace under such a directory end to end.
 
 ## [0.1.0] - 2026-10-20
 
