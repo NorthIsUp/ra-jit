@@ -22,16 +22,18 @@ import genbig
 
 # Short names for the queries that tell how much was redone, by the name salsa gives them.
 QUERIES = {
-    "lower": "Body::with_source_map_",
+    "lower": "Body::relative_",
+    "map": "Body::with_source_map_",
     "body": "Body::of_",
     "infer": "InferenceResult<'db>::for_body_",
     "mir": "mir_body_query",
     "closure mir": "mir_body_for_closure_query",
     "expand": "MacroCallId::parse_macro_expansion_",
-    "places": "source_location",
-    "rows": "row_location",
+    "places": "source_place",
+    "rows": "row_place",
+    "anchors": "anchor_location",
 }
-COLUMNS = ["lower", "body", "infer", "mir", "closure mir", "expand", "places", "compiled",
+COLUMNS = ["lower", "map", "body", "infer", "mir", "closure mir", "expand", "places", "rows", "anchors", "compiled",
            "apply ms", "build ms", "edit to binary ms"]
 
 

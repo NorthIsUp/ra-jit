@@ -6464,7 +6464,14 @@ impl Program {
         let (warm, broken) = std::thread::scope(|scope| {
             let check = {
                 let (db, edited) = (db.clone(), &edited);
-                scope.spawn(move || broken_in(&db, edited, paths))
+                scope.spawn(move || {
+                    let start = Instant::now();
+                    let broken = broken_in(&db, edited, paths);
+                    if std::env::var_os("RA_JIT_STATS").is_some() {
+                        eprintln!("check-us: {}", start.elapsed().as_micros());
+                    }
+                    broken
+                })
             };
             let warm = build(db, table, args, known, listed);
             (warm, check.join().ok().flatten())

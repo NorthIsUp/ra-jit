@@ -104,6 +104,8 @@ pub use home::body_file;
 #[cfg(feature = "llvm")]
 mod llvm;
 mod patch;
+mod places;
+use self::places::{row_location, source_location};
 mod promote;
 mod settled;
 mod stable;
@@ -1614,7 +1616,7 @@ fn rows_of(db: &dyn HirDatabase, compiled: &CompiledFunction) -> Vec<Row> {
     let Some((owner, spans)) = &compiled.source else { return Vec::new() };
     let rows = compiled.code.lines.iter().filter_map(|row| {
         let span = *spans.get(row.span as usize)?;
-        let (file, line, column) = (*row_location(db, *owner, compiled.closure, span))?;
+        let (file, line, column) = row_location(db, *owner, compiled.closure, span)?;
         Some((row.offset, file, line, column))
     });
     rows.collect()
@@ -2716,9 +2718,10 @@ fn describe_scopes(
     of_binding
 }
 
-/// File, line and column of a place in a body, as rustc reports them.
+/// File, line and column of a place in a body, as rustc reports them, found from where the
+/// body is in its file: [`places::source_location`] finds them from the body alone.
 #[salsa::tracked]
-fn source_location<'db>(
+fn source_location_in_file<'db>(
     db: &'db dyn HirDatabase,
     owner: DefWithBodyId,
     span: MirSpan,
@@ -2733,7 +2736,7 @@ fn source_location<'db>(
 /// macro has it otherwise, as it is of what a macro writes of the code of `closure`, or of
 /// the body when there is none, where that is itself what the macro writes.
 #[salsa::tracked]
-fn row_location<'db>(
+fn row_location_in_file<'db>(
     db: &'db dyn HirDatabase,
     owner: DefWithBodyId,
     closure: Option<ExprId>,
@@ -2741,7 +2744,7 @@ fn row_location<'db>(
 ) -> Option<(base_db::FileId, u32, u32)> {
     let (file_id, range) = source_range(db, owner, span)?;
     if file_id.macro_file().is_none() {
-        return *source_location(db, owner, span);
+        return *source_location_in_file(db, owner, span);
     }
     let source_map = &Body::with_source_map(db, owner).1;
     let code = closure.unwrap_or_else(|| Body::of(db, owner).root_expr());
@@ -2750,7 +2753,7 @@ fn row_location<'db>(
             let start = TextRange::empty(body.value.syntax_node_ptr().text_range().start());
             body.file_id.span_map(db).span_for_range(start).ctx
         }
-        Err(_) => return *source_location(db, owner, span),
+        Err(_) => return *source_location_in_file(db, owner, span),
     };
     written_place(db, file_id, range, Some(within))
 }
@@ -2931,7 +2934,7 @@ fn location_macros<'db>(
     db: &'db dyn HirDatabase,
     owner: DefWithBodyId,
 ) -> FxHashMap<ExprId, (BuiltinFnLikeExpander, HirFileId)> {
-    let (body, source_map) = Body::with_source_map(db, owner);
+    let (body, source_map) = (Body::of(db, owner), Body::unmoved_source_map(db, owner));
     body.exprs()
         .filter(|(_, expr)| matches!(expr, hir_def::hir::Expr::Literal(_)))
         .filter_map(|(id, _)| {
@@ -2957,7 +2960,7 @@ fn located_concats<'db>(
     db: &'db dyn HirDatabase,
     owner: DefWithBodyId,
 ) -> FxHashMap<ExprId, HirFileId> {
-    let (body, source_map) = Body::with_source_map(db, owner);
+    let (body, source_map) = (Body::of(db, owner), Body::unmoved_source_map(db, owner));
     body.exprs()
         .filter(|(_, expr)| matches!(expr, hir_def::hir::Expr::Literal(_)))
         .filter_map(|(id, _)| {
@@ -5055,7 +5058,7 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
     }
 
     fn location_at(&mut self, at: Option<(DefWithBodyId, MirSpan)>) -> Option<(String, u32, u32)> {
-        at.and_then(|(owner, span)| *source_location(self.db, owner, span))
+        at.and_then(|(owner, span)| source_location(self.db, owner, span))
             .and_then(|(file, line, col)| Some((self.source_path(file)?, line, col)))
     }
 

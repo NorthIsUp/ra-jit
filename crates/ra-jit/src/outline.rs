@@ -195,9 +195,20 @@ fn outlines(db: &RootDatabase, listed: &Listed, files: &[FileId]) -> Vec<Option<
 fn types(db: &RootDatabase, file: FileId) -> FxHashMap<String, u64> {
     let edition =
         relevant_crates(db, file).first().map_or(Edition::CURRENT, |it| it.data(db).edition);
-    let tree = EditionedFileId::new(db, file, edition).parse(db).syntax_node();
+    let file = EditionedFileId::new(db, file, edition);
+    let tree = file.parse(db).syntax_node();
     let mut found = FxHashMap::<String, u64>::default();
-    for node in tree.descendants() {
+    // Every item has an id, also one in a body: the types are found without walking the file.
+    let kinds = [
+        SyntaxKind::STRUCT,
+        SyntaxKind::ENUM,
+        SyntaxKind::UNION,
+        SyntaxKind::TYPE_ALIAS,
+        SyntaxKind::TRAIT,
+    ];
+    let items =
+        hir::HirFileId::from(file).ast_id_map(db).ptrs().filter(|it| kinds.contains(&it.kind()));
+    for node in items.map(|it| it.to_node(&tree)) {
         let (kind, name) = if let Some(it) = ast::Struct::cast(node.clone()) {
             ("struct", it.name())
         } else if let Some(it) = ast::Enum::cast(node.clone()) {
