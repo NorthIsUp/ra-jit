@@ -8,6 +8,16 @@
 //! - `wake`, a datagram socket the program listens on: the daemon sends it a byte each time
 //!   it has written `patch`, and the program reads the patch at once.
 //!
+//! And three for tiering, where the daemon compiles the functions the program spends its
+//! time in again with LLVM while it runs:
+//!
+//! - `sample`, which the daemon writes to ask the program to sample where its threads are
+//!   ([`Sample`]), and removes to have it stop. Without it the program samples nothing.
+//! - `profile`, which the program writes a few times a second while it samples: where its
+//!   threads were, and the counters of the code that counts its branches ([`Profile`]).
+//! - `tiers`, which the daemon writes: which functions are hot and at which level, and what
+//!   it did of late ([`Tiers`]), for the program to show.
+//!
 //! Every address here is as the executable's load commands have it, before the loader
 //! slid the program: the program adds its slide.
 
@@ -223,6 +233,216 @@ impl Process {
     }
 }
 
+/// The file of [`Sample`] in [`dir`].
+pub const SAMPLE: &str = "sample";
+/// The file of [`Profile`] in [`dir`].
+pub const PROFILE: &str = "profile";
+/// The file of [`Tiers`] in [`dir`].
+pub const TIERS: &str = "tiers";
+
+/// How many counters [`counters`](crate::ra_jit_live_counters) has room for.
+pub const COUNTERS: usize = 1 << 16;
+
+/// What the daemon asks of the sampler.
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub struct Sample {
+    /// How long the sampler sleeps between two looks at the threads, in microseconds.
+    pub interval_us: u64,
+    /// How many of the counters code of the daemon's counts into: the program reads those.
+    pub counters: u64,
+}
+
+impl Sample {
+    pub fn encode(&self) -> String {
+        format!("interval_us {}\ncounters {}\n", self.interval_us, self.counters)
+    }
+
+    pub fn decode(text: &str) -> Option<Sample> {
+        let mut sample = Sample { interval_us: 0, counters: 0 };
+        for line in text.lines() {
+            let (key, value) = line.split_once(' ')?;
+            match key {
+                "interval_us" => sample.interval_us = value.parse().ok()?,
+                "counters" => sample.counters = value.parse().ok()?,
+                _ => {}
+            }
+        }
+        (sample.interval_us != 0).then_some(sample)
+    }
+}
+
+/// Where a program's threads were, since its sampler started. Counts only go up: the daemon
+/// takes the difference of two to know where the time went between them.
+#[derive(Debug, PartialEq, Clone, Default)]
+pub struct Profile {
+    pub pid: u32,
+    /// When the sampler started and when this was written, in milliseconds since the epoch.
+    pub started: u64,
+    pub at: u64,
+    /// How many times the sampler looked at the threads.
+    pub ticks: u64,
+    /// The threads it found running in the program's own code, which `pcs` has, and those
+    /// it found running anywhere else (a library, the kernel's side of a call).
+    pub samples: u64,
+    pub elsewhere: u64,
+    /// The CPU time the sampler itself took, in nanoseconds.
+    pub sampler_ns: u64,
+    /// Each address a thread was found at, before the slide, and how often.
+    pub pcs: Vec<(u64, u64)>,
+    /// Each counter that is not zero, by its place among the counters.
+    pub counters: Vec<(u32, u64)>,
+}
+
+impl Profile {
+    pub fn encode(&self) -> String {
+        use std::fmt::Write as _;
+        let mut out = format!(
+            "pid {}\nstarted {}\nat {}\nticks {}\nsamples {}\nelsewhere {}\nsampler_ns {}\n",
+            self.pid,
+            self.started,
+            self.at,
+            self.ticks,
+            self.samples,
+            self.elsewhere,
+            self.sampler_ns
+        );
+        for (pc, count) in &self.pcs {
+            _ = writeln!(out, "pc {pc:x} {count}");
+        }
+        for (at, count) in &self.counters {
+            _ = writeln!(out, "c {at} {count}");
+        }
+        out
+    }
+
+    pub fn decode(text: &str) -> Option<Profile> {
+        let mut profile = Profile::default();
+        for line in text.lines() {
+            let mut words = line.split(' ');
+            let key = words.next()?;
+            let mut next = || words.next();
+            match key {
+                "pc" => {
+                    let pc = u64::from_str_radix(next()?, 16).ok()?;
+                    profile.pcs.push((pc, next()?.parse().ok()?));
+                }
+                "c" => profile.counters.push((next()?.parse().ok()?, next()?.parse().ok()?)),
+                "pid" => profile.pid = next()?.parse().ok()?,
+                "started" => profile.started = next()?.parse().ok()?,
+                "at" => profile.at = next()?.parse().ok()?,
+                "ticks" => profile.ticks = next()?.parse().ok()?,
+                "samples" => profile.samples = next()?.parse().ok()?,
+                "elsewhere" => profile.elsewhere = next()?.parse().ok()?,
+                "sampler_ns" => profile.sampler_ns = next()?.parse().ok()?,
+                _ => {}
+            }
+        }
+        (profile.pid != 0).then_some(profile)
+    }
+}
+
+/// The levels a function is compiled at, from the quickest to build to the quickest to run.
+pub const LEVELS: [&str; 3] = ["Cranelift", "LLVM -O3", "LLVM -O3 + PGO"];
+
+/// What `level` (1, 2 or 3) is called.
+pub fn level_name(level: u8) -> &'static str {
+    LEVELS.get(usize::from(level).wrapping_sub(1)).copied().unwrap_or("?")
+}
+
+/// What the daemon says of the tiers of a running program.
+#[derive(Debug, PartialEq, Clone, Default)]
+pub struct Tiers {
+    /// When it was written, in milliseconds since the epoch.
+    pub at: u64,
+    /// How long the counts of `functions` are over, in milliseconds.
+    pub window_ms: u64,
+    /// The samples taken in that window.
+    pub samples: u64,
+    /// The CPU the sampler took, in thousandths of the time it ran.
+    pub sampler_permille: u64,
+    /// The functions the samples fell in, the hottest first.
+    pub functions: Vec<TierFunction>,
+    /// What the daemon did, the newest last.
+    pub events: Vec<TierEvent>,
+}
+
+#[derive(Debug, PartialEq, Clone, Default)]
+pub struct TierFunction {
+    /// 1, 2 or 3 ([`level_name`]); 0 for code the daemon did not compile and can't tier.
+    pub level: u8,
+    /// Samples in the window, and their share of all of them in thousandths.
+    pub samples: u64,
+    pub share: u64,
+    pub name: String,
+    /// What is under way or why it stays where it is, or nothing.
+    pub note: String,
+}
+
+#[derive(Debug, PartialEq, Clone, Default)]
+pub struct TierEvent {
+    /// In milliseconds since the epoch.
+    pub at: u64,
+    pub text: String,
+}
+
+impl Tiers {
+    pub fn encode(&self) -> String {
+        use std::fmt::Write as _;
+        let clean = |text: &str| text.replace(['\t', '\n'], " ");
+        let mut out = format!(
+            "at {}\nwindow_ms {}\nsamples {}\nsampler_permille {}\n",
+            self.at, self.window_ms, self.samples, self.sampler_permille
+        );
+        for f in &self.functions {
+            _ = writeln!(
+                out,
+                "fn\t{}\t{}\t{}\t{}\t{}",
+                f.level,
+                f.samples,
+                f.share,
+                clean(&f.name),
+                clean(&f.note)
+            );
+        }
+        for event in &self.events {
+            _ = writeln!(out, "event\t{}\t{}", event.at, clean(&event.text));
+        }
+        out
+    }
+
+    pub fn decode(text: &str) -> Option<Tiers> {
+        let mut tiers = Tiers::default();
+        for line in text.lines() {
+            if let Some(rest) = line.strip_prefix("fn\t") {
+                let mut fields = rest.split('\t');
+                let mut next = || fields.next();
+                tiers.functions.push(TierFunction {
+                    level: next()?.parse().ok()?,
+                    samples: next()?.parse().ok()?,
+                    share: next()?.parse().ok()?,
+                    name: next()?.to_owned(),
+                    note: next().unwrap_or_default().to_owned(),
+                });
+                continue;
+            }
+            if let Some(rest) = line.strip_prefix("event\t") {
+                let (at, text) = rest.split_once('\t')?;
+                tiers.events.push(TierEvent { at: at.parse().ok()?, text: text.to_owned() });
+                continue;
+            }
+            let (key, value) = line.split_once(' ')?;
+            match key {
+                "at" => tiers.at = value.parse().ok()?,
+                "window_ms" => tiers.window_ms = value.parse().ok()?,
+                "samples" => tiers.samples = value.parse().ok()?,
+                "sampler_permille" => tiers.sampler_permille = value.parse().ok()?,
+                _ => {}
+            }
+        }
+        (tiers.at != 0).then_some(tiers)
+    }
+}
+
 fn put(out: &mut Vec<u8>, value: u64) {
     out.extend_from_slice(&value.to_le_bytes());
 }
@@ -293,5 +513,39 @@ mod tests {
             end: 0x2_0000_0000,
         };
         assert_eq!(Process::decode(&process.encode()), Some(process));
+    }
+
+    #[test]
+    fn tiering_round_trip() {
+        let sample = Sample { interval_us: 2000, counters: 12 };
+        assert_eq!(Sample::decode(&sample.encode()), Some(sample));
+        let profile = Profile {
+            pid: 7,
+            started: 1,
+            at: 2,
+            ticks: 3,
+            samples: 4,
+            elsewhere: 5,
+            sampler_ns: 6,
+            pcs: vec![(0x1_0000_4abc, 9)],
+            counters: vec![(3, 100)],
+        };
+        assert_eq!(Profile::decode(&profile.encode()), Some(profile));
+        let tiers = Tiers {
+            at: 10,
+            window_ms: 1000,
+            samples: 400,
+            sampler_permille: 3,
+            functions: vec![TierFunction {
+                level: 2,
+                samples: 300,
+                share: 750,
+                name: "<life::Life as Step>::step".into(),
+                note: "profiling".into(),
+            }],
+            events: vec![TierEvent { at: 9, text: "step: LLVM -O3 in 120 ms".into() }],
+        };
+        assert_eq!(Tiers::decode(&tiers.encode()), Some(tiers));
+        assert_eq!(level_name(3), "LLVM -O3 + PGO");
     }
 }

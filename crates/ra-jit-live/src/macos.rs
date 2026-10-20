@@ -15,6 +15,7 @@ use std::{
 use crate::{
     Outcome,
     format::{self, Body, Code, Patch, Process},
+    sample,
 };
 
 unsafe extern "C" {
@@ -103,6 +104,9 @@ impl Live {
             .create(&dir)
             .map_err(|it| format!("{}: {it}", dir.display()))?;
         let (next, end) = reserve(&image, slide)?;
+        _ = crate::DIR.set(dir.clone());
+        let code = sample::Code { slide, image: image.start..image.end, patches: next..end };
+        sample::start(dir.clone(), code);
         let started = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH);
         let started = started.map_or(0, |it| it.as_millis() as u64);
         let process = Process { pid: std::process::id(), uuid: image.uuid, started, next, end };
