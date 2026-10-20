@@ -121,10 +121,14 @@ What is specific to the port:
   object is linked ahead of them.
 - The splice (`splice/macho.rs`). The loader wants `__LINKEDIT` last with the signature at
   its end. The patch goes where `__LINKEDIT` was, in two new segments, `__LINKEDIT` is
-  written again behind them, the unwind tables are rebuilt and the ad hoc signature is
-  redone. The result is written to a copy that replaces the executable by rename. It needs
-  room for two more load commands, so the link line gets `-Wl,-headerpad,0x200`; without
-  it the splice declines. The file does not grow from splice to splice.
+  written again behind them, and the ad hoc signature is redone. The result is written to a
+  copy that replaces the executable by rename. dyld on macOS 15.4 to 15.7 finds
+  `__unwind_info` and `__eh_frame` only in the segment named `__TEXT`, so `__unwind_info`
+  moves into the header's spare room and the patch's frames take its place in front of the
+  program's; a patch whose frames are larger than the program's unwind table is linked in
+  full. The room for two more load commands and the table comes from
+  `-Wl,-headerpad,0x100000` on the link line; without it the splice declines. The file
+  does not grow from splice to splice.
 - Executables with chained fixups are declined and linked in full. That was measured with
   `MACOSX_DEPLOYMENT_TARGET=13.0`; rustc's default deployment target of 11.0 produces dyld
   info and splices.

@@ -13,8 +13,9 @@ use crate::weaken;
 /// What an ELF linker is told so that the first definition of a name is the one that stays.
 const FIRST_DEFINITION_STAYS: &str = "-Wl,--allow-multiple-definition";
 
-/// What Apple's linker is told so that a splice has room in the header for its two segments.
-const ROOM_FOR_SEGMENTS: &str = "-Wl,-headerpad,0x200";
+/// What Apple's linker is told so that a splice has room in the header for its two segments
+/// and for the unwind table, which makes way for the patch's frames in `__TEXT`.
+const ROOM_FOR_SEGMENTS: &str = "-Wl,-headerpad,0x100000";
 
 /// The same for `link.exe`, which warns of every name it does so for unless told not to.
 const FIRST_DEFINITION_STAYS_MSVC: [&str; 2] = ["/FORCE:MULTIPLE", "/IGNORE:4006"];
