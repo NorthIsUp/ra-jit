@@ -37,7 +37,8 @@ jobs:
           submodules: true
       - run: rustup toolchain install 1.99.0 --profile minimal -c rustfmt -c rust-src && rustup default 1.99.0
       - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --all -- --check
+      # The code that is ra-jit's own: vendor/rust-analyzer is a checkout of another repository.
+      - run: cargo fmt -p ra-jit -p ra-jit-live -- --check
       - run: cargo test --release -p hir-ty -p hir-def -p parser -p syntax -p ra-jit
 
   harness:
@@ -190,7 +191,7 @@ jobs:
           submodules: true
       - run: rustup toolchain install 1.99.0 --profile minimal -c rustfmt -c rust-src && rustup default 1.99.0
       - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --all -- --check
+      - run: cargo fmt -p ra-jit -p ra-jit-live -- --check
       - run: cargo test --release -p hir-ty -p hir-def -p parser -p syntax -p ra-jit
 
   windows-harness:
@@ -305,7 +306,7 @@ jobs:
           brew install llvm@20
           echo "LLVM_SYS_201_PREFIX=$(brew --prefix llvm@20)" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --all -- --check
+      - run: cargo fmt -p ra-jit -p ra-jit-live -- --check
         if: matrix.backend == 'cranelift' && matrix.part == 'core'
       - run: cargo test --release -p hir-ty -p hir-def -p parser -p syntax -p ra-jit
         if: matrix.backend == 'cranelift' && matrix.part == 'core'
