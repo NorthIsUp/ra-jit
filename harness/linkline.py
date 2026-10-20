@@ -76,6 +76,7 @@ def ahead(link, objects, ra_jit):
     copies = subprocess.check_output([ra_jit, "weaken", *(link[i] for i in theirs)], text=True).splitlines()
     for i, copy in zip(theirs, copies):
         link[i] = copy
-    # A splice adds two segments to the header, which the linker leaves no room for.
-    link[first:first] = [*objects, "-Wl,-headerpad,0x200"]
+    # A splice adds two segments to the header, and the unwind table behind it, which the
+    # linker leaves no room for.
+    link[first:first] = [*objects, "-Wl,-headerpad,0x100000"]
     return link

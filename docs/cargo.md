@@ -316,7 +316,7 @@ cargo's.
 Two things differ from Linux. Apple's linker has no way to let the first of two
 definitions win, so the daemon links rustc's line with copies of the workspace's objects in
 which every definition is weak, and its own object in front; this is the link the daemon
-already did on macOS, and the line also gets `-Wl,-headerpad,0x200` so that the executable
+already did on macOS, and the line also gets `-Wl,-headerpad,0x100000` so that the executable
 can be spliced later. And there is no `/proc`: in the global mode, the cargo above the
 wrapper is read through `libproc` and `sysctl`.
 
