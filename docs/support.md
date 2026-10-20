@@ -90,9 +90,24 @@ with `--features llvm`, and is selected with `RA_JIT_BACKEND=llvm`. Everything t
 measured under LLVM used `RA_JIT_OPT=2 RA_JIT_EMIT=fast`. Other levels are accepted and are
 not covered by the gate.
 
-Neither backend inlines one function into another, so LLVM at `-O2` is not comparable to a
-release build. LLVM gives a function it has no lowering for to Cranelift. One LLVM bug is
-worked around by turning off a vectoriser pass (finding 6 in FUZZ.md).
+Neither backend inlines one function into another in a build, so LLVM at `-O2` is not
+comparable to a release build. LLVM gives a function it has no lowering for to Cranelift. One
+LLVM bug is worked around by turning off a vectoriser pass (finding 6 in FUZZ.md).
+
+## Tiers
+
+A program that takes edits with `ra-jit-live` has its hot functions compiled again while it
+runs, at LLVM `-O3` with what they call built in and then with a profile, and patched in
+([tiers.md](tiers.md)). macOS arm64 with `--features llvm` only, like live edits; on by
+default there, off with `RA_JIT_TIER=off`.
+
+| | macOS arm64 | elsewhere |
+|---|---|---|
+| Sampling, under 1% of a core at 500 Hz | yes (local, 2026-10-20) | no: live edits are macOS only (Linux would sample with `perf_event_open`) |
+| Levels 2 and 3, output identical to cargo's | yes, `harness/tiers.py` (local) | no |
+| An edit demotes a tiered function in the same build | yes, `harness/tiers.py` (local) | no |
+| `RA_JIT_TIER=off` changes nothing | yes, `harness/tiers.py` (local) | does not apply |
+| Within 10% of a release build | no: 47% of it on the Life benchmark | no |
 
 ## Debug info
 
