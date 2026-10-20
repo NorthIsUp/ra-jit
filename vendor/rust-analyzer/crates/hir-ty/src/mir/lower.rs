@@ -3377,7 +3377,7 @@ impl<'a, 'db> MirLowerCtx<'a, 'db> {
         self.set_terminator(
             current,
             TerminatorKind::SwitchInt {
-                discr: Operand { kind: OperandKind::Copy(discriminant.store()), span: None },
+                discr: Operand { kind: OperandKind::Move(discriminant.store()), span: None },
                 targets: SwitchTargets::static_if(0, ready, pending),
             },
             span,

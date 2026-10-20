@@ -9,7 +9,8 @@ ra-jit's by `ra-jit mir`, which prints the bodies its code generator compiles at
 optimization level `--level` (`RA_JIT_MIR_OPT`). rustc's are its optimized MIR, which is what
 it generates code from: at `-Copt-level=0` that is its `-Zmir-opt-level=1`, the level a debug
 build gets, and with `--rustc-level 2` the MIR of `-Copt-level=2`, without inlining
-(`-Zinline-mir=no`), which ra-jit leaves to the code generator. rustc is asked for its MIR
+(`-Zinline-mir=no`), which ra-jit leaves to the code generator, and with the debug
+assertions and overflow checks of the debug build ra-jit compiles. rustc is asked for its MIR
 without the checks of pointers a debug build has (`-Zub-checks=no`) unless `--ub-checks`:
 ra-jit has none of them yet, and they would hide everything else in a function that has one.
 
@@ -43,7 +44,7 @@ def rustc_mir(workspace, package, level, ub_checks):
     if not ub_checks:
         flags.append("-Zub-checks=no")
     if level >= 2:
-        flags += ["-Copt-level=2", "-Zinline-mir=no"]
+        flags += ["-Copt-level=2", "-Zinline-mir=no", "-Cdebug-assertions=on", "-Coverflow-checks=on"]
     cmd = ["cargo", "rustc", "-q", "-p", package, "--lib", "--"] + flags
     out = subprocess.run(cmd, cwd=workspace, env=env, capture_output=True, text=True)
     if out.returncode != 0:
