@@ -6153,6 +6153,7 @@ impl Program {
             None if failed.is_none() => *tests = Some(tests_now),
             None => {}
         }
+        let checked = start.elapsed();
         if failed.is_none() || known.stats.patched.is_none() {
             let patched = known.stats.patched.is_some();
             let (splice, patch) = (args.splice.as_deref(), args.patch.as_deref());
@@ -6197,7 +6198,9 @@ impl Program {
                 ("write", warm.emit),
                 ("build-rest", built.saturating_sub(apply + warm.codegen + warm.emit)),
                 ("report", reported - built),
-                ("link", total - reported),
+                // What could refuse the edit: types that changed, tests, stale copies.
+                ("refuse", checked - reported),
+                ("link", total - checked),
             ];
             let steps: Vec<String> =
                 steps.iter().map(|(name, took)| format!("{name}={}", took.as_micros())).collect();

@@ -44,7 +44,7 @@ jobs:
       - name: what the workers said
         if: always()
         run: |
-          for log in "$HOME"/.cache/ra-jit/workers/*/log; do
+          for log in "$HOME"/.cache/ra-jit/workers/*/log "$HOME"/.cache/ra-jit/spares/*/log; do
             [ -f "$log" ] || continue
             echo "::group::$log (filtered)"
             grep -E "request:|timeline-us|edit-to-binary|link:|live:|panicked|error" "$log" | cut -c1-300 | tail -200 || true
@@ -58,4 +58,5 @@ jobs:
             ${{ runner.temp }}/latency.json
             ~/.cache/ra-jit/daemon.log
             ~/.cache/ra-jit/workers/*/log
+            ~/.cache/ra-jit/spares/*/log
           if-no-files-found: warn

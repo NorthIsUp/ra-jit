@@ -58,6 +58,7 @@ fn alive(_: u32) -> bool {
 /// Lays `patch` out for the program that runs `baseline`'s executable, if one does, and
 /// leaves it for the program. What cannot be laid out leaves the program word to restart.
 pub(crate) fn publish(baseline: &Baseline, patch: &std::path::Path) {
+    let start = std::time::Instant::now();
     let Some(uuid) = baseline.uuid() else { return };
     let Some(process) = running(&uuid) else { return };
     let mut published = lock(&PUBLISHED);
@@ -86,9 +87,10 @@ pub(crate) fn publish(baseline: &Baseline, patch: &std::path::Path) {
     match write(&uuid, &Patch { uuid, sequence, body }) {
         Ok(()) => {
             eprintln!(
-                "live: edit {sequence} for process {}: {shown} at_us={}",
+                "live: edit {sequence} for process {}: {shown} at_us={} took_us={}",
                 process.pid,
-                epoch_us()
+                epoch_us(),
+                start.elapsed().as_micros()
             );
             published.insert(uuid, Published { pid: process.pid, end, sequence });
         }

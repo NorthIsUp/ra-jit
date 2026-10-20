@@ -141,6 +141,9 @@ def breakdown(t0: int, reply: int, applied_line: str, worker: list[str]) -> dict
             for step in line.split()[1:]:
                 name, _, value = step.partition("=")
                 row[f"worker.{name}"] = int(value) / 1e3
+        elif line.startswith("live: edit") and (took_us := re.search(r"took_us=(\d+)", line)):
+            # Laying the patch out for the program and leaving it there (inside link).
+            row["worker.publish"] = int(took_us.group(1)) / 1e3
         elif line.startswith("edit-to-binary:"):
             row["worker.edit-to-binary"] = duration_ms(line.split()[1])
         elif line.startswith("link:") and "spliced" in line:
