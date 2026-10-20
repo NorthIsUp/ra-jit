@@ -333,6 +333,8 @@ jobs:
           run worktrees.py --join --together
           run worktrees.py --overlay
           run keys.py
+          # Tiers take live edits, which are macOS's alone; the harness picks its backends.
+          if [ "$RA_JIT_BACKEND" = cranelift ]; then run tiers.py; fi
           # How much of the corpus LLVM compiled itself, and what it left to Cranelift and why.
           if [ "$RA_JIT_BACKEND" = llvm ]; then run backends.py corpus runner cases --bin runner --levels 2f; fi
           # Not run here: `debuginfo.py` reads DWARF with gdb out of an ELF executable;

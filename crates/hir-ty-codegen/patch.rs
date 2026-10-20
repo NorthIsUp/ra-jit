@@ -318,6 +318,9 @@ pub(super) struct Base {
     /// The symbols of the functions built from entries of the store, by their stable names.
     /// No edit reaches what those are compiled from.
     pub(super) found: FxHashMap<Arc<str>, String>,
+    /// What each of those is an instance of, by its symbol, for tiering to build it into the
+    /// hot functions that call it.
+    pub(super) found_instances: FxHashMap<String, (Instance, StoredParamEnvAndCrate)>,
     /// Some of `found` is code of the checkout, which an edit does reach, and nothing here
     /// tells what of it: the first edit takes a full build without any.
     hydrated: bool,
@@ -646,6 +649,13 @@ impl Base {
                 .iter()
                 .map(|(name, id)| {
                     (name.clone(), decls.get_function_decl(*id).linkage_name(*id).into_owned())
+                })
+                .collect(),
+            found_instances: cg
+                .found_instances
+                .iter()
+                .map(|(&id, it)| {
+                    (decls.get_function_decl(id).linkage_name(id).into_owned(), it.clone())
                 })
                 .collect(),
             hydrated: cg
@@ -1018,6 +1028,24 @@ impl Base {
             changed_statics.extend(part.statics);
             broken.extend(part.broken);
         }
+        // A function at a level above 1 differs from the base, whose code is Cranelift's.
+        for node in known.tiers.nodes() {
+            match &node.0 {
+                super::tier::Kind::Root(root) => {
+                    if self.homes.root.contains_key(root) && !changed_roots.contains(root) {
+                        changed_roots.push(*root);
+                    }
+                }
+                super::tier::Kind::Instance(instance, env) => {
+                    let known = self.instances.get(instance);
+                    if known.is_some_and(|it| it.env == *env && it.mark.is_some() && !it.forwarded)
+                        && !changed_instances.contains(instance)
+                    {
+                        changed_instances.push(instance.clone());
+                    }
+                }
+            }
+        }
         // What the edit took away is still in the base, where nothing refers to it any more.
         let unchanged = Unchanged {
             changed: changed_roots
@@ -1047,6 +1075,7 @@ impl Base {
         cg.phases.compile = verify;
         cg.phases.setup = start.elapsed() - verify;
         cg.rustc_futures = known.futures.clone();
+        cg.tiers = Some(&known.tiers);
         // What nothing reached any more can be reached again by the code compiled now.
         cg.replaced = unchanged;
         // rustc's copies are the ones the base was built against: what they call is in it.

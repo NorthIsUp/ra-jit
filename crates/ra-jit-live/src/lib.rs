@@ -16,14 +16,25 @@
 //! changes a type the rest of the program can see writes the whole object again, and a
 //! patch is for one executable, named by its `LC_UUID`.
 //!
+//! The daemon also tiers the program up while it runs: when it asks, a thread of this crate
+//! samples where the program's threads are, and the daemon compiles the functions they are
+//! found in again with LLVM and sends them as patches like any other. [`tiers`] says what it
+//! did, for the program to show. `RA_JIT_TIER=off` in the program's environment turns the
+//! sampling off.
+//!
 //! macOS on AArch64 only, for now; elsewhere [`Live::start`] says so.
 
-use std::{fmt, time::Duration};
+use std::{fmt, path::PathBuf, sync::OnceLock, time::Duration};
 
 pub mod format;
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod macos;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod sample;
+
+/// The directory [`Live::start`] takes edits through.
+static DIR: OnceLock<PathBuf> = OnceLock::new();
 
 /// What became of a patch.
 #[derive(Debug)]
@@ -99,6 +110,24 @@ impl Live {
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         drop(told);
     }
+}
+
+/// The counters that code the daemon compiled to count its branches adds to, which the
+/// sampler reports with the samples. That code finds them by calling this, by name.
+#[unsafe(no_mangle)]
+pub extern "C" fn ra_jit_live_counters() -> *mut u64 {
+    static mut COUNTERS: [u64; format::COUNTERS] = [0; format::COUNTERS];
+    &raw mut COUNTERS as *mut u64
+}
+
+/// What the daemon last said of the tiers of this program: the functions it spends its time
+/// in, the level each is compiled at, and what the daemon did of late. Nothing before
+/// [`Live::start`], or while the daemon is not tiering the program. It is read from a file
+/// the daemon writes a few times a second, so a program that shows it reads it about as often,
+/// not every frame.
+pub fn tiers() -> Option<format::Tiers> {
+    let path = DIR.get()?.join(format::TIERS);
+    format::Tiers::decode(&std::fs::read_to_string(path).ok()?)
 }
 
 /// Hands the daemon the text of the source file at `path`, as an editor has it, without

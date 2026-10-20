@@ -263,17 +263,19 @@ impl Baseline {
     }
 
     /// `patch` laid out at `base` of a program that runs the executable as the linker wrote
-    /// it, for the program to apply in its memory; and the `LC_UUID` of the executable.
+    /// it, for the program to apply in its memory; the `LC_UUID` of the executable; and where
+    /// each function the patch replaces starts in it, with where the executable has it.
     pub(crate) fn live(
         &self,
         patch: &[u8],
         base: u64,
-    ) -> anyhow::Result<([u8; 16], ra_jit_live::format::Code)> {
+    ) -> anyhow::Result<([u8; 16], ra_jit_live::format::Code, Vec<(u64, u64)>)> {
         let Executable::MachO(image) = &self.image else {
             bail!("edits are applied to a running program on macOS only")
         };
         let uuid = macho::uuid(image).context("the executable has no UUID")?;
-        Ok((uuid, macho::live(image, &self.baked, &self.originals, patch, base)?))
+        let (code, moved) = macho::live(image, &self.baked, &self.originals, patch, base)?;
+        Ok((uuid, code, moved))
     }
 
     /// The `LC_UUID` of the executable, when it is one that has it.

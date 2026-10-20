@@ -18,6 +18,7 @@ mod socket;
 mod splice;
 mod stub;
 mod symbols;
+mod tier;
 mod tree;
 mod weaken;
 
@@ -52,7 +53,7 @@ use hir_def::{
 };
 use hir_ty::mir::codegen::{
     Backend, CodegenError, CodegenUnit, ContentId, ParallelWork, Rejections, Roots, SymbolResolver,
-    exported_symbol,
+    exported_symbol, tier as codegen_tier,
 };
 use ide_db::{ChangeWithProcMacros, RootDatabase};
 use load_cargo::{LoadCargoConfig, ProcMacroServerChoice};
@@ -2883,7 +2884,7 @@ pub(crate) fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, 
 
 /// The executables that edits are spliced into, by where each is. One program has as many as
 /// there are checkouts read as its own, and a link may run after the build that asked for it.
-static LINKED: std::sync::LazyLock<std::sync::Mutex<FxHashMap<PathBuf, Executable>>> =
+pub(crate) static LINKED: std::sync::LazyLock<std::sync::Mutex<FxHashMap<PathBuf, Executable>>> =
     std::sync::LazyLock::new(Default::default);
 
 /// Brings an executable up to date with its objects. An edit that left the whole object alone
@@ -3798,6 +3799,95 @@ struct Client {
     env: ide_db::base_db::Env,
 }
 
+impl Client {
+    /// A client that hears nothing: the one a build the daemon asks for itself answers.
+    #[cfg(unix)]
+    fn nobody() -> Option<Client> {
+        let (stream, _) = UnixStream::pair().ok()?;
+        Some(Client { stream, env: ide_db::base_db::Env::default() })
+    }
+
+    #[cfg(not(unix))]
+    fn nobody() -> Option<Client> {
+        None
+    }
+}
+
+/// Compiles what the tier watcher asked for of the program at `at`, on a thread of its own,
+/// and sends what it compiled as an [`Event::Tiered`].
+fn compile_tiered(
+    db: &RootDatabase,
+    known: &Rejections,
+    at: usize,
+    ask: tier::Ask,
+    sender: std::sync::mpsc::Sender<Event>,
+) {
+    use codegen_tier::Level;
+    let tier::Ask { binary, wants, hot, mut counters } = ask;
+    let hot: Vec<codegen_tier::Node> = hot.iter().filter_map(|it| known.tier_node(it)).collect();
+    let mut asked = Vec::new();
+    for want in wants {
+        let Some(node) = known.tier_node(&want.symbol) else {
+            tier::theirs(&binary, &want.symbol, "rustc's code, which ra-jit does not tier");
+            continue;
+        };
+        let asked_for = codegen_tier::Asked {
+            node,
+            level: want.level,
+            hot: hot.clone(),
+            counters: None,
+            profile: want.profile,
+        };
+        asked.push((want.symbol, asked_for));
+    }
+    if asked.is_empty() {
+        tier::done(&binary, Vec::new(), counters);
+        return;
+    }
+    let db = db.clone();
+    std::thread::spawn(move || {
+        let (mut code, mut done) = (Vec::new(), Vec::new());
+        for (symbol, mut asked) in asked {
+            let level = asked.level;
+            let room = ra_jit_live::format::COUNTERS as u32;
+            if level == Level::Llvm && tier::highest() == Level::Pgo && counters < room {
+                asked.counters = Some(counters);
+            }
+            let compile = |asked: &codegen_tier::Asked| {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    hir::attach_db(&db, || codegen_tier::compile(&db, asked))
+                }))
+                .unwrap_or_else(|_| Err("an edit came first".to_owned()))
+            };
+            let mut compiled = compile(&asked);
+            // Code that would count past the counters is compiled again without counting.
+            if let Ok(tiered) = &compiled
+                && tiered.counters.is_some_and(|first| first + tiered.counters_used() > room)
+            {
+                asked.counters = None;
+                compiled = compile(&asked);
+            }
+            let outcome = compiled.map(|tiered| {
+                let used = tiered.counters_used();
+                if let Some(first) = tiered.counters {
+                    counters = first + used;
+                }
+                let compiled = tier::Compiled {
+                    took: tiered.took,
+                    inlined: tiered.inlined_count,
+                    branches: tiered.branches,
+                    counters: tiered.counters.map(|first| (first, used)),
+                };
+                code.push((asked.node.clone(), tiered));
+                compiled
+            });
+            done.push(tier::Done { symbol, level, outcome });
+        }
+        drop(db);
+        let _ = sender.send(Event::Tiered(at, Tiered { binary, code, done, counters }));
+    });
+}
+
 impl std::io::Write for &Client {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         (&self.stream).write(bytes)
@@ -3818,6 +3908,19 @@ enum Event {
     Built(usize, Box<Program>, Option<anyhow::Result<Result<String, String>>>),
     /// The link of a program's last build failed, after the build was over.
     Unlinked(usize),
+    /// The tier watcher asks for functions of a running program at a higher level.
+    Tier(tier::Ask),
+    /// Those functions are compiled, for the program at the index: what to patch it with,
+    /// and what to tell the watcher.
+    Tiered(usize, Tiered),
+}
+
+/// The functions of a program compiled at a higher level, for its next patch.
+struct Tiered {
+    binary: PathBuf,
+    code: Vec<(codegen_tier::Node, codegen_tier::Tiered)>,
+    done: Vec<tier::Done>,
+    counters: u32,
 }
 
 /// An `edit` request: the programs that link the file are built from `text` at once, with
@@ -3863,9 +3966,56 @@ struct Builds {
     /// The edits that wait, the newest of each file: one typed over before it was built is
     /// answered as superseded.
     edits: Vec<Edited>,
+    /// What the tier watcher asked for that waits for its program's build to be over.
+    tier_asks: Vec<tier::Ask>,
+    /// Compiled functions that wait for their program's build to be over, and the programs
+    /// to patch with what was compiled.
+    tiered: Vec<(usize, Tiered)>,
+    tier_builds: Vec<usize>,
 }
 
 impl Builds {
+    /// Gives the programs that are not being built what was compiled of them at a higher
+    /// level, and has each patched with it.
+    fn install_tiered(&mut self, programs: &mut [Program]) {
+        let waiting = std::mem::take(&mut self.tiered);
+        for (at, tiered) in waiting {
+            if self.running.contains_key(&at) {
+                self.tiered.push((at, tiered));
+                continue;
+            }
+            let Tiered { binary, code, done, counters } = tiered;
+            let patched = !code.is_empty();
+            for (node, code) in code {
+                programs[at].known.tiers.install(node, code);
+            }
+            tier::done(&binary, done, counters);
+            if patched {
+                programs[at].unbuilt.stale = true;
+                if !self.tier_builds.contains(&at) {
+                    self.tier_builds.push(at);
+                }
+            }
+        }
+    }
+
+    /// Tells the tier watcher which functions the builds since the last call sent back to
+    /// level 1.
+    fn tell_demoted(&self, programs: &mut [Program]) {
+        for (at, program) in programs.iter_mut().enumerate() {
+            if self.running.contains_key(&at) {
+                continue;
+            }
+            let demoted = program.known.tiers.take_demoted();
+            let Some(binary) = program.args.splice.clone() else { continue };
+            for (node, why) in demoted {
+                if let Some(symbol) = program.known.tier_symbol(&node) {
+                    tier::demoted(&binary, &symbol, &why);
+                }
+            }
+        }
+    }
+
     /// Queues a request, or takes back the program of a build that is over and answers its
     /// clients. Those of a build that was interrupted ask again, ahead of the others.
     fn take(&mut self, event: Event, programs: &mut [Program]) -> anyhow::Result<()> {
@@ -3888,6 +4038,15 @@ impl Builds {
             Event::Unlinked(at) => {
                 programs[at].unbuilt.stale = true;
                 programs[at].wrote = None;
+                return Ok(());
+            }
+            Event::Tier(ask) => {
+                self.tier_asks.push(ask);
+                return Ok(());
+            }
+            Event::Tiered(at, tiered) => {
+                self.tiered.push((at, tiered));
+                self.install_tiered(programs);
                 return Ok(());
             }
         };
@@ -4999,6 +5158,15 @@ fn run_holding(
             }
         });
     }
+    if serving && tier::enabled() {
+        let sender = sender.clone();
+        tier::watch(move |ask| _ = sender.send(Event::Tier(ask)));
+    } else if serving {
+        eprintln!(
+            "tier: off (RA_JIT_TIER=off, ra-jit built without `--features llvm`, or not macOS \
+             on AArch64)"
+        );
+    }
     // The first is the program asked for when a request names none.
     let (wrote, whole) = (Some(args.out.clone()), Some(args.out.clone()));
     let tests = Some(hir::attach_db(&db, || Tests::of(&db, &listed, &args)));
@@ -5024,6 +5192,9 @@ fn run_holding(
         waiting: Default::default(),
         stuck: false,
         edits: Vec::new(),
+        tier_asks: Vec::new(),
+        tiered: Vec::new(),
+        tier_builds: Vec::new(),
     };
     // How many times running each checkout that is read as a loaded one has been long to turn
     // to or from.
@@ -5065,7 +5236,11 @@ fn run_holding(
         match serving {
             true => {
                 let mut later = Vec::new();
-                if builds.stuck || builds.waiting.is_empty() && builds.edits.is_empty() {
+                let idle = builds.waiting.is_empty()
+                    && builds.edits.is_empty()
+                    && builds.tier_asks.is_empty()
+                    && builds.tier_builds.is_empty();
+                if builds.stuck || idle {
                     let event = builds.events.recv()?;
                     builds.take(event, &mut programs)?;
                 }
@@ -5335,6 +5510,38 @@ fn run_holding(
                     }
                 }
                 builds.waiting.extend(later);
+                builds.tell_demoted(&mut programs);
+                builds.install_tiered(&mut programs);
+                for ask in std::mem::take(&mut builds.tier_asks) {
+                    let found = programs
+                        .iter()
+                        .position(|it| it.args.splice.as_deref() == Some(&*ask.binary));
+                    let Some(at) = found else {
+                        tier::declined(&ask.binary, "the worker has no program of it");
+                        continue;
+                    };
+                    if builds.running.contains_key(&at) {
+                        builds.tier_asks.push(ask);
+                        continue;
+                    }
+                    compile_tiered(&db, &programs[at].known, at, ask, sender.clone());
+                }
+                // A program with code compiled at a higher level is patched with it, as a
+                // client of it would ask for an edit.
+                for at in std::mem::take(&mut builds.tier_builds) {
+                    let busy = builds.running.contains_key(&at)
+                        || outputs
+                            .get(&at)
+                            .is_some_and(|it| *it != Outputs::of(&programs[at].args));
+                    if busy {
+                        builds.tier_builds.push(at);
+                        continue;
+                    }
+                    let Some(client) = Client::nobody() else { continue };
+                    let target = (at != 0).then(|| Target::of(&programs[at].args));
+                    outputs.insert(at, Outputs::of(&programs[at].args));
+                    clients.push((at, (Request::Sync, target, client)));
+                }
                 // Text an editor sent before it wrote it: the programs that link the file
                 // are built from it, with no look at the disk.
                 for mut edited in std::mem::take(&mut builds.edits) {

@@ -26,7 +26,7 @@ struct Published {
 }
 
 /// The program that runs the executable with `uuid` and takes edits, when one does.
-fn running(uuid: &[u8; 16]) -> Option<Process> {
+pub(crate) fn running(uuid: &[u8; 16]) -> Option<Process> {
     let text = std::fs::read_to_string(format::dir(uuid)?.join("process")).ok()?;
     Process::decode(&text).filter(|it| it.uuid == *uuid && alive(it.pid))
 }
@@ -70,9 +70,10 @@ pub(crate) fn publish(baseline: &Baseline, patch: &std::path::Path) {
         {
             return Ok((Body::Restart(why.clone()), base));
         }
-        let (_, code) = baseline.live(&std::fs::read(patch)?, base)?;
+        let (_, code, moved) = baseline.live(&std::fs::read(patch)?, base)?;
         let end = base + (code.text.len() + code.data.len()).next_multiple_of(0x4000) as u64;
         ensure!(end <= process.end, "the room the program set aside for edits is used up");
+        crate::tier::placed(uuid, process.pid, moved, base + code.text.len() as u64);
         Ok((Body::Code(code), end))
     })();
     let (body, end) = match laid {

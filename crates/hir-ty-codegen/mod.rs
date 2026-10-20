@@ -111,6 +111,7 @@ pub use stable::{block_place, lower_declared};
 mod store;
 mod target;
 pub use target::{Arch, Calls, ObjectFormat, Target, UnwindFormat, VariableArguments};
+pub mod tier;
 
 pub use patch::{Stale, StaleSteps};
 /// For `crates/ra-jit-bench` alone.
@@ -585,7 +586,10 @@ impl CodegenUnit {
             stale: _,
             frozen: _,
             used_by_rustc: _,
+            tiers,
         } = known;
+        // A full build is linked again, and the program that runs it starts at level 1.
+        tiers.clear();
         let mut own_statics = OwnStatics::new(
             db,
             all().map(|root| root.krate(db)).collect(),
@@ -945,6 +949,8 @@ pub struct Rejections {
     /// How many functions had been compiled when the last build finished.
     counted: usize,
     pub stats: BuildStats,
+    /// The functions at a level above 1, which a patch has at that level.
+    pub tiers: tier::Tiers,
 }
 
 impl Rejections {
@@ -963,6 +969,37 @@ impl Rejections {
     /// nothing to patch.
     pub fn patches(&self) -> bool {
         self.base.is_some()
+    }
+
+    /// The function of the last full build that is defined under `symbol`, as the object has
+    /// it (without the underscore Mach-O puts in front).
+    pub fn tier_node(&self, symbol: &str) -> Option<tier::Node> {
+        let base = self.base.as_ref()?;
+        if let Some((root, _)) = base.compiled.iter().find(|(_, it)| it == symbol) {
+            return Some(tier::Node(tier::Kind::Root(*root)));
+        }
+        if let Some((instance, known)) = base.instances.iter().find(|(_, it)| it.symbol == symbol)
+        {
+            return Some(tier::Node(tier::Kind::Instance(instance.clone(), known.env.clone())));
+        }
+        let (instance, env) = base.found_instances.get(symbol)?;
+        Some(tier::Node(tier::Kind::Instance(instance.clone(), env.clone())))
+    }
+
+    /// The symbol `node` is defined under, as [`Rejections::tier_node`] takes it.
+    pub fn tier_symbol(&self, node: &tier::Node) -> Option<String> {
+        let base = self.base.as_ref()?;
+        match &node.0 {
+            tier::Kind::Root(root) => {
+                base.compiled.iter().find(|(it, _)| it == root).map(|it| it.1.clone())
+            }
+            tier::Kind::Instance(instance, env) => {
+                base.instances.get(instance).map(|it| it.symbol.clone()).or_else(|| {
+                    let mut found = base.found_instances.iter();
+                    found.find(|(_, it)| it.0 == *instance && it.1 == *env).map(|it| it.0.clone())
+                })
+            }
+        }
     }
 
     /// Makes the next build a full one. A patch looks at everything the last build compiled,
@@ -1218,6 +1255,10 @@ struct ObjectCodegen<'a, 'db> {
     type_ids: FxHashMap<FuncId, u128>,
     /// An entry did not fit the object, which now lacks a function it declares.
     misfit: bool,
+    /// The functions of a patch that are at a level above 1, whose code it has at that level.
+    tiers: Option<&'a tier::Tiers>,
+    /// What each function built from an entry of the store is an instance of.
+    found_instances: FxHashMap<FuncId, (Instance, StoredParamEnvAndCrate)>,
 }
 
 /// Why an entry with a file of its own under what stands for cargo's directory is not kept.
@@ -1577,6 +1618,15 @@ fn rows_of(db: &dyn HirDatabase, compiled: &CompiledFunction) -> Vec<Row> {
 /// The code of a non-generic function.
 #[salsa::tracked(returns(ref))]
 fn compiled_root<'db>(db: &'db dyn HirDatabase, func: FunctionId) -> Result<CompiledFunction> {
+    tier::plain(|| root_code(db, func, None))
+}
+
+/// The code of a non-generic function: Cranelift's, or at a level above 1 as `tier` asks.
+fn root_code(
+    db: &dyn HirDatabase,
+    func: FunctionId,
+    tier: Option<&tier::Request>,
+) -> Result<CompiledFunction> {
     let (body, env) = root_body(db, func)?;
     if std::env::var("RA_JIT_DUMP_MIR")
         .is_ok_and(|want| FunctionSignature::of(db, func).name.as_str() == want)
@@ -1587,7 +1637,7 @@ fn compiled_root<'db>(db: &'db dyn HirDatabase, func: FunctionId) -> Result<Comp
     let (abi, variadic) = (signature.abi, signature.is_varargs());
     let args = GenericArgs::new_from_slice(&[]).store();
     let checked = crate_checks_overflow(db, func.krate(db)).unwrap_or(false);
-    compile(db, env, Some(body), track_caller(db, func), checked, |fx| {
+    compile_as(db, env, Some(body), track_caller(db, func), checked, tier, |fx| {
         fx.abi = abi;
         fx.variadic = variadic;
         fx.args = Some(args);
@@ -1641,9 +1691,31 @@ fn compiled_instance<'db>(
     instance: Instance,
     env: StoredParamEnvAndCrate,
 ) -> Result<CompiledFunction> {
+    tier::plain(|| instance_code(db, instance, env, None))
+}
+
+/// The code of an instance: Cranelift's, or at a level above 1 as `tier` asks, which only a
+/// function, closure or `async` block of the source is compiled at.
+fn instance_code(
+    db: &dyn HirDatabase,
+    instance: Instance,
+    env: StoredParamEnvAndCrate,
+    tier: Option<&tier::Request>,
+) -> Result<CompiledFunction> {
     let stored_env = env.clone();
     let env = env.as_ref(db);
     let ty = || instance.args.as_ref().type_at(0);
+    if tier.is_some()
+        && !matches!(
+            instance.def,
+            InstanceDef::Fn(_)
+                | InstanceDef::Closure(_)
+                | InstanceDef::Coroutine(_)
+                | InstanceDef::CoroutineByMove(_)
+        )
+    {
+        unsupported!("a shim stays at level 1");
+    }
     let body = match instance.def {
         InstanceDef::DropGlue => {
             return compile(db, env, None, false, instance.checked, |fx| {
@@ -1706,7 +1778,7 @@ fn compiled_instance<'db>(
         }
         _ => None,
     };
-    let compiled = compile(db, env, Some(body), tracked, instance.checked, |fx| {
+    let compiled = compile_as(db, env, Some(body), tracked, instance.checked, tier, |fx| {
         fx.abi = abi;
         fx.variadic = variadic;
         fx.args = Some(args);
@@ -3142,6 +3214,20 @@ fn compile<'db>(
     checked: bool,
     fill: impl for<'cx> FnOnce(&mut FunctionCx<'cx, 'db>) -> Result<()>,
 ) -> Result<CompiledFunction> {
+    compile_as(db, env, body, tracked, checked, None, fill)
+}
+
+/// Builds the IR of one function and compiles it: with Cranelift, or at a level above 1 as
+/// `tier` asks.
+fn compile_as<'db>(
+    db: &'db dyn HirDatabase,
+    env: ParamEnvAndCrate<'db>,
+    body: Option<&'db MirBody<'db>>,
+    tracked: bool,
+    checked: bool,
+    tier: Option<&tier::Request>,
+    fill: impl for<'cx> FnOnce(&mut FunctionCx<'cx, 'db>) -> Result<()>,
+) -> Result<CompiledFunction> {
     let isa = &**target()?;
     let mut cg = Recorder::new(db, isa, selected_target()?, checked);
     let tally = backend::Tally::global();
@@ -3188,7 +3274,10 @@ fn compile<'db>(
                 slots: SlotPlaces::default(),
             }
         }
-        None => Backend::emit(&mut cg, &mut ctx)?,
+        None => match tier {
+            None => Backend::emit(&mut cg, &mut ctx)?,
+            Some(request) => tier::emit(&mut cg, &mut ctx, request)?,
+        },
     };
     let source = match body.map(|body| body.owner) {
         Some(InferBodyId::DefWithBodyId(owner)) => Some((owner, cg.take_spans())),
@@ -3206,7 +3295,10 @@ fn compile<'db>(
         .collect::<Vec<_>>();
     let variables = Some((env.store(), variables)).filter(|it| !it.1.is_empty());
     let (requests, layouts) = cg.finish();
-    COMPILED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    // What a build compiled, which a compile at a level above 1 is not part of.
+    if tier.is_none() {
+        COMPILED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
     Ok(CompiledFunction { requests, code, source, closure: None, variables, layouts })
 }
 
@@ -3276,6 +3368,14 @@ fn build<'db>(
 /// The body of a small function, built to be put where the function is called.
 #[salsa::tracked(returns(ref), no_eq, cycle_result = inlinable_cycle)]
 fn inlinable(
+    db: &dyn HirDatabase,
+    instance: Instance,
+    env: StoredParamEnvAndCrate,
+) -> Option<fragment::Inlinable> {
+    tier::plain(|| small_body(db, instance, env))
+}
+
+fn small_body(
     db: &dyn HirDatabase,
     instance: Instance,
     env: StoredParamEnvAndCrate,
@@ -3632,6 +3732,8 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
             own_statics,
             mixed,
             elf_relocs: Vec::new(),
+            tiers: None,
+            found_instances: FxHashMap::default(),
         })
     }
 
@@ -3737,10 +3839,14 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
             return Err(if private { CodegenError::Private } else { CodegenError::NoSymbol });
         };
         let start = stdx::time::Instant::now();
-        let compiled = compiled_root(db, func);
+        let tiers = self.tiers;
+        let tiered = tiers.and_then(|it| it.code(db, &tier::Node(tier::Kind::Root(func))));
+        let compiled = match tiered {
+            Some(code) => code,
+            None => compiled_root(db, func).as_ref().map_err(Clone::clone)?,
+        };
         let took = start.elapsed();
         self.phases.compile += took;
-        let compiled = compiled.as_ref().map_err(Clone::clone)?;
         let id =
             self.module.declare_function(&symbol, Linkage::Export, &compiled.code.signature)?;
         self.shape_origin(id, InstanceDef::Fn(func), &func, false, took);
@@ -3748,7 +3854,8 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
         let name = super::type_name::rustc_debug_function(db, func, &[])
             .unwrap_or_else(|| FunctionSignature::of(db, func).name.as_str().to_owned());
         let declared = self.debug_declaration_at(func);
-        let rows = self.debug.as_ref().map(|_| root_rows(db, func));
+        // The rows of the Cranelift code are not those of LLVM's.
+        let rows = self.debug.as_ref().filter(|_| tiered.is_none()).map(|_| root_rows(db, func));
         self.describe(id, compiled, rows, FunctionDebug::new(name, symbol.clone()), declared);
         Ok(symbol)
     }
@@ -3975,10 +4082,17 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
         id: FuncId,
     ) -> Result<()> {
         let start = stdx::time::Instant::now();
-        let compiled = compiled_instance(self.db, instance.clone(), env.clone());
+        let tiers = self.tiers;
+        let node = tier::Node(tier::Kind::Instance(instance.clone(), env.clone()));
+        let tiered = tiers.and_then(|it| it.code(self.db, &node));
+        let compiled = match tiered {
+            Some(code) => code,
+            None => compiled_instance(self.db, instance.clone(), env.clone())
+                .as_ref()
+                .map_err(Clone::clone)?,
+        };
         let took = start.elapsed();
         self.phases.compile += took;
-        let compiled = compiled.as_ref().map_err(Clone::clone)?;
         let generic = instance.args.as_ref().iter().any(|arg| arg.ty().is_some());
         self.shape_origin(id, instance.def, &(instance, env), generic, took);
         // The call site declared the instance with the signature it computed from its operands.
@@ -4016,11 +4130,17 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
             _ => None,
         };
         let known = known.unwrap_or_else(|| name.clone());
-        let rows =
-            self.debug.as_ref().map(|_| instance_rows(self.db, instance.clone(), env.clone()));
+        let rows = self
+            .debug
+            .as_ref()
+            .filter(|_| tiered.is_none())
+            .map(|_| instance_rows(self.db, instance.clone(), env.clone()));
         let debug = self.describe(id, compiled, rows, FunctionDebug::new(known, name), declared);
-        let tally = backend::Tally::global();
-        tally.step(Step::StoreWrite, || self.keep(instance, compiled, &ids, debug));
+        // Code of a level above 1 is of a profile, which is no key of the store.
+        if tiered.is_none() {
+            let tally = backend::Tally::global();
+            tally.step(Step::StoreWrite, || self.keep(instance, compiled, &ids, debug));
+        }
         Ok(())
     }
 
@@ -5122,6 +5242,8 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
             let body = signature.is_some().then_some(sig);
             if let Some(id) = self.found_callee(name, body)? {
                 self.instances.insert(instance.clone(), id);
+                let home = self.homes.home(self.db, instance, env);
+                self.found_instances.insert(id, (instance.clone(), home));
                 return Ok(id);
             }
         }
@@ -10849,21 +10971,48 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         /// `RA_JIT_INLINE=0` calls every function.
         static ENABLED: LazyLock<bool> =
             LazyLock::new(|| std::env::var_os("RA_JIT_INLINE").is_none_or(|it| it != "0"));
-        let InstanceDef::Fn(func) = def else { return None };
         let db = self.cg.db;
-        if !*ENABLED
-            || !self.cg.target.exception_in_register()
-            || Target::current().is_wasm()
-            || !func.krate(db).data(db).origin.is_lang()
-        {
+        if !*ENABLED || !self.cg.target.exception_in_register() || Target::current().is_wasm() {
             return None;
         }
+        let erased = |args: GenericArgs<'db>| {
+            let interner = DbInterner::new_with(db, self.env.krate);
+            rustc_type_ir::fold_regions(interner, args, |region, _| match region.kind() {
+                rustc_type_ir::RegionKind::ReBound(..) => region,
+                _ => Region::new_erased(interner),
+            })
+        };
+        // A closure is built in by a compile at a level above 1 alone.
+        if let InstanceDef::Closure(_) = def {
+            let instance = Instance { def, args: erased(args).store(), checked: self.cg.checked };
+            let limit = tier::inline_limit(db, &instance)?;
+            let body = tier::hot_body(db, &instance, &self.env.store(), limit, false)?;
+            return (body.func.signature == *sig)
+                .then(|| self.cg.declare_inlined(&body, self.builder.func));
+        }
+        let InstanceDef::Fn(func) = def else { return None };
         let signature = FunctionSignature::of(db, func);
         if signature.abi != ExternAbi::Rust
             || signature.is_varargs()
             || FunctionSignature::is_intrinsic(db, func)
-            || track_caller(db, func)
         {
+            return None;
+        }
+        let args = erased(args);
+        let instance = Instance { def, args: args.store(), checked: self.cg.checked };
+        // A compile at a level above 1 builds in what it calls that is hot or small, of any
+        // crate, as rustc's optimized builds do.
+        if let Some(limit) = tier::inline_limit(db, &instance)
+            && let Some(body) =
+                tier::hot_body(db, &instance, &self.env.store(), limit, track_caller(db, func))
+            && body.func.signature == *sig
+        {
+            return Some(self.cg.declare_inlined(&body, self.builder.func));
+        }
+        if track_caller(db, func) {
+            return None;
+        }
+        if !func.krate(db).data(db).origin.is_lang() {
             return None;
         }
         // A function that is neither generic nor `#[inline]` is in the library as rustc
@@ -10872,12 +11021,6 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         if !flags.contains(AttrFlags::IS_INLINE) && args.iter().all(|it| it.region().is_some()) {
             return None;
         }
-        let interner = DbInterner::new_with(db, self.env.krate);
-        let args = rustc_type_ir::fold_regions(interner, args, |region, _| match region.kind() {
-            rustc_type_ir::RegionKind::ReBound(..) => region,
-            _ => Region::new_erased(interner),
-        });
-        let instance = Instance { def, args: args.store(), checked: self.cg.checked };
         let body = inlinable(db, instance, self.env.store()).as_ref()?;
         if body.func.signature != *sig {
             return None;

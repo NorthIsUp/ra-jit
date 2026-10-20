@@ -107,6 +107,8 @@ pub(super) struct Lowering<'ctx, 'f> {
     arrival: Option<PointerValue<'ctx>>,
     /// What the line table LLVM writes is told through, where one is read back.
     marks: Option<Marks<'ctx>>,
+    /// How often each branch went each way while code of the function ran.
+    weights: Option<&'f crate::mir::codegen::tier::Weights>,
 }
 
 /// The type of a static's global: one without a size, which LLVM does not take to be at an
@@ -179,9 +181,27 @@ impl<'ctx, 'f> Lowering<'ctx, 'f> {
         named: &[ir::StackSlot],
         constants: &'f FxHashMap<u32, &'f [u8]>,
         statics: &'f FxHashSet<u32>,
+        weights: Option<&'f crate::mir::codegen::tier::Weights>,
     ) -> Lowered<()> {
         let ty = Self::function_type(context, &func.signature)?;
         let function = module.add_function(OWN, ty, Some(Linkage::External));
+        if let Some(weights) = weights {
+            let count = context.i64_type().const_int(weights.entered, false);
+            let node = context.metadata_node(&[
+                context.metadata_string("function_entry_count").into(),
+                count.into(),
+            ]);
+            use inkwell::{llvm_sys::core, values::AsValueRef as _};
+            // SAFETY: both are of this module's context, and a function is a global.
+            unsafe {
+                let node = core::LLVMValueAsMetadata(node.as_value_ref());
+                core::LLVMGlobalSetMetadata(
+                    function.as_value_ref(),
+                    context.get_kind_id("prof"),
+                    node,
+                );
+            }
+        }
         Self::mark_signature(context, &func.signature, Side::Callee, |loc, attribute| {
             function.add_attribute(loc, attribute)
         });
@@ -216,6 +236,7 @@ impl<'ctx, 'f> Lowering<'ctx, 'f> {
             // Without a flag that asks for CodeView, the table is DWARF in a COFF object too.
             marks: matches!(target.object_format, ObjectFormat::Elf | ObjectFormat::Coff)
                 .then(|| Marks::new(module, function)),
+            weights,
         };
         lowering.body(named)?;
         if let Some(marks) = &lowering.marks {
@@ -231,6 +252,21 @@ impl<'ctx, 'f> Lowering<'ctx, 'f> {
         let line = unwind::seh::unguarded(self.func.srcloc(inst)).bits();
         let location = marks.builder.create_debug_location(self.context, line, 0, scope, None);
         self.builder.set_current_debug_location(location);
+    }
+
+    /// Tells LLVM how often `branch` went to its first block and to its second, as
+    /// `branch_weights`, which are 32 bits: counts past that are scaled down together.
+    fn weigh(&self, branch: InstructionValue<'ctx>, [then, otherwise]: [u64; 2]) -> Lowered<()> {
+        let scale = (then.max(otherwise) >> 31) + 1;
+        let i32 = self.context.i32_type();
+        let node = self.context.metadata_node(&[
+            self.context.metadata_string("branch_weights").into(),
+            i32.const_int(then / scale, false).into(),
+            i32.const_int(otherwise / scale, false).into(),
+        ]);
+        branch
+            .set_metadata(node, self.context.get_kind_id("prof"))
+            .map_err(|e| Unhandled::Llvm(e.to_string()))
     }
 
     /// Tells LLVM that `alloca` is a variable of `size` bytes named by the number of `slot`,
@@ -758,7 +794,10 @@ impl<'ctx, 'f> Lowering<'ctx, 'f> {
             InstructionData::Brif { arg, blocks: [then, otherwise], .. } => {
                 let condition = self.condition(arg)?;
                 let (then, otherwise) = (self.branch_edge(then)?, self.branch_edge(otherwise)?);
-                self.builder.build_conditional_branch(condition, then, otherwise)?;
+                let branch = self.builder.build_conditional_branch(condition, then, otherwise)?;
+                if let Some(taken) = self.weights.and_then(|it| it.taken.get(&inst)) {
+                    self.weigh(branch, *taken)?;
+                }
             }
             InstructionData::BranchTable { arg, table, .. } => {
                 let index = self.int(arg)?;
@@ -1516,12 +1555,19 @@ impl<'ctx, 'f> Lowering<'ctx, 'f> {
     ) -> Lowered<(BasicBlock<'ctx>, BasicBlock<'ctx>)> {
         let dfg = &self.func.dfg;
         let table = &dfg.exception_tables[table];
-        let [ExceptionTableItem::Tag(tag, handler)] = table.items().collect::<Vec<_>>()[..] else {
-            return Err(Unhandled::Shape("an exception table of more than one handler"));
+        // Both tags catch every panic, so the first handler is the only one a panic reaches.
+        // A call of a body Cranelift built into its caller has its own handler first and the
+        // caller's after it.
+        let Some((tag, handler)) = table.items().find_map(|item| match item {
+            ExceptionTableItem::Tag(tag, handler) => Some((tag, handler)),
+            _ => None,
+        }) else {
+            return Err(Unhandled::Shape("an exception table without a handler"));
         };
         let handler_args: Vec<_> = handler.args(&dfg.value_lists).collect();
         if !matches!(handler_args[..], [BlockArg::TryCallExn(0)]) {
-            return Err(Unhandled::Shape("a handler that takes more than the exception"));
+            let pad = self.landing_pad_of_call(tag.as_u32(), handler)?;
+            return Ok((self.context.append_basic_block(self.function, ""), pad));
         }
         let pad = Pad { handler: handler.block(&dfg.value_lists), tag: tag.as_u32() };
         let pad = match self.pads.get(&pad) {
@@ -1562,6 +1608,48 @@ impl<'ctx, 'f> Lowering<'ctx, 'f> {
         };
         phi.add_incoming(&[(&payload, block)]);
         self.builder.build_unconditional_branch(self.blocks[&pad.handler])?;
+        if let Some(resume_at) = resume_at {
+            self.builder.position_at_end(resume_at);
+        }
+        Ok(block)
+    }
+
+    /// A landing pad of one call, whose handler takes values of the caller besides the
+    /// exception: those are of before the call, and so are there in the pad.
+    fn landing_pad_of_call(&mut self, tag: u32, handler: BlockCall) -> Lowered<BasicBlock<'ctx>> {
+        let context = self.context;
+        let pointer = context.ptr_type(AddressSpace::default());
+        let personality = self.personality(super::PERSONALITY);
+        let resume_at = self.builder.get_insert_block();
+        let block = context.append_basic_block(self.function, "");
+        self.builder.position_at_end(block);
+        let exception = context.struct_type(&[pointer.into(), context.i32_type().into()], false);
+        let (clauses, cleanup): (&[BasicValueEnum<'ctx>], bool) = match tag {
+            unwind::CLEANUP => (&[], true),
+            unwind::CATCH => (&[pointer.const_null().into()], false),
+            _ => return Err(Unhandled::Shape("an exception tag that is not ours")),
+        };
+        let landed =
+            self.builder.build_landing_pad(exception, personality, clauses, cleanup, "")?;
+        let payload = self.builder.build_extract_value(landed.into_struct_value(), 0, "")?;
+        let payload =
+            self.builder.build_ptr_to_int(payload.into_pointer_value(), context.i64_type(), "")?;
+        let dfg = &self.func.dfg;
+        let target = handler.block(&dfg.value_lists);
+        let args: Vec<BlockArg> = handler.args(&dfg.value_lists).collect();
+        let phis = self.phis.get(&target).cloned().unwrap_or_default();
+        if phis.len() != args.len() {
+            return Err(Unhandled::Shape("a handler given other values than it takes"));
+        }
+        for (phi, arg) in std::iter::zip(&phis, args) {
+            let value: BasicValueEnum<'ctx> = match arg {
+                BlockArg::Value(value) => self.plain(value)?,
+                BlockArg::TryCallExn(0) => payload.into(),
+                _ => return Err(Unhandled::Shape("a handler that takes what a call returns")),
+            };
+            phi.add_incoming(&[(&value, block)]);
+        }
+        self.builder.build_unconditional_branch(self.blocks[&target])?;
         if let Some(resume_at) = resume_at {
             self.builder.position_at_end(resume_at);
         }

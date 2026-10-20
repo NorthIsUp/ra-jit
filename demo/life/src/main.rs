@@ -5,6 +5,7 @@
 // Try:  next_age(): `n == 3` to `n == 3 || n == 6` (HighLife)
 //       color():    change the numbers to repaint the cells
 //       step_ms():  make it faster or slower
+//       step_ms():  0 runs flat out; watch the Tiers panel promote step()
 //
 // Live edits are macOS on Apple silicon only; elsewhere the
 // window runs and edits need a restart. The window and this
@@ -12,6 +13,7 @@
 mod editor;
 mod highlight;
 mod theme;
+mod tiers;
 mod window;
 
 use std::time::Instant;
@@ -19,7 +21,7 @@ use std::time::Instant;
 const W: usize = 64;
 const H: usize = 48;
 
-/// Milliseconds between generations.
+/// Milliseconds between generations; 0 steps as often as a frame has time for.
 #[inline(never)]
 fn step_ms() -> u64 {
     80
@@ -63,7 +65,8 @@ struct Life {
 
 impl Life {
     fn new() -> Life {
-        let mut life = Life { age: vec![0; W * H], generation: 0, seed: 12345, next_step: Instant::now() };
+        let mut life =
+            Life { age: vec![0; W * H], generation: 0, seed: 12345, next_step: Instant::now() };
         life.reseed();
         life
     }

@@ -6,6 +6,18 @@ All notable changes to ra-jit are written here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Tiers ([#6](https://github.com/indexable-inc/ra-jit/issues/6)): a program that takes
+  edits with `ra-jit-live` is sampled while it runs, and the functions it spends its time in
+  are compiled again with LLVM, at `-O3` with what they call built in (level 2) and then with
+  the branch counts level 2 took as `!prof` (level 3), and swapped in as patches without a
+  restart. An edit sends an edited function back to Cranelift in the same build.
+  `RA_JIT_TIER=off` turns it off. The Game of Life window shows each hot function's level
+  and the promotions as they happen; `demo/lifebench` and `harness/tiers.py` measure and
+  check it ([docs/tiers.md](docs/tiers.md)).
+- `ra_jit_live::tiers()`, and the sampler that the daemon turns on in a running program.
+
 ### Changed
 
 - `vendor/rust-analyzer` and `vendor/rustc_abi` are git subtrees instead of submodules: a

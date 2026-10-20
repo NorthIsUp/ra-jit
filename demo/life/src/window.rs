@@ -1,6 +1,7 @@
-//! The window: a readout at the top, the running Game of Life on the left and the editor on
-//! the right, in the Islands Dark theme. ra-jit-live applies each patch on a thread of its own
-//! the moment it arrives; the next step of the simulation runs the new rules from main.rs.
+//! The window: a readout at the top, the running Game of Life on the left with its tiers under
+//! it, and the editor on the right, in the Islands Dark theme. ra-jit-live applies each patch
+//! on a thread of its own the moment it arrives; the next step of the simulation runs the new
+//! rules from main.rs.
 
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, channel};
@@ -11,7 +12,11 @@ use ra_jit_live::{Live, Outcome};
 
 use crate::editor::{self, Editor};
 use crate::theme::{self, Theme};
+use crate::tiers::TiersPanel;
 use crate::{H, Life, W};
+
+/// How long one frame steps the simulation for when `step_ms()` is 0.
+const FLAT_OUT: Duration = Duration::from_millis(10);
 
 /// How the daemon's last answer went: whether it built, and what it said.
 #[derive(Default)]
@@ -55,6 +60,10 @@ struct App {
     fps_frames: u64,
     frames: u64,
     fps: f64,
+    /// The generation when `fps_at` was, and generations a second since.
+    fps_generation: u64,
+    generations: f64,
+    tiers: TiersPanel,
 }
 
 /// Islands Dark: lighter window behind, darker rounded islands separated by a small gap.
@@ -133,8 +142,9 @@ impl App {
         ui.colored_label(
             t.number,
             format!(
-                "{:.0} fps   |   generation {}   |   {} edits sent, {} patches applied{build}",
+                "{:.0} fps   |   {:.0} generations/s   |   generation {}   |   {} edits sent, {} patches applied{build}",
                 self.fps,
+                self.generations,
                 self.life.generation,
                 editor::lock(&self.editor.shared).sent,
                 self.patches
@@ -155,7 +165,10 @@ impl App {
         } else if self.build.ok || self.build.text.is_empty() {
             let file =
                 self.editor.file.as_ref().map(|f| f.display().to_string()).unwrap_or_default();
-            ui.colored_label(t.comment, format!("no errors   ·   built as you type, saved to {file}"));
+            ui.colored_label(
+                t.comment,
+                format!("no errors   ·   built as you type, saved to {file}"),
+            );
         } else {
             ui.colored_label(t.error, "the edit was not built; the window keeps the old code:");
             egui::ScrollArea::vertical().id_salt("errs").show(ui, |ui| {
@@ -205,19 +218,34 @@ impl eframe::App for App {
             }
             self.outcome = Some((outcome.to_string(), applied));
         }
-        if Instant::now() >= self.life.next_step {
+        let flat_out = crate::step_ms() == 0;
+        if flat_out {
+            let until = Instant::now() + FLAT_OUT;
+            while Instant::now() < until {
+                self.life.step();
+            }
+            self.life.next_step = Instant::now();
+        } else if Instant::now() >= self.life.next_step {
             self.life.step();
             self.life.next_step = Instant::now() + Duration::from_millis(crate::step_ms());
         }
         self.editor.reload();
         self.build = BuildStatus::of(editor::lock(&self.editor.shared).answer.as_ref());
+        self.tiers.refresh();
         self.frames += 1;
         if self.fps_at.elapsed() > Duration::from_millis(500) {
-            self.fps = (self.frames - self.fps_frames) as f64 / self.fps_at.elapsed().as_secs_f64();
+            let seconds = self.fps_at.elapsed().as_secs_f64();
+            self.fps = (self.frames - self.fps_frames) as f64 / seconds;
+            self.generations = (self.life.generation - self.fps_generation) as f64 / seconds;
             self.fps_frames = self.frames;
+            self.fps_generation = self.life.generation;
             self.fps_at = Instant::now();
         }
-        ctx.request_repaint_after(Duration::from_millis(16));
+        if flat_out || self.tiers.lit() {
+            ctx.request_repaint();
+        } else {
+            ctx.request_repaint_after(Duration::from_millis(16));
+        }
     }
 
     fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -250,6 +278,11 @@ impl eframe::App for App {
                 );
             });
 
+        egui::Panel::bottom("tiers")
+            .frame(island(t, m.tiers_pad, m.tiers_pad))
+            .exact_size(m.tiers_height)
+            .show(root, |ui| self.tiers.show(ui, t));
+
         egui::CentralPanel::default()
             .frame(island(t, m.life_pad, m.life_pad))
             .show(root, |ui| self.grid(ui));
@@ -276,6 +309,13 @@ pub fn run(life: Life) -> eframe::Result {
         Ok(live) => (Some(live), "live edits on".to_owned()),
         Err(why) => (None, format!("live edits off: {why}")),
     };
+    let tiering_off = if live.is_none() {
+        Some("tiering: off, as live edits are".to_owned())
+    } else if std::env::var_os("RA_JIT_TIER").is_some_and(|it| it == "off") {
+        Some("tiering: off (RA_JIT_TIER=off)".to_owned())
+    } else {
+        None
+    };
     eprintln!("life: {live_note}");
     // Not include_str!("main.rs"): that would make every edit of main.rs an edit of this file too.
     let editor = Editor::new(
@@ -299,6 +339,9 @@ pub fn run(life: Life) -> eframe::Result {
         fps_frames: 0,
         frames: 0,
         fps: 0.0,
+        fps_generation: 0,
+        generations: 0.0,
+        tiers: TiersPanel::new(tiering_off),
     };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
