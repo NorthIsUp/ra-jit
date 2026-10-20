@@ -10,7 +10,7 @@
 #
 # Native builds only: host units (platform null in the graph) and target units are the same machine,
 # so build scripts and proc-macros are ordinary host units.
-{ pkgs, rust, guiLibs, json, repo }:
+{ pkgs, rust, guiLibs, json, repo, gitSha ? "" }:
 let
   inherit (pkgs) lib;
   # Each vendored tree copied to a store path of its own, named by its contents alone, so that
@@ -122,7 +122,9 @@ let
     }
     // lib.optionalAttrs (u.kind == "bin") { CARGO_BIN_NAME = u.target; }
     // lib.optionalAttrs (builtins.elem i checked.roots || u.pkg == (U (builtins.head checked.roots)).pkg) { CARGO_PRIMARY_PACKAGE = "1"; }
-    // lib.optionalAttrs (p.links != null) { CARGO_MANIFEST_LINKS = p.links; };
+    // lib.optionalAttrs (p.links != null) { CARGO_MANIFEST_LINKS = p.links; }
+    # `ra-jit --version` and the daemon's log name the commit, as the flake's `daemon` does.
+    // lib.optionalAttrs (p.name == "ra-jit" && gitSha != "") { RA_JIT_GIT_SHA = gitSha; };
 
   mk = i:
     let
