@@ -119,5 +119,23 @@
         devShells.default = pkgs.mkShell {
           packages = [ rust pkgs.python3 ];
         };
+        # What harness/bench.py runs in on the benchmark machine (docs/benchmarks.md): the
+        # pinned toolchain, LLVM 20 for `--features llvm`, and the C side the projects' build
+        # scripts use. Nothing here wraps rustc (no sccache) or replaces the linker (no mold).
+        devShells.bench = pkgs.mkShell {
+          packages = [
+            rust
+            pkgs.python3
+            pkgs.git
+            pkgs.pkg-config
+            pkgs.openssl
+            pkgs.llvmPackages_20.llvm.dev
+            pkgs.libffi
+            pkgs.libxml2
+            pkgs.zlib
+            pkgs.ncurses
+          ];
+          LLVM_SYS_201_PREFIX = "${pkgs.llvmPackages_20.llvm.dev}";
+        };
       });
 }
