@@ -3646,7 +3646,11 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
         } else {
             std::thread::spawn(move || drop(told));
         }
-        let object = product.emit().map_err(|e| CodegenError::Backend(e.to_string()))?;
+        let macho = product.object.format() == cranelift_object::object::BinaryFormat::MachO;
+        let mut object = product.emit().map_err(|e| CodegenError::Backend(e.to_string()))?;
+        if macho {
+            debuginfo::settle_macho(&mut object).map_err(CodegenError::Backend)?;
+        }
         Ok((object, apart))
     }
 
@@ -11351,6 +11355,13 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                 let value = self.builder.ins().load(scalar.ty, MEM, from, 0);
                 self.builder.ins().store(MEM, value, dst, 0);
             }
+            // Out of range is undefined, so `as`'s saturating cast is one of its meanings.
+            ("float_to_int_unchecked", [arg]) => {
+                let (value, from) = self.load_scalar(arg)?;
+                let to = self.scalar_of(dst_ty)?;
+                let value = self.float_cast(value, from, to)?;
+                self.builder.ins().store(MEM, value, dst, 0);
+            }
             ("transmute" | "transmute_unchecked" | "black_box" | "likely" | "unlikely", [arg]) => {
                 self.cg.opaque |= name == "black_box";
                 let (src, ty) = self.operand(arg)?;
@@ -11439,6 +11450,12 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                 let (count, _) = self.load_scalar(count)?;
                 let bytes = self.builder.ins().imul_imm(count, size);
                 let value = self.builder.ins().iadd(ptr, bytes);
+                self.builder.ins().store(MEM, value, dst, 0);
+            }
+            ("ptr_mask", [ptr, mask]) => {
+                let (ptr, _) = self.load_scalar(ptr)?;
+                let (mask, _) = self.load_scalar(mask)?;
+                let value = self.builder.ins().band(ptr, mask);
                 self.builder.ins().store(MEM, value, dst, 0);
             }
             ("ptr_offset_from" | "ptr_offset_from_unsigned", [a, b]) => {
@@ -12166,9 +12183,10 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                 let value = self.builder.inst_results(call)[0];
                 self.builder.ins().store(MEM, value, dst, 0);
             }
-            ("x86.sse2.pause", []) => {
+            ("x86.sse2.pause", []) | ("aarch64.isb", [_]) => {
+                let text = if name == "aarch64.isb" { asm::isb() } else { asm::pause() };
                 let sig = self.cg.make_signature();
-                let callee = self.cg.assembly(asm::pause(), &sig);
+                let callee = self.cg.assembly(text, &sig);
                 let callee = self.cg.declare_func_in_func(callee, self.builder.func);
                 self.builder.ins().call(callee, &[]);
             }

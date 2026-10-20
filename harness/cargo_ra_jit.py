@@ -539,6 +539,27 @@ FLAG_WORKSPACE = {
     "app/tests/it.rs": '#[test]\nfn greets_it() {\n    assert_eq!(util::greeting("it").to_lowercase(), "hello it");\n}\n\n#[test]\nfn fails_when_asked() {\n    assert!(std::env::var("FLAGS_FAIL").is_err());\n}\n\n// A cargo run by a test has the units of the build: the program stays the file it was.\n#[test]\nfn a_cargo_inside_leaves_the_program() {\n    use std::os::unix::fs::MetadataExt;\n    let program = env!("CARGO_BIN_EXE_app");\n    let before = std::fs::metadata(program).unwrap().ino();\n    let cargo = std::env::var("CARGO").unwrap_or("cargo".to_string());\n    let built = std::process::Command::new(cargo).args(["build", "-q", "-p", "app"]).status().unwrap();\n    assert!(built.success());\n    assert_eq!(before, std::fs::metadata(program).unwrap().ino());\n}\n\n// What cargo tells a test of the places of the build is what the daemon tells it.\n#[test]\nfn the_places_of_the_build_are_cargos() {\n    assert!(std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).is_dir());\n    let ran = std::process::Command::new(env!("CARGO_BIN_EXE_other")).output().unwrap();\n    assert_eq!(String::from_utf8_lossy(&ran.stdout).lines().count(), 1);\n}\n',
 }
 
+# What the edit round adds to the program: library code that rustc's build before the edit has
+# no copy of, so the daemon compiles it. On AArch64 `spin_loop` is the `isb` intrinsic, the
+# read guard's drop is the queue-based lock's `ptr_mask` on macOS, and `to_int_unchecked` is
+# `float_to_int_unchecked`.
+EDITED_IN_CALL = '    println!("{:?}", edited_in(name.len()));\n'
+EDITED_IN = """fn edited_in(n: usize) -> (u64, (i8, u64), usize) {
+    let lock = std::sync::RwLock::new(n as u64);
+    let read = *lock.read().unwrap();
+    let mut turns = 0;
+    while turns < n {
+        std::hint::spin_loop();
+        turns += 1;
+    }
+    let half = n as f64 / 2.0 + 0.5;
+    // SAFETY: half the length of a name is in range of both.
+    let cast = unsafe { (half.to_int_unchecked(), half.to_int_unchecked()) };
+    (read, cast, turns)
+}
+
+"""
+
 # Each: the subcommand, its arguments, the variables it runs with.
 FLAG_CASES = [
     ("run", [], {}),
@@ -609,6 +630,8 @@ def flags(work):
     round_of("warm")
     rewrite(os.path.join(ws, "util/src/lib.rs"), 'format!("hello {name}")', 'format!("hello {name}!")')
     rewrite(os.path.join(ws, "app/src/main.rs"), ".len(), 7)", ".len(), 8)")
+    rewrite(os.path.join(ws, "app/src/main.rs"), "    if name ==", EDITED_IN_CALL + "    if name ==")
+    rewrite(os.path.join(ws, "app/src/main.rs"), "#[cfg(test)]", EDITED_IN + "#[cfg(test)]")
     rewrite(os.path.join(ws, "app/tests/it.rs"), '"hello it"', '"hello it!"')
     round_of("edit")
     _, counted = ours.cargo("status")
