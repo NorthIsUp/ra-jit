@@ -1,18 +1,16 @@
 # Contributing
 
-The long version, with the rules for code and how to change the rust-analyzer submodule, is
+The long version, with the rules for code and how to change the vendored rust-analyzer, is
 [docs/contributing.md](docs/contributing.md). The short version:
 
 ## Build
 
 ```
-git clone --recursive https://github.com/indexable-inc/ra-jit
+git clone https://github.com/indexable-inc/ra-jit
 cd ra-jit
 nix develop            # Rust 1.99.0 with rust-src, and Python; or install 1.99.0 with rustup
 cargo build -p ra-jit --release
 ```
-
-A clone made without `--recursive` needs `git submodule update --init` first.
 
 ## Test
 

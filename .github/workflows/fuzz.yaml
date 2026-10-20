@@ -24,8 +24,6 @@ jobs:
     timeout-minutes: 300
     steps:
       - uses: actions/checkout@v6
-        with:
-          submodules: true
       - run: rustup toolchain install 1.99.0 --profile minimal -c rust-src && rustup default 1.99.0
       - name: LLVM 20
         run: |

@@ -56,8 +56,6 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
-        with:
-          submodules: true
       # unit_graph.py runs cargo from the flake's dev shell (the pinned toolchain).
       - uses: DeterminateSystems/nix-installer-action@v23
       - uses: DeterminateSystems/flakehub-cache-action@v3
@@ -111,8 +109,6 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
-        with:
-          submodules: true
       - run: rustup toolchain install 1.99.0 --profile minimal -c rust-src && rustup default 1.99.0
       - uses: Swatinem/rust-cache@v2
         with:
@@ -144,8 +140,6 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v6
-        with:
-          submodules: true
       - run: rustup toolchain install 1.99.0 --profile minimal -c rust-src && rustup default 1.99.0
       - uses: Swatinem/rust-cache@v2
       # Where it is real code: the whole of macos.rs and the patch format.

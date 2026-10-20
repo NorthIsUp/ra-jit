@@ -38,7 +38,6 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          submodules: true
           fetch-depth: 0
       - run: rustup toolchain install 1.99.0 --profile minimal && rustup default 1.99.0
       - uses: Swatinem/rust-cache@v2
@@ -50,14 +49,12 @@ jobs:
         if: github.event_name == 'pull_request'
         run: |
           git checkout -q --detach ${{ github.event.pull_request.base.sha }}
-          git submodule update -q --init --recursive
           if [ -d crates/ra-jit-bench ]; then
             cargo bench -p ra-jit-bench --bench store --no-run --message-format=json \
               | jq -r 'select(.executable != null and .target.name == "store") | .executable' \
               | xargs -I{} cp {} "$RUNNER_TEMP/bench-base"
           fi
           git checkout -q --detach ${{ github.sha }}
-          git submodule update -q --init --recursive
       - name: Build the change
         run: |
           cargo bench -p ra-jit-bench --bench store --no-run --message-format=json \

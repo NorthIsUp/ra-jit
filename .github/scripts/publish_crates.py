@@ -8,7 +8,7 @@
 ra-jit depends by path on rust-analyzer's crates (the fork in vendor/rust-analyzer) and on
 rustc's rustc_abi (vendor/rustc_abi), which crates.io does not have in this form. Each one in
 ra-jit's dependency closure is published as `ra-jit-<name>` at the workspace version, without
-touching the submodules: every crate is copied into a staging workspace and its manifest is
+touching vendor/: every crate is copied into a staging workspace and its manifest is
 rewritten there (name, version, metadata, path dependencies pinned with `=<version>` and
 renamed with `package = ...`, so `use hir::...` still compiles). Dev-dependencies, tests and
 benches are left out. Two files outside a crate are copied into it: hir-ty's code generator
@@ -330,7 +330,7 @@ def toml_dump(doc: dict[str, Any]) -> str:
 
 
 def tracked_files(d: Path) -> list[Path]:
-    """The files git tracks under `d` (a crate in this repository or in a submodule)."""
+    """The files git tracks under `d` (a crate in this repository, vendor/ included)."""
     if d.is_file():
         return [Path()]
     if d in REPO.upstream.values():
@@ -345,7 +345,7 @@ def tracked_files(d: Path) -> list[Path]:
         fail(f"git ls-files in {d} exited {r.returncode}: {r.stderr.strip()[-500:]}")
     files = [Path(p) for p in r.stdout.split("\0") if p]
     if not files:
-        fail(f"git tracks no files in {d} (is the submodule checked out?)")
+        fail(f"git tracks no files in {d}")
     return files
 
 
