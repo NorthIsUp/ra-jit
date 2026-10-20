@@ -93,6 +93,15 @@ another look. A body counts as visible when it belongs to a `const fn`, when its
 part of its signature (`async fn`, `-> impl Trait`), when it is handed to a macro, or when
 it declares items.
 
+Within the edited file, only the edited function is lowered again. rust-analyzer lowers a body
+from the item it is written in, as a tree of its own whose ranges begin at the item
+(`Body::relative` in the fork), so the text around the item moving it changes nothing it is
+made from; its IDE source map is that one moved to where the item is. The places panics and
+debuggers report (`hir-ty-codegen/places.rs`) are found the same way, as a row and column in
+the item, and where the item begins is added when an object is stitched. An edit inside one
+function of a 500-function file lowers, infers and compiles that function and lowers no
+other: [reports/INCREMENTAL.md](reports/INCREMENTAL.md).
+
 ## From MIR to code
 
 The code generator is `crates/hir-ty-codegen`. `codegen.rs` lowers one monomorphised MIR
