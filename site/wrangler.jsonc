@@ -12,8 +12,7 @@
     {
       "binding": "DB",
       "database_name": "ra-jit-updates",
-      // TODO: replace with the id printed by `wrangler d1 create ra-jit-updates` (see README.md).
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "c8d4a72a-3d01-48d5-9af5-46ce7b0f4670",
       "migrations_dir": "migrations"
     }
   ]
