@@ -94,6 +94,21 @@ Neither backend inlines one function into another in a build, so LLVM at `-O2` i
 comparable to a release build. LLVM gives a function it has no lowering for to Cranelift. One
 LLVM bug is worked around by turning off a vectoriser pass (finding 6 in FUZZ.md).
 
+## MIR optimizations
+
+`RA_JIT_MIR_OPT=1` runs the passes rustc runs on a debug build's MIR before code is generated
+from it, `RA_JIT_MIR_OPT=2` the ones it runs above `-Copt-level=0` that are ported; 0, the
+default, runs none ([mir-passes.md](../vendor/rust-analyzer/docs/mir-passes.md#optimizations),
+[research/mir-gap.md](research/mir-gap.md)). Coroutine bodies are never optimized.
+
+| | 0 | 1 | 2 |
+|---|---|---|---|
+| `difftest.py corpus --mixed 8` | yes | yes | yes |
+| `difftest.py mixfutures --mixed 16 --layouts` | yes | yes | yes |
+| `growth.py`, `movedlines.py` | yes | yes | yes |
+| The interpreter's tests give the same result | yes | yes | yes |
+| Identical to rustc's MIR, corpus `cases` | 4.0% (against rustc's level 1) | 21.5% | 14.5% |
+
 ## Tiers
 
 A program that takes edits with `ra-jit-live` has its hot functions compiled again while it
