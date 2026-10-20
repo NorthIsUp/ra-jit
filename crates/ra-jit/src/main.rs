@@ -4094,7 +4094,10 @@ struct Builds {
     /// Compiled functions that wait for their program's build to be over, and the programs
     /// to patch with what was compiled.
     tiered: Vec<(usize, Tiered)>,
-    tier_builds: Vec<usize>,
+    /// The programs to build again though no client asked: to patch in what was compiled at
+    /// a higher level, or to compile what their last build took of the checkout from the
+    /// store, which the first edit would otherwise wait for.
+    unasked: Vec<usize>,
 }
 
 impl Builds {
@@ -4115,8 +4118,8 @@ impl Builds {
             tier::done(&binary, done, counters);
             if patched {
                 programs[at].unbuilt.stale = true;
-                if !self.tier_builds.contains(&at) {
-                    self.tier_builds.push(at);
+                if !self.unasked.contains(&at) {
+                    self.unasked.push(at);
                 }
             }
         }
@@ -4189,6 +4192,9 @@ impl Builds {
         };
         (program.interrupted, program.moved) = (0, false);
         let answer = answer?;
+        if answer.is_ok() && program.dehydrate() && !self.unasked.contains(&at) {
+            self.unasked.push(at);
+        }
         for (_, _, client) in clients {
             // A client that hangs up before the answer is not the daemon's problem.
             let _ = match &answer {
@@ -5326,8 +5332,11 @@ fn run_holding(
         edits: Vec::new(),
         tier_asks: Vec::new(),
         tiered: Vec::new(),
-        tier_builds: Vec::new(),
+        unasked: Vec::new(),
     };
+    if programs[0].dehydrate() {
+        builds.unasked.push(0);
+    }
     // How many times running each checkout that is read as a loaded one has been long to turn
     // to or from.
     let mut slow: FxHashMap<PathBuf, u32> = FxHashMap::default();
@@ -5371,7 +5380,7 @@ fn run_holding(
                 let idle = builds.waiting.is_empty()
                     && builds.edits.is_empty()
                     && builds.tier_asks.is_empty()
-                    && builds.tier_builds.is_empty();
+                    && builds.unasked.is_empty();
                 if builds.stuck || idle {
                     let event = builds.events.recv()?;
                     builds.take(event, &mut programs)?;
@@ -5669,15 +5678,16 @@ fn run_holding(
                     }
                     compile_tiered(&db, &programs[at].known, at, ask, sender.clone());
                 }
-                // A program with code compiled at a higher level is patched with it, as a
-                // client of it would ask for an edit.
-                for at in std::mem::take(&mut builds.tier_builds) {
+                // A program with code compiled at a higher level is patched with it, and one
+                // with code of the checkout from the store is built without it, as a client of
+                // it would ask for an edit.
+                for at in std::mem::take(&mut builds.unasked) {
                     let busy = builds.running.contains_key(&at)
                         || outputs
                             .get(&at)
                             .is_some_and(|it| *it != Outputs::of(&programs[at].args));
                     if busy {
-                        builds.tier_builds.push(at);
+                        builds.unasked.push(at);
                         continue;
                     }
                     let Some(client) = Client::nobody() else { continue };
@@ -6314,6 +6324,21 @@ fn panic_message(panic: &(dyn std::any::Any + Send)) -> &str {
 }
 
 impl Program {
+    /// Whether to build it again with nobody asking, for the code of the checkout its last
+    /// build took from the store: no patch replaces that, so the first edit would wait for
+    /// all of it to be compiled.
+    fn dehydrate(&mut self) -> bool {
+        if !self.known.dehydrate() {
+            return false;
+        }
+        eprintln!(
+            "compiling what the store had of the checkout, for the first edit to patch: {}",
+            self.args.krate
+        );
+        self.unbuilt.stale = true;
+        true
+    }
+
     /// Takes a build that panicked as the build's error, not the worker's: the clients are
     /// told why, the worker stays, and the next build is a whole one, since what the build
     /// left of the patch base and of the executable may be half written.

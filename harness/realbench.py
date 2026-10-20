@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """realbench.py: build times of real projects, `cargo ra-jit` against plain cargo (issue #7).
 
-    realbench.py [PROJECT...] [--runs N] [--work DIR] [--parts cold,noop,edits]
+    realbench.py [PROJECT...] [--runs N] [--work DIR] [--parts cold,noop,edits] [--pause S]
 
 Projects are cloned at the tags `cargo_ra_jit.py` pins, into `RA_JIT_PROJECTS`
 (~/ra-jit-projects), and copied into WORK/<project>/a; the clone is never written to.
@@ -23,6 +23,9 @@ report gives the median, min and max.
               run, `cargo ra-jit build` then `cargo build`; then both programs are run with
               `--version` and with a small real command line, and their stdout, stderr and
               exit status must be the same.
+
+`--pause S` waits S seconds once the daemon is ready, before the no-op and the edits, as a
+person would before the first edit: what the daemon does by itself once ready is then over.
 
 Every warm `cargo ra-jit build` (no-op and edits) runs with RA_JIT_TRACE, and the row keeps
 where the time of its median run went: the client's breakdown of its wall time into steps of
@@ -207,7 +210,7 @@ async def outputs(ws, target, spec, step):
     return res
 
 
-async def project(name, spec, work, runs, parts):
+async def project(name, spec, work, runs, parts, pause=0.0):
     source = fetch(name, spec)
     top = os.path.realpath(os.path.join(work, name))
     ws, other = os.path.join(top, "a"), os.path.join(top, "b")
@@ -270,6 +273,7 @@ async def project(name, spec, work, runs, parts):
         await run(["cargo", "ra-jit", "build"], ws, env, f"{name} ra-jit setup")
         await wait_ready(ws, env, began, f"{name} ready")
     await run(["cargo", "build"], ws, cargo_env, f"{name} cargo settle")
+    await asyncio.sleep(pause)
     # The linker each side's program was linked with.
     row["linker"] = {side: subprocess.run(["readelf", "-p", ".comment", os.path.join(t, "debug", spec["bin"])], capture_output=True, text=True).stdout
                      for side, t in (("cargo", tc), ("ra-jit", tr))}
@@ -382,6 +386,7 @@ async def main():
     runs = int(opt("--runs", "5"))
     work = os.path.abspath(opt("--work", os.path.expanduser("~/realbench")))
     parts = opt("--parts", "cold,noop,edits").split(",")
+    pause = float(opt("--pause", "0"))
     names = args or list(PROJECTS)
     os.makedirs(work, exist_ok=True)
     out = os.path.join(work, "realbench.json")
@@ -395,7 +400,7 @@ async def main():
         print(f"== {name}", flush=True)
         load = open("/proc/loadavg").read().split()[:3]
         try:
-            row = await project(name, PROJECTS[name], work, runs, parts)
+            row = await project(name, PROJECTS[name], work, runs, parts, pause)
         except Exception as e:  # A project ra-jit cannot build is a result.
             row = dict(project=name, failed=f"{type(e).__name__}: {e}")
             print(f"  FAILED: {row['failed']}", flush=True)

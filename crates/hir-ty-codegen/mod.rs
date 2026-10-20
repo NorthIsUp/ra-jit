@@ -1003,6 +1003,13 @@ impl Rejections {
         }
     }
 
+    /// Makes the next build compile the code of the checkout that the last one took from the
+    /// store, which no patch can replace: built while nothing waits, the first edit after it
+    /// is a patch. Whether the next build has that to do and no edit had asked for it.
+    pub fn dehydrate(&mut self) -> bool {
+        self.base.as_mut().is_some_and(|it| it.dehydrate())
+    }
+
     /// Makes the next build a full one. A patch looks at everything the last build compiled,
     /// and what an edit took away can only be looked at where a panic can be caught.
     pub fn forget_base(&mut self) {
