@@ -766,7 +766,7 @@ impl<'a> Placed<'a> {
         }
         let appended = self.added.iter().map(|&it| parts.bodies[it].len()).sum::<usize>()
             + parts.data.iter().map(|it| it.bytes.len()).sum::<usize>();
-        (out, Spliced { redirected: self.replaced.len(), appended })
+        (out, Spliced { redirected: self.replaced.len(), appended, copied: 0 })
     }
 }
 

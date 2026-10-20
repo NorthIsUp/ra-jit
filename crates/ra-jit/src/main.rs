@@ -3008,7 +3008,7 @@ fn link(
             None => Err(anyhow::anyhow!("no executable to add to")),
         };
         match spliced {
-            Ok((baseline, Spliced { redirected, appended })) => {
+            Ok((baseline, Spliced { redirected, appended, copied })) => {
                 if redirected != 0 && baseline.leaves_debug_info() {
                     eprintln!(
                         "debug: the PDB is of the code before the splice: the {redirected} functions redirected have no lines in it until the next full link"
@@ -3017,7 +3017,7 @@ fn link(
                 let read = Executable::Read(Box::new(baseline));
                 lock(&LINKED).insert(binary.to_owned(), read);
                 eprintln!(
-                    "link: {:.1?} (spliced: {redirected} functions redirected, {appended} bytes)",
+                    "link: {:.1?} (spliced: {redirected} functions redirected, {appended} bytes, {copied} copied)",
                     start.elapsed()
                 );
                 return Ok(());

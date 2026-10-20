@@ -1940,7 +1940,8 @@ pub(super) fn splice(
         _ = std::fs::remove_file(&copy);
         *undo = undone;
     }
-    let spliced = Spliced { redirected: addition.redirected, appended: addition.appended.len() };
+    let spliced =
+        Spliced { redirected: addition.redirected, appended: addition.appended.len(), copied: 0 };
     if let Some(hashes) = fresh {
         let (offset, page, bytes) = (addition.offset, image.signature.page, addition.appended);
         *last = Some(Appended { offset, page, bytes, hashes });

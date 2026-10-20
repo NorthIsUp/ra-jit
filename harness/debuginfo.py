@@ -977,7 +977,7 @@ def edited(tally, part):
         if daemon.poll() is not None:
             raise SystemExit(f"the daemon did not start: {open(log_path).read()[-2000:]}")
         time.sleep(0.05)
-    spliced = 0
+    spliced, linked, first = 0, True, []
     for what, changes in EDITS:
         seen = len(open(log_path).read())
         text = open(os.path.join(ws, MAIN)).read()
@@ -995,6 +995,11 @@ def edited(tally, part):
         links = re.findall(r"^link: \S+ \((.*)\)$", open(log_path).read()[seen:], re.M)
         how = "not linked" if not links else "spliced" if links[-1].startswith("spliced") else "linked in full"
         spliced += how == "spliced"
+        # The debug info a first splice after a link adds to is copied while the daemon waits
+        # (#12): what it copies itself is the section names, if any.
+        if how == "spliced" and linked and (copied := re.search(r", (\d+) copied$", links[-1])):
+            first.append(int(copied[1]))
+        linked = how == "linked in full" or (linked and how == "not linked")
         if not (reply.stdout + reply.stderr).strip().startswith("ok"):
             tally.say(f"{part}: {what}", "REFUSED", (reply.stdout + reply.stderr).strip()[:60])
             continue
@@ -1023,6 +1028,10 @@ def edited(tally, part):
     daemon.kill()
     if os.environ.get("RA_JIT_SPLICE") != "0":
         tally.say(f"{part}: added to the linked binary", "spliced" if spliced else "NONE SPLICED", f"{spliced} of {len(EDITS)} steps")
+    if sys.platform.startswith("linux") and first:
+        copied = max(first)
+        tally.say(f"{part}: first splices after a link", "copied nothing" if copied < 1 << 16 else "COPIED DEBUG INFO",
+                  f"{copied} bytes at most, of {len(first)}")
 
 
 def described(binary):

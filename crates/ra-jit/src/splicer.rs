@@ -202,7 +202,7 @@ fn splice(binary: &Path, mut baseline: Baseline, patch: &[u8], give_up: &AtomicB
     let spliced = baseline.splice(patch, give_up);
     let took = start.elapsed();
     match spliced {
-        Ok(Spliced { redirected, appended }) => {
+        Ok(Spliced { redirected, appended, .. }) => {
             lock(&LINKED).insert(binary.to_owned(), Executable::Read(Box::new(baseline)));
             eprintln!(
                 "link: {took:.1?} (spliced once the edits stopped: {redirected} functions redirected, {appended} bytes)"
