@@ -11,7 +11,7 @@
     # vendor/rust-analyzer is a submodule, which a github: flake does not fetch: the same
     # commit comes in as an input and is put in place below.
     rust-analyzer = {
-      url = "github:indexable-inc/rust-analyzer/44cc4153ced92c583c55d5b8a0dbee01ec18eff9";
+      url = "github:indexable-inc/rust-analyzer/3fc04fbe165ae6c74e61b75973c1707d6c0043ec";
       flake = false;
     };
 
