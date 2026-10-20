@@ -153,13 +153,19 @@ impl Backend {
 #[cfg(feature = "llvm")]
 impl Backend {
     /// What LLVM makes of the function, from the store if the same IR was compiled at the
-    /// same level before.
+    /// same level before. That LLVM left the function to Cranelift is kept as well: else
+    /// every build would try LLVM on it again, miss in the store and count the function as
+    /// compiled, though Cranelift's code of it then comes from the store.
     fn emit_with_llvm(
         recorder: &mut Recorder<'_>,
         func: &cranelift_codegen::ir::Function,
         optimization: Optimization,
     ) -> std::result::Result<Code, super::llvm::Unhandled> {
-        use super::{cached::StoredCode, store::Store};
+        use super::{
+            cached::{LlvmEntry, StoredCode},
+            llvm::Unhandled,
+            store::Store,
+        };
         let Some((store, key)) = Store::global().zip(StoredCode::key(
             optimization,
             func,
@@ -168,17 +174,26 @@ impl Backend {
         )) else {
             return super::llvm::emit(recorder, func, optimization);
         };
-        if let Some(stored) = store.lookup(&key).and_then(|it| StoredCode::decode(&it))
-            && let Some(code) = stored.restore(recorder)
-        {
-            return Ok(code);
+        match store.lookup(&key).and_then(|it| LlvmEntry::decode(&it)) {
+            Some(LlvmEntry::Code(stored)) => {
+                if let Some(code) = stored.restore(recorder) {
+                    return Ok(code);
+                }
+            }
+            Some(LlvmEntry::LeftToCranelift(reason)) => return Err(Unhandled::Kept(reason)),
+            None => {}
         }
         let mark = recorder.mark();
-        let code = super::llvm::emit(recorder, func, optimization)?;
-        if let Some(stored) = StoredCode::of(&code, recorder, mark).and_then(|it| it.encode()) {
-            store.insert(&key, &stored);
+        let (entry, out) = match super::llvm::emit(recorder, func, optimization) {
+            Ok(code) => (StoredCode::of(&code, recorder, mark).map(LlvmEntry::Code), Ok(code)),
+            Err(unhandled) => {
+                (Some(LlvmEntry::LeftToCranelift(unhandled.to_string())), Err(unhandled))
+            }
+        };
+        if let Some(bytes) = entry.and_then(|it| it.encode()) {
+            store.insert(&key, &bytes);
         }
-        Ok(code)
+        out
     }
 }
 

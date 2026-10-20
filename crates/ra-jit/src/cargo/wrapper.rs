@@ -436,7 +436,10 @@ impl Unit {
             let line = std::fs::read_to_string(line)
                 .with_context(|| format!("rustc wrote no link line to {}", line.display()))?;
             let args = shlex::split(&line).context("the link line is not quoted as a shell's")?;
-            let objects = args.into_iter().filter(|it| it.ends_with(".rcgu.o")).map(PathBuf::from);
+            let objects = args
+                .into_iter()
+                .filter(|it| it.ends_with(".rcgu.o") || super::plan::is_symbols(it))
+                .map(PathBuf::from);
             originals.extend(objects.filter(|it| it.exists()));
         }
         std::fs::create_dir_all(to)?;

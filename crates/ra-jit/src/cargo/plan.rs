@@ -115,6 +115,8 @@ impl Plan {
                 .flatten(),
             stamp: unit.stamp,
         };
+        // rustc's directory goes when the target directory is cleaned; the copy stays.
+        link.args.retain(|it| !is_symbols(it) || unit.copy_of(Path::new(it)).is_some());
         for arg in &mut link.args {
             let path = PathBuf::from(&*arg);
             let member = member_that_wrote(records, &path);
@@ -267,8 +269,9 @@ impl LinkLine {
             .collect();
         let args: Vec<String> = words[first + 1..]
             .iter()
-            // It exports what a dynamic library would, and is gone with rustc's directory.
-            .filter(|it| !it.ends_with("symbols.o"))
+            // rustc's object of the names the program has to keep stays while it is there:
+            // `-Csave-temps` keeps rustc's directory.
+            .filter(|it| !is_symbols(it) || Path::new(it).exists())
             .cloned()
             .collect();
         let flavor = Flavor::of(&args)?;
@@ -442,6 +445,14 @@ fn is_assignment(word: &str) -> bool {
 
 fn is_rustc_file(arg: &str) -> bool {
     arg.ends_with(".rlib") || arg.ends_with(".rcgu.o")
+}
+
+/// Whether `arg` is the object rustc links first in a program: one that only names what the
+/// program has to keep (the panic runtime, the allocator's shims, `#[used]` statics). A
+/// linker that reads each archive once, as GNU ld does, needs it to take the panic runtime,
+/// which comes before the standard library that calls it.
+pub(crate) fn is_symbols(arg: &str) -> bool {
+    Path::new(arg).file_name().is_some_and(|it| it == "symbols.o")
 }
 
 #[cfg(test)]
