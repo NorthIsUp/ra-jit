@@ -17,6 +17,11 @@ const FIRST_DEFINITION_STAYS: &str = "-Wl,--allow-multiple-definition";
 /// and for the unwind table, which makes way for the patch's frames in `__TEXT`.
 const ROOM_FOR_SEGMENTS: &str = "-Wl,-headerpad,0x100000";
 
+/// The variable whose value the line of Apple's linker ends with, unquoted: the daemon sets it
+/// to a larger `-headerpad` for a program whose unwind table does not fit in that room. Apple's
+/// linker takes the last `-headerpad` it is given.
+pub(crate) const HEADER_PAD: &str = "RA_JIT_HEADER_PAD";
+
 /// The same for `link.exe`, which warns of every name it does so for unless told not to.
 const FIRST_DEFINITION_STAYS_MSVC: [&str; 2] = ["/FORCE:MULTIPLE", "/IGNORE:4006"];
 
@@ -381,6 +386,9 @@ impl LinkLine {
         }
         command.push(shlex::try_quote(&self.linker)?.into_owned());
         command.push(shlex::try_quote(&format!("@{}", response.display()))?.into_owned());
+        if self.flavor == Flavor::Apple {
+            command.push(format!("${HEADER_PAD}"));
+        }
         Ok(command.join(" "))
     }
 
@@ -553,7 +561,8 @@ mod tests {
                 "IPHONEOS_DEPLOYMENT_TARGET",
                 "LC_ALL=C",
                 "cc",
-                &format!("@{}", response.display())
+                &format!("@{}", response.display()),
+                &format!("${HEADER_PAD}"),
             ]
         );
         let weak = dir.join(weaken::DIR).join("a.1.rcgu.o");

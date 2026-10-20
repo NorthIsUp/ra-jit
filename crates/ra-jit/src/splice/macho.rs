@@ -246,17 +246,20 @@ impl Signature {
     }
 
     /// The signature of `file`, whose first `kept` bytes are what the linker wrote but for
-    /// `dirty`, and `added` after them.
+    /// `dirty`, and `added` after them, and the hashes of the pages of `added`. A page that
+    /// the last splice appended at the same place as it is now has the hash it had then.
     fn of(
         &self,
         file: &File,
         kept: u64,
         dirty: &[(u64, Vec<u8>)],
         added: &[u8],
+        last: Option<&Appended>,
         give_up: &AtomicBool,
-    ) -> anyhow::Result<Vec<u8>> {
+    ) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
         let limit = kept + added.len() as u64;
         let page_len = self.page;
+        let last = last.filter(|it| it.offset == kept && it.page == page_len);
         ensure!(kept as usize % page_len == 0, "a splice behind a page the signature hashes");
         let kept = kept as usize / page_len;
         let mut hashes =
@@ -275,7 +278,7 @@ impl Signature {
         }
         // Every page appended, tens of megabytes for a large debug build: without the
         // processor's SHA-256 instructions the pages are hashed on several threads.
-        let pages: Vec<&[u8]> = added.chunks(page_len).collect();
+        let pages: Vec<(usize, &[u8])> = added.chunks(page_len).enumerate().collect();
         let threads = match super::sha256::fast() {
             true => 1,
             false => std::thread::available_parallelism().map_or(1, |it| it.get()).min(8),
@@ -286,11 +289,14 @@ impl Signature {
                 .map(|pages| {
                     scope.spawn(move || -> Result<Vec<u8>, super::GaveUp> {
                         let mut hashes = Vec::with_capacity(pages.len() * Self::HASH);
-                        for (index, page) in pages.iter().enumerate() {
+                        for (index, &(nth, page)) in pages.iter().enumerate() {
                             if index % 256 == 0 {
                                 super::go_on(give_up)?;
                             }
-                            hashes.extend_from_slice(&super::sha256::digest(page));
+                            match last.and_then(|it| it.hash_of(nth, page)) {
+                                Some(hash) => hashes.extend_from_slice(hash),
+                                None => hashes.extend_from_slice(&super::sha256::digest(page)),
+                            }
                         }
                         Ok(hashes)
                     })
@@ -298,9 +304,11 @@ impl Signature {
                 .collect();
             parts.into_iter().map(|it| it.join().expect("hashing pages panicked")).collect()
         });
+        let appended_from = hashes.len();
         for part in parts {
             hashes.extend_from_slice(&part?);
         }
+        let appended = hashes[appended_from..].to_vec();
 
         let mut directory = self.directory.clone();
         let length = u32::try_from(directory.len() + hashes.len())?;
@@ -331,7 +339,26 @@ impl Signature {
             signature.extend_from_slice(blob);
         }
         signature.resize(len, 0);
-        Ok(signature)
+        Ok((signature, appended))
+    }
+}
+
+/// What a splice appended behind what the linker wrote, and the hashes of its pages: most of
+/// it is `__LINKEDIT` as the linker wrote it, which the next splice appends again.
+pub(super) struct Appended {
+    offset: u64,
+    page: usize,
+    bytes: Vec<u8>,
+    hashes: Vec<u8>,
+}
+
+impl Appended {
+    /// The hash of page `nth` of what is appended now, when it was appended last as it is.
+    fn hash_of(&self, nth: usize, page: &[u8]) -> Option<&[u8]> {
+        let at = nth * self.page;
+        let was = self.bytes.get(at..(at + self.page).min(self.bytes.len()))?;
+        let hash = self.hashes.get(nth * Signature::HASH..(nth + 1) * Signature::HASH)?;
+        (was == page).then_some(hash)
     }
 }
 
@@ -840,6 +867,37 @@ fn frames_in_front(
     );
     let unwind = image.address_of(at as u64)?;
     Ok(Some((vec![(image.offset_of(start)?, block), (at as u64, table)], [unwind, start])))
+}
+
+/// The `-headerpad` to link the executable `bytes` with for a splice to have room in its
+/// header, when the linker left less: the load commands with two more segments
+/// ([`Layout::linked`]) and the unwind table that moves in behind them ([`frames_in_front`]),
+/// half as much again for the program to grow into. Reads the load commands alone.
+pub(super) fn header_pad(bytes: &[u8]) -> anyhow::Result<Option<u64>> {
+    ensure!(u32_at(bytes, 0)? == macho::MH_MAGIC_64, "not a 64-bit Mach-O file");
+    let count = u32_at(bytes, 16)?;
+    let commands =
+        bytes.get(..HEADER + u32_at(bytes, 20)? as usize).context("the file ends early")?;
+    let (mut room, mut unwind) = (bytes.len(), 0);
+    let mut command = HEADER;
+    for _ in 0..count {
+        if u32_at(commands, command)? == macho::LC_SEGMENT_64 {
+            for nth in 0..u32_at(commands, command + 64)? as usize {
+                let header = command + SEGMENT + nth * SECTION;
+                let len = u64_at(commands, header + 40)? as usize;
+                let offset = u32_at(commands, header + 48)? as usize;
+                if offset != 0 && len != 0 {
+                    room = room.min(offset);
+                }
+                if commands.get(header..header + 16) == Some(b"__unwind_info\0\0\0") {
+                    unwind = len;
+                }
+            }
+        }
+        command += u32_at(commands, command + 4)? as usize;
+    }
+    let needed = (commands.len() + 2 * SEGMENT).next_multiple_of(16) + unwind;
+    Ok((needed > room).then(|| ((needed + needed / 2) as u64).next_multiple_of(0x10000)))
 }
 
 /// The unwinder's table (`__unwind_info`) for frames `by` bytes further from where
@@ -1795,6 +1853,7 @@ pub(super) fn splice(
     undo: &mut Vec<(u64, Vec<u8>)>,
     originals: &mut FxHashMap<u64, Vec<u8>>,
     stamp: &mut Stamp,
+    last: &mut Option<Appended>,
     patch: &[u8],
     give_up: &AtomicBool,
 ) -> anyhow::Result<Spliced> {
@@ -1824,6 +1883,7 @@ pub(super) fn splice(
     // What is undone of the last splice is the copy's: the executable keeps it until the
     // rename, and a splice given up on leaves it as it was.
     let undone = undo.clone();
+    let mut fresh = None;
     let written = (|| -> anyhow::Result<Stamp> {
         super::go_on(give_up)?;
         let file = OpenOptions::new().read(true).write(true).open(&copy)?;
@@ -1849,8 +1909,15 @@ pub(super) fn splice(
             super::write_all_at(&file, bytes, *offset)?;
         }
         step("overwrite", &mut from);
-        let signature =
-            image.signature.of(&file, addition.offset, &dirty, &addition.appended, give_up)?;
+        let (signature, hashes) = image.signature.of(
+            &file,
+            addition.offset,
+            &dirty,
+            &addition.appended,
+            last.as_ref(),
+            give_up,
+        )?;
+        fresh = Some(hashes);
         step("sign", &mut from);
         // In parts, to give up between them.
         for (index, part) in addition.appended.chunks(1 << 20).enumerate() {
@@ -1873,6 +1940,11 @@ pub(super) fn splice(
         _ = std::fs::remove_file(&copy);
         *undo = undone;
     }
+    let spliced = Spliced { redirected: addition.redirected, appended: addition.appended.len() };
+    if let Some(hashes) = fresh {
+        let (offset, page, bytes) = (addition.offset, image.signature.page, addition.appended);
+        *last = Some(Appended { offset, page, bytes, hashes });
+    }
     *stamp = written?;
-    Ok(Spliced { redirected: addition.redirected, appended: addition.appended.len() })
+    Ok(spliced)
 }
