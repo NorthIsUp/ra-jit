@@ -55,13 +55,15 @@ impl SealedStore {
             std::env::temp_dir().join(format!("ra-jit-bench-{tag}-{}-{made}", std::process::id()));
         _ = std::fs::remove_dir_all(&dir);
         let identity = Identity::new(b"a build", "a toolchain");
-        let store = super::Store::open(&dir, identity, Tuning { seal_at: 1, limit: None })?;
+        // Nothing is sealed until all of it is in, and then all of it in one pack.
+        let tuning = Tuning { seal_at: 1 << 30, limit: None };
+        let store = super::Store::open(&dir, identity, tuning)?;
         let keys: Vec<[u8; KEY]> = (0..count).map(|it| key_of(it as u64)).collect();
         for (at, key) in keys.iter().enumerate() {
             let value: Vec<u8> = (0..len).map(|it| (it ^ at) as u8).collect();
             store.insert(key, &value);
         }
-        store.flush();
+        store.settle(1);
         let names = StoreDir::at(&dir).packs()?;
         let [name] = &names[..] else {
             return Err(std::io::Error::other(format!("{} packs, not one", names.len())));
