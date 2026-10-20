@@ -79,7 +79,7 @@ def main():
     ours = [packages[i] for i in used & members]
     crates = [t["name"].replace("-", "_") for p in ours for t in p["targets"] if "lib" in t["kind"] or (p["id"] == root and "bin" in t["kind"])]
     clean = ["cargo", "clean", *(x for p in ours for x in ("-p", p["name"]))]
-    result = dict(workspace=source, package=package, crates=sorted(set(crates)), ra-jit=RA_JIT, rows={})
+    result = dict(workspace=source, package=package, crates=sorted(set(crates)), ra_jit=RA_JIT, rows={})
     print(f"work {ws}; {len(ours)} packages; crates {' '.join(sorted(set(crates)))}", flush=True)
 
     subprocess.run(["cargo", "build", "-p", package], cwd=ws, check=True, capture_output=True)

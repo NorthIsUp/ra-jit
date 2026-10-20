@@ -3085,12 +3085,12 @@
   "ra-jit-live@0.1.0": {
    "authors": "Indexable, Inc.",
    "description": "Applies ra-jit's edits to a program while it runs",
-   "homepage": "",
+   "homepage": "https://ra-jit.ix.dev",
    "license": "MIT OR Apache-2.0",
    "license_file": "",
    "links": null,
    "name": "ra-jit-live",
-   "readme": "",
+   "readme": "README.md",
    "repository": "https://github.com/indexable-inc/ra-jit",
    "rust_version": "",
    "source": {

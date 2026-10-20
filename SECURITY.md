@@ -9,11 +9,12 @@ Please report a vulnerability privately through GitHub's "Report a vulnerability
 the repository's Security tab rather than in a public issue. There is no bounty and no
 promised response time.
 
-<!-- SECURITY-CONTACT: confirm that private vulnerability reporting is enabled on the
-     repository, or replace this with an address. -->
-
 A miscompile, where a program built with ra-jit behaves differently from the one rustc
 builds, is a correctness bug and can be reported in a normal issue.
+
+## Supported versions
+
+Only the latest release, and `main`, get fixes.
 
 ## What to know before using it
 

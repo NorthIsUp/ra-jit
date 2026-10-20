@@ -1,99 +1,123 @@
 name: release
 
-# Builds ra-jit for the four platforms CI tests and attaches the archives to a GitHub release.
-# A tag `v*` makes a release of that name. A push to main replaces the prerelease `nightly`,
-# and a manual run makes or replaces the prerelease named by its input.
+# A pushed tag `vX.Y.Z` builds ra-jit for Linux (x86_64, aarch64) and macOS (aarch64) and makes
+# a GitHub release of that name: one tarball per target, a `.sha256` per tarball, SHA256SUMS,
+# and the tag's CHANGELOG.md section as the notes. The tag must match the workspace version.
+# A manual run builds and checks the same archives without releasing anything.
 on:
   push:
     tags: ["v*"]
-    branches: ["main"]
-    paths-ignore: ["site/**", "**.md", "docs/**", "harness/**"]
   workflow_dispatch:
-    inputs:
-      name:
-        description: Release to make or replace
-        default: nightly
 
 concurrency:
   group: release-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
-  RELEASE: ${{ github.ref_type == 'tag' && github.ref_name || inputs.name || 'nightly' }}
+  CARGO_NET_RETRY: 10
 
 jobs:
+  notes:
+    name: version and notes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.notes.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+      # On a tag: the tag is the workspace version and CHANGELOG.md has its section.
+      # By hand: the workspace version needs a section.
+      - id: notes
+        run: python3 -I .github/scripts/release_notes.py --tag "${{ github.ref_type == 'tag' && github.ref_name || '' }}" --out "$RUNNER_TEMP/notes.md"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: notes
+          path: ${{ runner.temp }}/notes.md
+          if-no-files-found: error
+
   build:
     name: ${{ matrix.target }}
+    needs: notes
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { target: aarch64-apple-darwin, os: macos-latest }
+          - { target: aarch64-apple-darwin, os: macos-15 }
           # The oldest hosted Ubuntu, so that the binaries ask for an old glibc.
           - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04 }
           - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm }
-          - { target: x86_64-pc-windows-msvc, os: windows-latest }
-    defaults:
-      run:
-        shell: bash
+    env:
+      NAME: ra-jit-v${{ needs.notes.outputs.version }}-${{ matrix.target }}
     steps:
       - uses: actions/checkout@v6
         with:
           submodules: true
       - run: rustup toolchain install 1.99.0 --profile minimal && rustup default 1.99.0
-      # Without the `llvm` feature: that one links libLLVM dynamically, which a machine that
-      # downloads the binary does not have.
-      - run: cargo build -p ra-jit --release --locked
+      # `ra-jit --version` names the commit, as the flake's build does.
+      - run: echo "RA_JIT_GIT_SHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+      # No build cache: release binaries come from a clean build. Without the `llvm` feature:
+      # that one links libLLVM dynamically, which a machine that downloads the binary lacks.
+      - run: cargo build -p ra-jit --release --locked --target ${{ matrix.target }}
         env:
           MACOSX_DEPLOYMENT_TARGET: "13.0"
       - name: Archive
         run: |
-          name=ra-jit-${{ matrix.target }}
-          mkdir "$name"
-          cp LICENSE-APACHE LICENSE-MIT README.md "$name"
-          if [ "$RUNNER_OS" = Windows ]; then
-            cp target/release/{ra-jit,cargo-ra-jit,ra-jit-rustc}.exe "$name"
-            7z a "$name.zip" "$name"
-          else
-            cp target/release/{ra-jit,cargo-ra-jit,ra-jit-rustc} "$name"
-            tar czf "$name.tar.gz" "$name"
-          fi
-          "$name/ra-jit" --help > /dev/null
+          mkdir "$NAME"
+          cp LICENSE-APACHE LICENSE-MIT README.md CHANGELOG.md "$NAME"
+          cp target/${{ matrix.target }}/release/{ra-jit,cargo-ra-jit,ra-jit-rustc} "$NAME"
+          "$NAME/ra-jit" --version | tee /dev/stderr | grep -F "ra-jit ${{ needs.notes.outputs.version }} "
+          tar czf "$NAME.tar.gz" "$NAME"
+          shasum -a 256 "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
       - uses: actions/upload-artifact@v4
         with:
-          name: ra-jit-${{ matrix.target }}
-          path: |
-            ra-jit-${{ matrix.target }}.tar.gz
-            ra-jit-${{ matrix.target }}.zip
+          name: ${{ env.NAME }}
+          path: ${{ env.NAME }}.tar.gz*
           if-no-files-found: error
 
-  publish:
-    needs: build
-    runs-on: ubuntu-latest
+  # ra-jit and the forks it depends on (`ra-jit-hir`, `ra-jit-rustc_abi`, ...) on crates.io, as
+  # its own job so it can be rerun alone: versions already published are skipped. Each crate is
+  # built first; crates.io's limit on new crates is waited out (a first release takes hours).
+  crates:
+    name: crates.io
+    needs: [notes, build]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
     steps:
       - uses: actions/checkout@v6
+        with:
+          submodules: true
+      - run: rustup toolchain install 1.99.0 --profile minimal && rustup default 1.99.0
+      - run: python3 -I .github/scripts/publish_crates.py --publish --max-hours 5
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  publish:
+    name: GitHub release
+    needs: [notes, build]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
       - uses: actions/download-artifact@v4
         with:
           path: out
           merge-multiple: true
       - name: Checksums
         working-directory: out
-        run: sha256sum ra-jit-* > SHA256SUMS && cat SHA256SUMS
+        run: sha256sum ra-jit-*.tar.gz | tee SHA256SUMS
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          notes="Built from ${GITHUB_SHA}. Cranelift backend only; the LLVM backend is built from source. See the README for what ra-jit does and does not do yet."
-          if [ "${{ github.ref_type }}" = tag ]; then
-            gh release create "$RELEASE" --title "$RELEASE" --notes "$notes" --verify-tag out/*
-          else
-            # A prerelease moves with the branch it was built from.
-            gh release delete "$RELEASE" --yes --cleanup-tag || true
-            gh release create "$RELEASE" --title "$RELEASE" --notes "$notes" --prerelease --target "$GITHUB_SHA" out/*
-          fi
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "ra-jit $GITHUB_REF_NAME" --notes-file out/notes.md \
+            out/ra-jit-*.tar.gz out/ra-jit-*.tar.gz.sha256 out/SHA256SUMS
