@@ -842,6 +842,37 @@ fn frames_in_front(
     Ok(Some((vec![(image.offset_of(start)?, block), (at as u64, table)], [unwind, start])))
 }
 
+/// The `-headerpad` to link the executable `bytes` with for a splice to have room in its
+/// header, when the linker left less: the load commands with two more segments
+/// ([`Layout::linked`]) and the unwind table that moves in behind them ([`frames_in_front`]),
+/// half as much again for the program to grow into. Reads the load commands alone.
+pub(super) fn header_pad(bytes: &[u8]) -> anyhow::Result<Option<u64>> {
+    ensure!(u32_at(bytes, 0)? == macho::MH_MAGIC_64, "not a 64-bit Mach-O file");
+    let count = u32_at(bytes, 16)?;
+    let commands =
+        bytes.get(..HEADER + u32_at(bytes, 20)? as usize).context("the file ends early")?;
+    let (mut room, mut unwind) = (bytes.len(), 0);
+    let mut command = HEADER;
+    for _ in 0..count {
+        if u32_at(commands, command)? == macho::LC_SEGMENT_64 {
+            for nth in 0..u32_at(commands, command + 64)? as usize {
+                let header = command + SEGMENT + nth * SECTION;
+                let len = u64_at(commands, header + 40)? as usize;
+                let offset = u32_at(commands, header + 48)? as usize;
+                if offset != 0 && len != 0 {
+                    room = room.min(offset);
+                }
+                if commands.get(header..header + 16) == Some(b"__unwind_info\0\0\0") {
+                    unwind = len;
+                }
+            }
+        }
+        command += u32_at(commands, command + 4)? as usize;
+    }
+    let needed = (commands.len() + 2 * SEGMENT).next_multiple_of(16) + unwind;
+    Ok((needed > room).then(|| ((needed + needed / 2) as u64).next_multiple_of(0x10000)))
+}
+
 /// The unwinder's table (`__unwind_info`) for frames `by` bytes further from where
 /// `__eh_frame` starts: its entries that say "look in `__eh_frame`" say where.
 fn shifted(table: &mut [u8], by: u64) -> anyhow::Result<()> {

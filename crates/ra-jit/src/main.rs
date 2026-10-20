@@ -2907,6 +2907,11 @@ pub(crate) fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, 
 pub(crate) static LINKED: std::sync::LazyLock<std::sync::Mutex<FxHashMap<PathBuf, Executable>>> =
     std::sync::LazyLock::new(Default::default);
 
+/// The `-headerpad` each executable is linked with whose unwind table did not fit in the room
+/// every link of Apple's linker leaves: the table moves into the header for a splice.
+static HEADER_PADS: std::sync::LazyLock<std::sync::Mutex<FxHashMap<PathBuf, u64>>> =
+    std::sync::LazyLock::new(Default::default);
+
 /// Brings an executable up to date with its objects. An edit that left the whole object alone
 /// is spliced into the executable at `splice`, which `--binary` names, when that is known from
 /// its last link; anything else, and whatever the splice declines, runs the link command, whose
@@ -3025,10 +3030,34 @@ fn link(
             }
         }
     }
-    let linked = shell(cmd).output()?;
+    let run = |pad: Option<u64>| -> anyhow::Result<std::process::Output> {
+        let mut command = shell(cmd);
+        match pad {
+            Some(pad) => command.env(cargo::plan::HEADER_PAD, format!("-Wl,-headerpad,{pad:#x}")),
+            None => command.env_remove(cargo::plan::HEADER_PAD),
+        };
+        let linked = command.output()?;
+        eprint!("{}", String::from_utf8_lossy(&linked.stdout));
+        eprint!("{}", String::from_utf8_lossy(&linked.stderr));
+        Ok(linked)
+    };
+    let padded = splice.and_then(|it| lock(&HEADER_PADS).get(it).copied());
+    let mut linked = run(padded)?;
+    // A program whose unwind table outgrew the room in its header is linked again with room,
+    // once, so that the edits after it are spliced.
+    let wanted = splice
+        .filter(|_| linked.status.success())
+        .and_then(|binary| Some((binary, splice::header_pad(binary)?)))
+        .filter(|(_, pad)| padded.is_none_or(|it| *pad > it));
+    if let Some((binary, pad)) = wanted {
+        lock(&HEADER_PADS).insert(binary.to_owned(), pad);
+        linked = run(Some(pad))?;
+        declined.push_str(&format!(
+            "; linked again with room in the header for splices: -Wl,-headerpad,{pad:#x}"
+        ));
+    }
     let status = linked.status;
     let said = String::from_utf8_lossy(&linked.stderr);
-    eprint!("{}{said}", String::from_utf8_lossy(&linked.stdout));
     eprintln!("link: {:.1?} ({status}{declined})", start.elapsed());
     anyhow::ensure!(status.success(), "the link failed ({status}): {}", last_lines(&said, 6));
     if let (Some(binary), Some(patch)) = (splice, patch) {

@@ -73,6 +73,18 @@ impl Linked {
     }
 }
 
+/// The `-headerpad` to link the executable at `binary` with for a splice to have room in its
+/// header, when the linker left too little. Only a Mach-O executable has anything moved there.
+pub(crate) fn header_pad(binary: &Path) -> Option<u64> {
+    let file = File::open(binary).ok()?;
+    // SAFETY: as in `Baseline::read`.
+    let bytes = unsafe { memmap2::Mmap::map(&file).ok()? };
+    match object::FileKind::parse(&*bytes).ok()? {
+        object::FileKind::MachO64 => macho::header_pad(&bytes).ok().flatten(),
+        _ => None,
+    }
+}
+
 /// An executable as the linker wrote it, and what the last splice changed of it.
 pub(crate) struct Baseline {
     path: PathBuf,
