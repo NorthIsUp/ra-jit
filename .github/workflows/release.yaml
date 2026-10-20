@@ -80,6 +80,10 @@ jobs:
           path: ${{ env.NAME }}.tar.gz*
           if-no-files-found: error
 
+  # crates.io publishing goes here, as its own job (`needs: [notes, build]`,
+  # `if: github.ref_type == 'tag'`, secret CARGO_REGISTRY_TOKEN), so the GitHub release and
+  # the crates stay separate steps that can be rerun on their own.
+
   publish:
     name: GitHub release
     needs: [notes, build]

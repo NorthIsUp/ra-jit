@@ -19,8 +19,8 @@ The first release.
   build falls back to cargo, and says so.
 - `ra-jit enable` and `ra-jit disable`: route plain `cargo build|run|test|check` through
   ra-jit, and put cargo's config back.
-- `ra-jit-live`, a crate that applies edits to a running program, keeping its state
-  (macOS on Apple silicon).
+- `ra-jit-live` (on crates.io), a crate that applies edits to a running program, keeping
+  its state (macOS on Apple silicon).
 - A nix flake: `nix run github:indexable-inc/ra-jit` opens a Game of Life you can edit
   while it runs; `#ra-jit` is the cargo wrapper.
 - Prebuilt binaries for Linux (x86_64, aarch64) and macOS (aarch64).
