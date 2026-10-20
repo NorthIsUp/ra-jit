@@ -3272,7 +3272,10 @@ fn compile_as<'db>(
         }
         None => match tier {
             None => Backend::emit(&mut cg, &mut ctx)?,
-            Some(request) => tier::emit(&mut cg, &mut ctx, request)?,
+            Some(request) => {
+                let named: Vec<ir::StackSlot> = cg.named_slots().collect();
+                tier::emit(&mut cg.wants, &named, &mut ctx.func, request)?
+            }
         },
     };
     let source = match body.map(|body| body.owner) {
@@ -3407,7 +3410,8 @@ fn small_body(
     if ctx.func.dfg.num_insts() > INSTRUCTIONS {
         return None;
     }
-    fragment::Inlinable::of(ctx.func, cg.finish().0)
+    let pointees = std::mem::take(&mut cg.pointees);
+    fragment::Inlinable::of(ctx.func, cg.finish().0, pointees, Vec::new())
 }
 
 fn inlinable_cycle(
@@ -7257,6 +7261,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             false => None,
         };
         self.builder.func.signature = sig;
+        self.cg.pointees = self.pointees(body, ret, &param_modes)?;
 
         let entry = self.builder.create_block();
         self.builder.append_block_params_for_function_params(entry);
@@ -7984,6 +7989,132 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
     /// Whether `ty` is known to have no `UnsafeCell` outside of indirections.
     fn is_freeze(&self, ty: Ty<'db>) -> bool {
         crate::drop::is_freeze(self.cg.db, self.interner, ty)
+    }
+
+    /// The parameters of the function being built that are addresses, with what their types
+    /// say of the memory there, by their place among the parameters of its IR. As rustc's
+    /// `arg_attrs_for_rust_scalar`: a reference is aligned and not null, and a `&mut T` of a
+    /// `T` that is `Unpin` and a `&T` of one without an `UnsafeCell` are the only way to their
+    /// memory, which may be read at any time; an aggregate passed or returned in memory is at
+    /// an address of its own of its size.
+    fn pointees(
+        &self,
+        body: &MirBody<'db>,
+        ret: PassMode,
+        modes: &[PassMode],
+    ) -> Result<Vec<(u32, fragment::Pointee)>> {
+        use fragment::Pointee;
+        let mut found = Vec::new();
+        // The body of a coroutine is resumed with a null context too, which it tells apart.
+        if body.coroutine.is_some() {
+            return Ok(found);
+        }
+        let mut at = 0u32;
+        let in_memory = |layout: &Layout| Pointee {
+            unique: false,
+            frozen: false,
+            size: layout.size.bytes(),
+            align: layout.align.abi.bytes(),
+        };
+        if let PassMode::Indirect = ret {
+            let ty = body.locals[returned_local(body)].ty.as_ref();
+            found.push((at, in_memory(&*self.layout(ty)?)));
+            at += 1;
+        }
+        for (&local, &mode) in body.param_locals.iter().zip(modes) {
+            let ty = body.locals[local].ty.as_ref();
+            let pointee = match mode {
+                PassMode::Indirect => Some(in_memory(&*self.layout(ty)?)),
+                PassMode::Direct(_) | PassMode::Pair(..) => self.reference_pointee(ty)?,
+                _ => None,
+            };
+            if let Some(pointee) = pointee {
+                found.push((at, pointee));
+            }
+            let mut params = Vec::new();
+            self.push_abi_params(mode, &mut params);
+            at += params.len() as u32;
+        }
+        Ok(found)
+    }
+
+    /// What a reference of type `ty` says of its memory, if `ty` is one that is the only way
+    /// to its memory. Only a reference to plain data is looked at: whether a type with a
+    /// coroutine, a closure or a trait object in it is `Unpin` takes more than its fields to
+    /// know, and a wrong yes is a miscompile.
+    fn reference_pointee(&self, ty: Ty<'db>) -> Result<Option<fragment::Pointee>> {
+        let TyKind::Ref(_, pointee, mutability) = ty.kind() else { return Ok(None) };
+        let element = match pointee.kind() {
+            TyKind::Str => None,
+            TyKind::Slice(element) => Some(element),
+            _ => Some(pointee),
+        };
+        if !element.is_none_or(|it| self.is_plain_data(it, 0)) {
+            return Ok(None);
+        }
+        let unique = match mutability {
+            Mutability::Not => self.is_freeze(pointee),
+            Mutability::Mut => self.interner.lang_items().Unpin.is_some_and(|unpin| {
+                crate::traits::implements_trait_unique(pointee, self.cg.db, self.env, unpin)
+            }),
+        };
+        if !unique {
+            return Ok(None);
+        }
+        let (size, align) = match pointee.kind() {
+            TyKind::Str => (0, 1),
+            TyKind::Slice(element) => (0, self.layout(element)?.align.abi.bytes()),
+            _ => {
+                let layout = self.layout(pointee)?;
+                (layout.size.bytes(), layout.align.abi.bytes())
+            }
+        };
+        Ok(Some(fragment::Pointee {
+            unique,
+            frozen: mutability == Mutability::Not,
+            size,
+            align,
+        }))
+    }
+
+    /// Whether `ty` is made of scalars, pointers and references only, through arrays, tuples
+    /// and the fields of structs and enums, `depth` deep in a type that is.
+    fn is_plain_data(&self, ty: Ty<'db>, depth: u32) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        match self.normalize(ty).kind() {
+            TyKind::Bool
+            | TyKind::Char
+            | TyKind::Int(_)
+            | TyKind::Uint(_)
+            | TyKind::Float(_)
+            | TyKind::Never
+            | TyKind::RawPtr(..)
+            | TyKind::Ref(..)
+            | TyKind::FnPtr(..)
+            | TyKind::FnDef(..) => true,
+            TyKind::Array(element, _) | TyKind::Pat(element, _) => {
+                self.is_plain_data(element, depth + 1)
+            }
+            TyKind::Tuple(fields) => fields.iter().all(|it| self.is_plain_data(it, depth + 1)),
+            TyKind::Adt(def, args) => {
+                let variants: Vec<hir_def::VariantId> = match def.def_id() {
+                    AdtId::StructId(id) => vec![id.into()],
+                    AdtId::EnumId(id) => {
+                        id.enum_variants(self.cg.db).variants.iter().map(|(_, it)| it.0.into()).collect()
+                    }
+                    AdtId::UnionId(_) => return false,
+                };
+                variants.into_iter().all(|variant| {
+                    self.cg.db.field_types(variant).iter().all(|(_, field)| {
+                        let ty = field.ty().instantiate(self.interner, args).skip_norm_wip();
+                        self.is_plain_data(ty, depth + 1)
+                    })
+                })
+            }
+            _ => false,
+        }
     }
 
     fn eval_const(&mut self, unevaluated: UnevaluatedConst<'db>) -> Result<Allocation<'db>> {
@@ -11030,6 +11161,43 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         Some(self.cg.declare_inlined(body, self.builder.func))
     }
 
+    /// Shows LLVM the body of the callee `id` a compile at a level above 1 calls, where
+    /// `tier::seen_body` has one.
+    fn show_callee(
+        &mut self,
+        def: InstanceDef,
+        args: GenericArgs<'db>,
+        sig: &Signature,
+        id: FuncId,
+    ) {
+        let db = self.cg.db;
+        let tracked = match def {
+            InstanceDef::Fn(func) => {
+                let signature = FunctionSignature::of(db, func);
+                if signature.abi != ExternAbi::Rust
+                    || signature.is_varargs()
+                    || FunctionSignature::is_intrinsic(db, func)
+                {
+                    return;
+                }
+                track_caller(db, func)
+            }
+            InstanceDef::Closure(_) | InstanceDef::DropGlue => false,
+            _ => return,
+        };
+        let interner = DbInterner::new_with(db, self.env.krate);
+        let args = rustc_type_ir::fold_regions(interner, args, |region, _| match region.kind() {
+            rustc_type_ir::RegionKind::ReBound(..) => region,
+            _ => Region::new_erased(interner),
+        });
+        let instance = Instance { def, args: args.store(), checked: self.cg.checked };
+        if let Some((body, never)) = tier::seen_body(db, &instance, &self.env.store(), tracked)
+            && body.func.signature == *sig
+        {
+            self.cg.declare_seen(id, &body, never);
+        }
+    }
+
     /// Calls `callee` with `values`, which are what `sig` says, and stores the result in `dst`.
     fn call_as(
         &mut self,
@@ -11046,6 +11214,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                     Some(callee) => callee,
                     None => {
                         let callee = self.cg.callee(def, generic_args, self.env, &sig)?;
+                        self.show_callee(def, generic_args, &sig, callee);
                         self.cg.declare_func_in_func(callee, self.builder.func)
                     }
                 };
@@ -12901,6 +13070,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         }
         let args = GenericArgs::new_from_slice(&[ty.into()]);
         let callee = self.cg.callee(InstanceDef::DropGlue, args, self.env, &sig)?;
+        self.show_callee(InstanceDef::DropGlue, args, &sig, callee);
         let callee = self.cg.declare_func_in_func(callee, self.builder.func);
         self.invoke(callee, &values);
         Ok(())

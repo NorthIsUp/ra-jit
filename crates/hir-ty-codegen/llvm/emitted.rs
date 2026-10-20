@@ -24,7 +24,7 @@ use super::{OWN, Symbol, Unhandled};
 use crate::mir::codegen::{
     ConstBlob,
     debuginfo::{LineRow, SlotPlaces, VariablePlace},
-    fragment::{Code, Recorder},
+    fragment::{Code, Wants},
     unwind::{FrameRows, FrameRule, FunctionUnwind, seh},
 };
 
@@ -55,7 +55,7 @@ impl<'data> Emitted<'data> {
     pub(super) fn code(
         object: &'data [u8],
         signature: Signature,
-        recorder: &mut Recorder<'_>,
+        recorder: &mut Wants,
     ) -> Result<Code, Unhandled> {
         let file = object::File::parse(object)?;
         let own = file
@@ -254,7 +254,7 @@ impl<'data> Emitted<'data> {
     }
 
     /// Lays out `first` and every section its relocations lead to.
-    fn place(&mut self, first: SectionIndex, recorder: &mut Recorder<'_>) -> Result<(), Unhandled> {
+    fn place(&mut self, first: SectionIndex, recorder: &mut Wants) -> Result<(), Unhandled> {
         let mut pending = vec![first];
         while let Some(index) = pending.pop() {
             if self.placed.contains_key(&index) {
@@ -362,7 +362,7 @@ impl<'data> Emitted<'data> {
 
     /// Fills in what points from one part of the code into another, and turns the rest into
     /// relocations against requests.
-    fn relocate(&mut self, recorder: &mut Recorder<'_>) -> Result<(), Unhandled> {
+    fn relocate(&mut self, recorder: &mut Wants) -> Result<(), Unhandled> {
         for &index in &self.inline {
             let section = self.file.section_by_index(index)?;
             let Placement::Inline(base) = self.placed[&index] else { continue };
@@ -455,11 +455,7 @@ impl<'data> Emitted<'data> {
     /// Lays out the function's section. Every other section its relocations lead to is a
     /// data object of its own: AArch64 code finds what is near it by the page it is on,
     /// which only the linker knows.
-    fn place_paged(
-        &mut self,
-        text: SectionIndex,
-        recorder: &mut Recorder<'_>,
-    ) -> Result<(), Unhandled> {
+    fn place_paged(&mut self, text: SectionIndex, recorder: &mut Wants) -> Result<(), Unhandled> {
         let section = self.file.section_by_index(text)?;
         self.align = section.align().max(1);
         self.bytes.extend_from_slice(section.data()?);
@@ -548,7 +544,7 @@ impl<'data> Emitted<'data> {
 
     /// Turns the relocations of the function into relocations against requests and against
     /// the data objects its constants became.
-    fn relocate_paged(&mut self, recorder: &mut Recorder<'_>) -> Result<(), Unhandled> {
+    fn relocate_paged(&mut self, recorder: &mut Wants) -> Result<(), Unhandled> {
         let section = self.file.section_by_index(self.inline[0])?;
         for (offset, relocation) in section.relocations() {
             let kind = match relocation.flags() {
@@ -613,7 +609,7 @@ impl<'data> Emitted<'data> {
     }
 
     /// What an undefined symbol of the object stands for.
-    fn target(name: &str, recorder: &mut Recorder<'_>) -> Result<ModuleRelocTarget, Unhandled> {
+    fn target(name: &str, recorder: &mut Wants) -> Result<ModuleRelocTarget, Unhandled> {
         if let Some(symbol) = Symbol::parse(name) {
             return Ok(match symbol {
                 Symbol::Func(index) => ModuleRelocTarget::user(0, index),

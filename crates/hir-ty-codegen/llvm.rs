@@ -1,8 +1,11 @@
 //! LLVM as the producer of a function's machine code.
 //!
-//! 1. [`lower`] turns the Cranelift IR of the function into a module of one LLVM function.
-//!    What the function refers to is declared there under the names of [`Symbol`].
-//! 2. LLVM optimizes the module, if asked to, and writes an object file into memory.
+//! 1. [`lower`] turns the Cranelift IR of the function into an LLVM function of a module of
+//!    its own. What the function refers to is declared there under the names of [`Symbol`];
+//!    the bodies of callees LLVM is shown are functions beside it ([`shown_name`]), and on
+//!    Mach-O the function is built into a [`wrap`]per.
+//! 2. LLVM optimizes the module, if asked to, the bodies shown give way to the functions
+//!    they are of ([`unshow`]), and LLVM writes an object file into memory.
 //! 3. [`emitted`] reads the object back: the code, the constants LLVM put beside it, the
 //!    relocations, with their [`Symbol`]s turned back into requests, and the unwind table.
 //!
@@ -14,31 +17,38 @@ use std::{cell::RefCell, collections::hash_map::Entry, fmt, sync::Once};
 use cranelift_codegen::ir::{self, Opcode, Type};
 use inkwell::{
     OptimizationLevel,
+    attributes::{Attribute, AttributeLoc},
     context::Context,
     llvm_sys::support::LLVMParseCommandLineOptions,
+    module::{Linkage, Module},
     passes::PassBuilderOptions,
     targets::{
         CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine, TargetTriple,
     },
+    values::FunctionValue,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::{
     Arch,
     backend::{Optimization, Passes, Phase, Selection, Tally},
-    fragment::{Code, Recorder},
+    fragment::{Code, Wants},
 };
 
 mod emitted;
 mod lower;
 
+use lower::{Defined, Lowering};
+
 /// The name of the function being compiled, in the module and in the object.
 const OWN: &str = "ra-jit.own";
 const PERSONALITY: &str = "rust_eh_personality";
 
-/// `weights`, from what code of the function counted while it ran, become its `!prof`.
+/// `named` are the slots of the locals with a name. `weights`, from what code of the function
+/// counted while it ran, become its `!prof`.
 pub(super) fn emit(
-    recorder: &mut Recorder<'_>,
+    recorder: &mut Wants,
+    named: &[ir::StackSlot],
     func: &ir::Function,
     optimization: Optimization,
     weights: Option<&super::tier::Weights>,
@@ -54,17 +64,77 @@ pub(super) fn emit(
     } else {
         optimization
     };
+    let seen = std::mem::take(&mut recorder.seen);
+    // Without a line table to keep (see `lower::Marks`), and where a parameter is the only
+    // way to its memory.
+    let wrapped = optimization.pipeline().is_some()
+        && recorder.pointees.iter().any(|(_, it)| it.unique)
+        && super::Target::selected().is_ok_and(|it| it.object_format == super::ObjectFormat::MachO);
     Machine::with(optimization, |context, machine| {
         let module = context.create_module("ra-jit");
-        let named: Vec<ir::StackSlot> = recorder.named_slots().collect();
         module.set_triple(&machine.get_triple());
         module.set_data_layout(&machine.get_target_data().get_data_layout());
         let constants: FxHashMap<u32, &[u8]> = recorder.constants().collect();
         let statics: FxHashSet<u32> = recorder.statics().collect();
-        tally.time(Phase::Lower, || {
-            lower::Lowering::lower(context, &module, func, &named, &constants, &statics, weights)
+        let shown = tally.time(Phase::Lower, || {
+            let own = Defined {
+                name: if wrapped { INNER } else { OWN },
+                func,
+                pointees: &recorder.pointees,
+                named,
+                weights,
+                marked: true,
+            };
+            let names: Vec<String> = seen.iter().map(|it| shown_name(it.id.as_u32())).collect();
+            let shown: Vec<Defined<'_>> = std::iter::zip(&seen, &names)
+                .map(|(it, name)| Defined {
+                    name,
+                    func: &it.func,
+                    pointees: &it.pointees,
+                    named: &[],
+                    weights: None,
+                    marked: false,
+                })
+                .collect();
+            let function = Lowering::add(context, &module, &own)?;
+            // Every body shown is declared before any is defined, as one may call another.
+            let mut by_id = FxHashMap::default();
+            for (it, defined) in std::iter::zip(&seen, &shown) {
+                if let Ok(function) = Lowering::add(context, &module, defined) {
+                    if it.never {
+                        let never = Attribute::get_named_enum_kind_id("noinline");
+                        function.add_attribute(
+                            AttributeLoc::Function,
+                            context.create_enum_attribute(never, 0),
+                        );
+                    }
+                    by_id.insert(it.id.as_u32(), function);
+                }
+            }
+            let empty = FxHashMap::default();
+            for (it, defined) in std::iter::zip(&seen, &shown) {
+                let Some(&function) = by_id.get(&it.id.as_u32()) else { continue };
+                // A body that is not lowered is a declaration, which `unshow` replaces.
+                let defined = Lowering::define(
+                    context, &module, function, defined, &constants, &statics, &empty,
+                );
+                if defined.is_err() {
+                    by_id.remove(&it.id.as_u32());
+                    // SAFETY: nothing refers to it yet: the bodies shown call the functions
+                    // themselves, and the function being compiled is defined last.
+                    unsafe { function.delete() };
+                }
+            }
+            Lowering::define(context, &module, function, &own, &constants, &statics, &by_id)?;
+            if wrapped {
+                wrap(context, &module, function, weights)?;
+            }
+            Ok::<_, Unhandled>(by_id)
         })?;
-        if std::env::var_os("RA_JIT_DUMP_LLVM").is_some() {
+        // `RA_JIT_DUMP_LLVM=after` prints the IR as the passes left it, anything else as it
+        // goes in.
+        let dump = std::env::var("RA_JIT_DUMP_LLVM").ok();
+        if dump.as_deref().is_some_and(|it| it != "after") {
             eprintln!("{}", module.print_to_string().to_string_lossy());
         }
         // LLVM aborts the process on IR it does not accept, so it is checked first.
@@ -78,6 +148,13 @@ pub(super) fn emit(
                 })
                 .map_err(|e| Unhandled::Llvm(e.to_string_lossy().into_owned()))?;
         }
+        unshow(&module, &shown);
+        if module.get_function(INNER).is_some() {
+            return Err(Unhandled::Shape("a body not built into the function that calls it"));
+        }
+        if dump.as_deref() == Some("after") {
+            eprintln!("{}", module.print_to_string().to_string_lossy());
+        }
         let object = tally
             .time(Phase::Emit, || machine.write_to_memory_buffer(&module, FileType::Object))
             .map_err(|e| Unhandled::Llvm(e.to_string_lossy().into_owned()))?;
@@ -85,6 +162,72 @@ pub(super) fn emit(
             emitted::Emitted::code(object.as_slice(), func.signature.clone(), recorder)
         })
     })
+}
+
+/// The function being compiled, when it is [`wrap`]ped.
+const INNER: &str = "ra-jit.inner";
+
+/// Has the function being compiled, `inner`, called by one that only calls it, under the
+/// name [`OWN`], with the same parameters, and built into that one.
+///
+/// LLVM builds a function into its caller by telling each access through a `noalias`
+/// parameter from those that cannot be through it (`!alias.scope`, `!noalias`): a call of
+/// a function that is not passed the address cannot reach the memory if the address did
+/// not escape before the call, which it works out along the paths through the function.
+/// Its loop passes, which take an address that escapes anywhere in the function to escape
+/// everywhere, know then that a call in a loop of `&mut self`'s fields leaves the fields
+/// alone when `self` is passed on only after the loop.
+fn wrap<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    inner: FunctionValue<'ctx>,
+    weights: Option<&super::tier::Weights>,
+) -> Result<(), Unhandled> {
+    let outer = module.add_function(OWN, inner.get_type(), Some(Linkage::External));
+    let places = (0..inner.count_params()).map(AttributeLoc::Param);
+    for loc in [AttributeLoc::Function, AttributeLoc::Return].into_iter().chain(places) {
+        for attribute in inner.attributes(loc) {
+            outer.add_attribute(loc, attribute);
+        }
+    }
+    if let Some(weights) = weights {
+        lower::entry_count(context, outer, weights.entered);
+    }
+    inner.set_linkage(Linkage::Internal);
+    let always = Attribute::get_named_enum_kind_id("alwaysinline");
+    inner.add_attribute(AttributeLoc::Function, context.create_enum_attribute(always, 0));
+    let builder = context.create_builder();
+    builder.position_at_end(context.append_basic_block(outer, ""));
+    let args: Vec<_> = outer.get_param_iter().map(Into::into).collect();
+    let call = builder.build_direct_call(inner, &args, "")?;
+    match call.try_as_basic_value().basic() {
+        Some(returned) => builder.build_return(Some(&returned))?,
+        None => builder.build_return(None)?,
+    };
+    Ok(())
+}
+
+/// What the body of the requested function `id` that LLVM is shown is called in the module.
+/// No symbol of a program has such a name.
+fn shown_name(id: u32) -> String {
+    format!("ra-jit.a.{id}")
+}
+
+/// Has every call of a body shown that LLVM kept call the function itself, and drops the
+/// bodies: only the function being compiled is in the object. What LLVM made of the calls
+/// from what it read in the bodies holds of the functions, which are what the bodies are of
+/// (an edit of one sends the function being compiled back to level 1).
+fn unshow<'ctx>(module: &Module<'ctx>, shown: &FxHashMap<u32, FunctionValue<'ctx>>) {
+    for (&id, &body) in shown {
+        let name = Symbol::Func(id).to_string();
+        let function = module.get_function(&name).unwrap_or_else(|| {
+            module.add_function(&name, body.get_type(), Some(Linkage::External))
+        });
+        let address = body.as_global_value().as_pointer_value();
+        address.replace_all_uses_with(function.as_global_value().as_pointer_value());
+        // SAFETY: nothing refers to the body any more.
+        unsafe { body.delete() };
+    }
 }
 
 /// The object file LLVM's assembler makes of `text`, which is assembly in the syntax
@@ -148,12 +291,20 @@ impl Optimization {
     /// known; left to the default pipeline, such a slot is deleted whole and the variable it
     /// holds is lost to the debugger. So the slots are taken apart twice first, with the
     /// constants folded in between.
+    ///
+    /// Then branches are threaded. A call Cranelift built in returns through a block that
+    /// joins its returns, and the caller branches on what it returned there: an `Option`'s
+    /// discriminant. Left to the default pipeline, the join is folded into `select`s first,
+    /// and a loop over a range counts with `i + (i < n)`, which LLVM can neither unroll nor
+    /// prove an index of in bounds or free of overflow with. Threaded, it counts with `i + 1`.
     fn pipeline(self) -> Option<&'static str> {
         match self.passes {
             Passes::None => None,
             Passes::Less => Some("function(sroa,instsimplify,sroa),default<O1>"),
-            Passes::Default => Some("function(sroa,instsimplify,sroa),default<O2>"),
-            Passes::Aggressive => Some("function(sroa,instsimplify,sroa),default<O3>"),
+            Passes::Default => Some("function(sroa,instsimplify,sroa,jump-threading),default<O2>"),
+            Passes::Aggressive => {
+                Some("function(sroa,instsimplify,sroa,jump-threading),default<O3>")
+            }
         }
     }
 

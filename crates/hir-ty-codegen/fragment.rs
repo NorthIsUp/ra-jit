@@ -210,6 +210,20 @@ pub(super) struct Named {
     pub(super) pointer: Option<u32>,
 }
 
+/// What the Rust type of a parameter that is an address says of the memory there, which LLVM
+/// is told as rustc tells it: `nonnull`, `align`, `dereferenceable`, `noalias`, `readonly`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) struct Pointee {
+    /// Nothing reaches the memory but through this address while the function runs: a
+    /// `&mut T` of a `T` that is `Unpin`, or a `&T` of one without an `UnsafeCell`.
+    pub(super) unique: bool,
+    /// Nothing writes the memory while the function runs: a `&T` without an `UnsafeCell`.
+    pub(super) frozen: bool,
+    /// How many bytes from the address may be read at any time while the function runs.
+    pub(super) size: u64,
+    pub(super) align: u64,
+}
+
 /// The value of a static rustc exports no symbol for.
 #[derive(PartialEq, Hash)]
 pub struct CompiledStatic {
@@ -230,20 +244,42 @@ pub(super) struct Mark {
 pub(super) struct Inlinable {
     pub(super) func: ir::Function,
     pub(super) requests: Requests,
+    /// What its parameters point to, as [`Recorder::pointees`].
+    pub(super) pointees: Vec<(u32, Pointee)>,
+    /// The bodies of what it calls that LLVM is shown, as [`Recorder::seen`].
+    pub(super) seen: Vec<Seen>,
 }
 
 impl Inlinable {
     /// `func` with `requests`, if a caller can ask for the same: each blob points only at
     /// what was asked for before it.
-    pub(super) fn of(func: ir::Function, requests: Requests) -> Option<Inlinable> {
+    pub(super) fn of(
+        func: ir::Function,
+        requests: Requests,
+        pointees: Vec<(u32, Pointee)>,
+        seen: Vec<Seen>,
+    ) -> Option<Inlinable> {
         let ordered = requests.datas.iter().enumerate().all(|(at, request)| match request {
             DataRequest::Blob { blob, .. } | DataRequest::Vtable { blob, .. } => {
                 blob.relocs.iter().all(|it| (it.1.as_u32() as usize) < at)
             }
             _ => true,
         });
-        ordered.then_some(Inlinable { func, requests })
+        ordered.then_some(Inlinable { func, requests, pointees, seen })
     }
+}
+
+/// The body of a function the function being built calls, which LLVM is shown in a compile
+/// at a level above 1 (see `tier::seen_body`): it builds the body in where it finds that
+/// worth it, and knows what a call it keeps does.
+#[derive(Clone)]
+pub(super) struct Seen {
+    /// The function the calls are of, among the requests.
+    pub(super) id: FuncId,
+    pub(super) func: ir::Function,
+    pub(super) pointees: Vec<(u32, Pointee)>,
+    /// It is `#[inline(never)]`.
+    pub(super) never: bool,
 }
 
 /// The namespace of the names of callees that are built into their callers. No relocation
@@ -258,9 +294,8 @@ pub(super) struct Recorder<'db> {
     pub(super) target: &'static Target,
     /// Whether the crate compiling the function has `-C overflow-checks`.
     pub(super) checked: bool,
-    requests: Requests,
-    funcs: FxHashMap<FuncRequest, FuncId>,
-    shared: FxHashMap<ConstBlob, DataId>,
+    /// What it asks for, which is all a producer of its code needs of this.
+    pub(super) wants: Wants,
     vtables: FxHashMap<(StoredTy, Option<(TraitId, StoredGenericArgs)>), DataId>,
     statics: FxHashMap<StaticId, DataId>,
     pub(super) layouts: Option<RefCell<FxHashMap<Ty<'db>, (u64, u64)>>>,
@@ -287,71 +322,22 @@ pub(super) struct Recorder<'db> {
     pub(super) opaque: bool,
 }
 
-impl<'db> Recorder<'db> {
-    /// The stack slots that hold a local written with a name.
-    pub(super) fn named_slots(&self) -> impl Iterator<Item = ir::StackSlot> + '_ {
-        self.named.iter().map(|it| it.slot)
-    }
+/// What a function asks for, as its IR is built and as a producer of its code adds to it:
+/// the part of a [`Recorder`] that has nothing of the database, which is all LLVM is run
+/// with.
+pub(super) struct Wants {
+    pub(super) isa: &'static dyn TargetIsa,
+    requests: Requests,
+    funcs: FxHashMap<FuncRequest, FuncId>,
+    shared: FxHashMap<ConstBlob, DataId>,
+    /// The parameters of the function that are addresses of memory its signature says
+    /// something of, by their place among the parameters of its IR.
+    pub(super) pointees: Vec<(u32, Pointee)>,
+    /// The bodies of functions it calls that LLVM is shown, in its names.
+    pub(super) seen: Vec<Seen>,
+}
 
-    pub(super) fn new(
-        db: &'db dyn HirDatabase,
-        isa: &'static dyn TargetIsa,
-        target: &'static Target,
-        checked: bool,
-    ) -> Self {
-        Recorder {
-            db,
-            isa,
-            target,
-            checked,
-            requests: Requests::default(),
-            funcs: FxHashMap::default(),
-            shared: FxHashMap::default(),
-            vtables: FxHashMap::default(),
-            statics: FxHashMap::default(),
-            layouts: std::env::var_os("RA_JIT_LAYOUTS").map(|_| Default::default()),
-            coroutine_layouts: RefCell::default(),
-            builder_ctx: FunctionBuilderContext::new(),
-            naked: None,
-            spans: Vec::new(),
-            span_ids: FxHashMap::default(),
-            named: Vec::new(),
-            inlined: Vec::new(),
-            unlocated: false,
-            opaque: false,
-        }
-    }
-
-    /// What marks an instruction as built for the statement at `span`.
-    pub(super) fn source_loc(&mut self, span: MirSpan) -> ir::SourceLoc {
-        if span == MirSpan::Unknown || self.unlocated {
-            return ir::SourceLoc::default();
-        }
-        let next = self.spans.len() as u32;
-        let id = *self.span_ids.entry(span).or_insert(next);
-        if id == next {
-            self.spans.push(span);
-        }
-        LineRow::source_loc(id)
-    }
-
-    /// The statements that [`Self::source_loc`] gave marks for, in the order of the marks.
-    pub(super) fn take_spans(&mut self) -> Vec<MirSpan> {
-        std::mem::take(&mut self.spans)
-    }
-
-    pub(super) fn finish(self) -> (Requests, Vec<(String, u64, u64)>) {
-        let mut layouts: Vec<(String, u64, u64)> = self.layouts.map_or_else(Vec::new, |layouts| {
-            layouts
-                .into_inner()
-                .into_iter()
-                .map(|(ty, (size, align))| (format!("{ty:?}"), size, align))
-                .collect()
-        });
-        layouts.extend(self.coroutine_layouts.into_inner());
-        (self.requests, layouts)
-    }
-
+impl Wants {
     /// The bytes of each data object asked for so far that is read-only and points nowhere,
     /// by its place among the requests: what a load from it is known to give.
     #[cfg(feature = "llvm")]
@@ -404,25 +390,6 @@ impl<'db> Recorder<'db> {
         id
     }
 
-    /// The function to call for `def` instantiated with `args`.
-    pub(super) fn callee(
-        &mut self,
-        def: InstanceDef,
-        args: GenericArgs<'db>,
-        env: ParamEnvAndCrate<'db>,
-        sig: &Signature,
-    ) -> Result<FuncId> {
-        // Lifetimes change nothing about the code, and the ones a caller passes on are its
-        // own parameters, which mean nothing in the callee.
-        let interner = DbInterner::new_with(self.db, env.krate);
-        let args = rustc_type_ir::fold_regions(interner, args, |region, _| match region.kind() {
-            rustc_type_ir::RegionKind::ReBound(..) => region,
-            _ => Region::new_erased(interner),
-        });
-        let instance = Instance { def, args: args.store(), checked: self.checked };
-        Ok(self.func(FuncTarget::Instance(instance, env.store()), sig))
-    }
-
     pub(super) fn import(&mut self, symbol: &str, sig: &Signature) -> Result<FuncId> {
         Ok(self.func(FuncTarget::Symbol(symbol.to_owned()), sig))
     }
@@ -454,6 +421,161 @@ impl<'db> Recorder<'db> {
         let id = self.data(DataRequest::Blob { blob: blob.clone(), identity });
         self.shared.insert(blob, id);
         id
+    }
+
+    pub(super) fn make_signature(&self) -> Signature {
+        Signature::new(self.isa.default_call_conv())
+    }
+
+    /// Whether what another object defines is reached as what this one does: the linker of
+    /// a PE image puts a stub where an import is called, and there is no other way.
+    fn within_image(&self) -> bool {
+        self.isa.triple().binary_format == target_lexicon::BinaryFormat::Coff
+    }
+
+    /// Whether a call names its callee in place, for the linker to send through a stub of
+    /// its own when the callee turns out to be another library's, rather than load the
+    /// callee's address from a slot first. An x86-64 ELF linker does that for a `call`.
+    fn calls_in_place(&self) -> bool {
+        let triple = self.isa.triple();
+        self.within_image()
+            || (triple.binary_format == target_lexicon::BinaryFormat::Elf
+                && triple.architecture == target_lexicon::Architecture::X86_64)
+    }
+
+    /// Names a requested function in `func`, to call it. Whether the function ends up in
+    /// this object is not known here.
+    pub(super) fn declare_func_in_func(&self, id: FuncId, func: &mut ir::Function) -> ir::FuncRef {
+        self.declare_func(id, func, self.calls_in_place())
+    }
+
+    /// Names a requested function in `func`, to take its address: it is reached the way a
+    /// function of another object is, which a call need not be.
+    pub(super) fn declare_func_address_in_func(
+        &self,
+        id: FuncId,
+        func: &mut ir::Function,
+    ) -> ir::FuncRef {
+        self.declare_func(id, func, self.within_image())
+    }
+
+    fn declare_func(&self, id: FuncId, func: &mut ir::Function, colocated: bool) -> ir::FuncRef {
+        let signature =
+            func.import_signature(self.requests.funcs[id.as_u32() as usize].sig.clone());
+        let name = func.declare_imported_user_function(ir::UserExternalName {
+            namespace: 0,
+            index: id.as_u32(),
+        });
+        func.import_function(ir::ExtFuncData {
+            name: ir::ExternalName::user(name),
+            signature,
+            colocated,
+            patchable: false,
+        })
+    }
+}
+
+impl<'db> std::ops::Deref for Recorder<'db> {
+    type Target = Wants;
+
+    fn deref(&self) -> &Wants {
+        &self.wants
+    }
+}
+
+impl<'db> std::ops::DerefMut for Recorder<'db> {
+    fn deref_mut(&mut self) -> &mut Wants {
+        &mut self.wants
+    }
+}
+
+impl<'db> Recorder<'db> {
+    /// The stack slots that hold a local written with a name.
+    pub(super) fn named_slots(&self) -> impl Iterator<Item = ir::StackSlot> + '_ {
+        self.named.iter().map(|it| it.slot)
+    }
+
+    pub(super) fn new(
+        db: &'db dyn HirDatabase,
+        isa: &'static dyn TargetIsa,
+        target: &'static Target,
+        checked: bool,
+    ) -> Self {
+        Recorder {
+            db,
+            isa,
+            target,
+            checked,
+            wants: Wants {
+                isa,
+                requests: Requests::default(),
+                funcs: FxHashMap::default(),
+                shared: FxHashMap::default(),
+                pointees: Vec::new(),
+                seen: Vec::new(),
+            },
+            vtables: FxHashMap::default(),
+            statics: FxHashMap::default(),
+            layouts: std::env::var_os("RA_JIT_LAYOUTS").map(|_| Default::default()),
+            coroutine_layouts: RefCell::default(),
+            builder_ctx: FunctionBuilderContext::new(),
+            naked: None,
+            spans: Vec::new(),
+            span_ids: FxHashMap::default(),
+            named: Vec::new(),
+            inlined: Vec::new(),
+            unlocated: false,
+            opaque: false,
+        }
+    }
+
+    /// What marks an instruction as built for the statement at `span`.
+    pub(super) fn source_loc(&mut self, span: MirSpan) -> ir::SourceLoc {
+        if span == MirSpan::Unknown || self.unlocated {
+            return ir::SourceLoc::default();
+        }
+        let next = self.spans.len() as u32;
+        let id = *self.span_ids.entry(span).or_insert(next);
+        if id == next {
+            self.spans.push(span);
+        }
+        LineRow::source_loc(id)
+    }
+
+    /// The statements that [`Self::source_loc`] gave marks for, in the order of the marks.
+    pub(super) fn take_spans(&mut self) -> Vec<MirSpan> {
+        std::mem::take(&mut self.spans)
+    }
+
+    pub(super) fn finish(self) -> (Requests, Vec<(String, u64, u64)>) {
+        let mut layouts: Vec<(String, u64, u64)> = self.layouts.map_or_else(Vec::new, |layouts| {
+            layouts
+                .into_inner()
+                .into_iter()
+                .map(|(ty, (size, align))| (format!("{ty:?}"), size, align))
+                .collect()
+        });
+        layouts.extend(self.coroutine_layouts.into_inner());
+        (self.wants.requests, layouts)
+    }
+
+    /// The function to call for `def` instantiated with `args`.
+    pub(super) fn callee(
+        &mut self,
+        def: InstanceDef,
+        args: GenericArgs<'db>,
+        env: ParamEnvAndCrate<'db>,
+        sig: &Signature,
+    ) -> Result<FuncId> {
+        // Lifetimes change nothing about the code, and the ones a caller passes on are its
+        // own parameters, which mean nothing in the callee.
+        let interner = DbInterner::new_with(self.db, env.krate);
+        let args = rustc_type_ir::fold_regions(interner, args, |region, _| match region.kind() {
+            rustc_type_ir::RegionKind::ReBound(..) => region,
+            _ => Region::new_erased(interner),
+        });
+        let instance = Instance { def, args: args.store(), checked: self.checked };
+        Ok(self.func(FuncTarget::Instance(instance, env.store()), sig))
     }
 
     pub(super) fn vtable(
@@ -499,10 +621,6 @@ impl<'db> Recorder<'db> {
         self.data(DataRequest::Text(parts))
     }
 
-    pub(super) fn make_signature(&self) -> Signature {
-        Signature::new(self.isa.default_call_conv())
-    }
-
     pub(super) fn target_config(&self) -> cranelift_codegen::isa::TargetFrontendConfig {
         let config = self.isa.frontend_config();
         // The ISA is only there for its calling convention: WebAssembly's pointers are 32 bits.
@@ -514,19 +632,9 @@ impl<'db> Recorder<'db> {
         config
     }
 
-    /// Whether what another object defines is reached as what this one does: the linker of
-    /// a PE image puts a stub where an import is called, and there is no other way.
-    fn within_image(&self) -> bool {
-        self.isa.triple().binary_format == target_lexicon::BinaryFormat::Coff
-    }
-
-    /// Declares in `func` a callee whose body is put where it is called: `body`, with what
-    /// it asked for asked for here.
-    pub(super) fn declare_inlined(
-        &mut self,
-        body: &Inlinable,
-        func: &mut ir::Function,
-    ) -> ir::FuncRef {
+    /// Puts what `body` asks for among what this function asks for, and gives `body` as it
+    /// is in this function's names, with the bodies it shows LLVM moved among this one's.
+    fn moved(&mut self, body: &Inlinable) -> ir::Function {
         let funcs: Vec<FuncId> =
             body.requests.funcs.iter().map(|it| self.func(it.target.clone(), &it.sig)).collect();
         let mut datas: Vec<DataId> = Vec::with_capacity(body.requests.datas.len());
@@ -565,21 +673,42 @@ impl<'db> Recorder<'db> {
             };
             datas.push(id);
         }
-        let mut callee = body.func.clone();
-        let names: Vec<_> =
-            callee.params.user_named_funcs().iter().map(|(name, it)| (name, it.clone())).collect();
-        for (name, was) in names {
-            let index = match was.namespace {
-                0 => funcs[was.index as usize].as_u32(),
-                1 => datas[was.index as usize].as_u32(),
-                // A callee that was put in this one, which nothing calls any more.
-                _ => continue,
-            };
-            callee.params.reset_user_func_name(
-                name,
-                ir::UserExternalName { namespace: was.namespace, index },
-            );
+        let rename = |func: &ir::Function| {
+            let mut func = func.clone();
+            let names: Vec<_> =
+                func.params.user_named_funcs().iter().map(|(name, it)| (name, it.clone())).collect();
+            for (name, was) in names {
+                let index = match was.namespace {
+                    0 => funcs[was.index as usize].as_u32(),
+                    1 => datas[was.index as usize].as_u32(),
+                    // A callee that was put in this one, which nothing calls any more.
+                    _ => continue,
+                };
+                func.params.reset_user_func_name(
+                    name,
+                    ir::UserExternalName { namespace: was.namespace, index },
+                );
+            }
+            func
+        };
+        for seen in &body.seen {
+            let id = funcs[seen.id.as_u32() as usize];
+            if !self.seen.iter().any(|it| it.id == id) {
+                let func = rename(&seen.func);
+                self.seen.push(Seen { id, func, pointees: seen.pointees.clone(), never: seen.never });
+            }
         }
+        rename(&body.func)
+    }
+
+    /// Declares in `func` a callee whose body is put where it is called: `body`, with what
+    /// it asked for asked for here.
+    pub(super) fn declare_inlined(
+        &mut self,
+        body: &Inlinable,
+        func: &mut ir::Function,
+    ) -> ir::FuncRef {
+        let callee = self.moved(body);
         let signature = func.import_signature(callee.signature.clone());
         let name = func.declare_imported_user_function(ir::UserExternalName {
             namespace: INLINED,
@@ -594,45 +723,13 @@ impl<'db> Recorder<'db> {
         })
     }
 
-    /// Whether a call names its callee in place, for the linker to send through a stub of
-    /// its own when the callee turns out to be another library's, rather than load the
-    /// callee's address from a slot first. An x86-64 ELF linker does that for a `call`.
-    fn calls_in_place(&self) -> bool {
-        let triple = self.isa.triple();
-        self.within_image()
-            || (triple.binary_format == target_lexicon::BinaryFormat::Elf
-                && triple.architecture == target_lexicon::Architecture::X86_64)
-    }
-
-    /// Names a requested function in `func`, to call it. Whether the function ends up in
-    /// this object is not known here.
-    pub(super) fn declare_func_in_func(&self, id: FuncId, func: &mut ir::Function) -> ir::FuncRef {
-        self.declare_func(id, func, self.calls_in_place())
-    }
-
-    /// Names a requested function in `func`, to take its address: it is reached the way a
-    /// function of another object is, which a call need not be.
-    pub(super) fn declare_func_address_in_func(
-        &self,
-        id: FuncId,
-        func: &mut ir::Function,
-    ) -> ir::FuncRef {
-        self.declare_func(id, func, self.within_image())
-    }
-
-    fn declare_func(&self, id: FuncId, func: &mut ir::Function, colocated: bool) -> ir::FuncRef {
-        let signature =
-            func.import_signature(self.requests.funcs[id.as_u32() as usize].sig.clone());
-        let name = func.declare_imported_user_function(ir::UserExternalName {
-            namespace: 0,
-            index: id.as_u32(),
-        });
-        func.import_function(ir::ExtFuncData {
-            name: ir::ExternalName::user(name),
-            signature,
-            colocated,
-            patchable: false,
-        })
+    /// Shows LLVM `body` as what the requested function `id` does: see [`Seen`].
+    pub(super) fn declare_seen(&mut self, id: FuncId, body: &Inlinable, never: bool) {
+        if self.seen.iter().any(|it| it.id == id) {
+            return;
+        }
+        let func = self.moved(body);
+        self.seen.push(Seen { id, func, pointees: body.pointees.clone(), never });
     }
 
     pub(super) fn declare_data_in_func(

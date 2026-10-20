@@ -207,11 +207,21 @@ impl StoredCode {
         func: &cranelift_codegen::ir::Function,
         named: impl Iterator<Item = cranelift_codegen::ir::StackSlot>,
         constants: impl Iterator<Item = (u32, &'a [u8])>,
+        pointees: &[(u32, super::fragment::Pointee)],
     ) -> Option<[u8; KEY]> {
         let isa = super::target().ok()?;
         let ir = cranelift_codegen::incremental_cache::compute_cache_key(&**isa, func);
         let mut hasher = Sha256::new();
-        hasher.update(b"ra-jit llvm 6");
+        hasher.update(b"ra-jit llvm 7");
+        // Nor what the types of the parameters say of the memory they point to.
+        for (at, pointee) in pointees {
+            let super::fragment::Pointee { unique, frozen, size, align } = *pointee;
+            hasher.update(at.to_le_bytes());
+            hasher.update([u8::from(unique), u8::from(frozen)]);
+            hasher.update(size.to_le_bytes());
+            hasher.update(align.to_le_bytes());
+        }
+        hasher.update(u32::MAX.to_le_bytes());
         hasher.update(super::Backend::Llvm(optimization).to_string());
         hasher.update(ir.to_string());
         // Nor does it tell which statement an instruction is of, which the code's lines do.
@@ -243,7 +253,7 @@ impl StoredCode {
     /// `code` as it can be kept, if everything asked for since `mark` is of a kind that is.
     pub(super) fn of(
         code: &Code,
-        recorder: &super::fragment::Recorder<'_>,
+        recorder: &super::fragment::Wants,
         mark: super::fragment::Mark,
     ) -> Option<StoredCode> {
         use super::fragment::{DataRequest, FuncTarget};
@@ -276,7 +286,7 @@ impl StoredCode {
     }
 
     /// The code, with what LLVM asked for asked of `recorder` again.
-    pub(super) fn restore(self, recorder: &mut super::fragment::Recorder<'_>) -> Option<Code> {
+    pub(super) fn restore(self, recorder: &mut super::fragment::Wants) -> Option<Code> {
         if !self.sound(recorder.mark()) {
             return None;
         }
