@@ -12,11 +12,11 @@ nix run github:indexable-inc/ra-jit
 
 Edit the source on the right and the Game of Life on the left changes on the next frame, with its state intact. A toggle switches to a real `cargo build` per edit for comparison.
 
-> [!IMPORTANT]
-> **There are no plans for long-term support of ra-jit. [rustd](https://github.com/DioxusLabs/rustd) was published at almost the same time (its first commit is 2026-10-18, ra-jit's is 2026-10-19), we weren't aware of it when we built this, and you should probably use that instead.** It takes the same approach (rust-analyzer front end, Cranelift, per-function recompiles on edit) and is further along: it works on real crates as a drop-in `cargo rustd build/run/test`, while ra-jit only runs a small subset of Rust.
-
 > [!WARNING]
 > **This is an experiment.** It only runs what rust-analyzer can lower to MIR and what ra-jit can translate. Today that is a small subset of Rust: no `dyn`, closures, heap, `std`/`fmt`, drops, unwinding or real `i128`, and no overflow or bounds checks. rust-analyzer has only partial borrow checking, so code rustc rejects may still run here. Keep running `cargo check`; rustc + LLVM stay the compiler for release builds and CI.
+
+> [!NOTE]
+> **Alternative:** [rustd](https://github.com/DioxusLabs/rustd) takes the same approach (rust-analyzer front end, Cranelift, per-function recompiles on edit) and is more advanced: it works on real crates as a drop-in `cargo rustd build/run/test`. We have no plans for long-term support of ra-jit. We didn't know about rustd when we built it (the two were published within a day of each other), so you probably want rustd.
 
 ## How it works
 
