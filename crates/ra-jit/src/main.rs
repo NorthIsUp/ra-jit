@@ -3489,14 +3489,7 @@ fn build_batch(db: &RootDatabase, args: Args) -> anyhow::Result<()> {
         let error = match built {
             Ok(Ok(_)) => continue,
             Ok(Err(error)) => format!("error: {error:#}"),
-            Err(panic) => {
-                let message = panic
-                    .downcast_ref::<String>()
-                    .map(String::as_str)
-                    .or_else(|| panic.downcast_ref::<&str>().copied())
-                    .unwrap_or("panic");
-                format!("panicked: {message}")
-            }
+            Err(panic) => format!("panicked: {}", panic_message(&*panic)),
         };
         std::fs::write(report.join(format!("{krate}.error")), error)?;
     }
@@ -5527,7 +5520,7 @@ fn run_holding(
                     let answer = match answer {
                         _ if INTERRUPTING.load(Ordering::SeqCst) => None,
                         Ok(answer) => Some(answer),
-                        Err(_) => Some(Err(anyhow::anyhow!("a build panicked"))),
+                        Err(panic) => Some(Ok(program.panicked(&*panic))),
                     };
                     let _ = sender.send(Event::Built(at, program, answer));
                 });
@@ -5537,35 +5530,32 @@ fn run_holding(
         // The programs asked for are built side by side: nothing is written to the database
         // until all of them are done, so none is interrupted.
         let answers = loop {
-            let answers: Vec<(usize, anyhow::Result<Result<String, String>>)> =
-                std::thread::scope(|scope| {
-                    let builds: Vec<_> = programs
-                        .iter_mut()
-                        .enumerate()
-                        .filter(|(at, program)| building.contains(at) && program.unbuilt.stale)
-                        .map(|(at, program)| {
-                            // The program is linked unless every client of it loads the patch.
-                            let link = !clients.iter().any(|it| it.0 == at)
-                                || clients.iter().any(|it| it.0 == at && it.1.0 != Request::Patch);
-                            let link = link && !detached;
-                            let (db, listed, paths, edit) = (db.clone(), &*listed, &*paths, &edit);
-                            let wanted = outputs.get(&at);
-                            let build = scope.spawn(move || {
-                                program.sync(&db, listed, paths, edit, wanted, link)
-                            });
-                            (at, build)
-                        })
-                        .collect();
-                    builds
-                        .into_iter()
-                        .map(|(at, build)| {
-                            let answer = build
-                                .join()
-                                .unwrap_or_else(|_| Err(anyhow::anyhow!("a build panicked")));
-                            (at, answer)
-                        })
-                        .collect()
-                });
+            let answers = std::thread::scope(|scope| {
+                let builds: Vec<_> = programs
+                    .iter_mut()
+                    .enumerate()
+                    .filter(|(at, program)| building.contains(at) && program.unbuilt.stale)
+                    .map(|(at, program)| {
+                        // The program is linked unless every client of it loads the patch.
+                        let link = !clients.iter().any(|it| it.0 == at)
+                            || clients.iter().any(|it| it.0 == at && it.1.0 != Request::Patch);
+                        let link = link && !detached;
+                        let (db, listed, paths, edit) = (db.clone(), &*listed, &*paths, &edit);
+                        let wanted = outputs.get(&at);
+                        let build = scope
+                            .spawn(move || program.sync(&db, listed, paths, edit, wanted, link));
+                        (at, build)
+                    })
+                    .collect();
+                builds.into_iter().map(|(at, build)| (at, build.join())).collect::<Vec<_>>()
+            });
+            let answers: Vec<(usize, anyhow::Result<Result<String, String>>)> = answers
+                .into_iter()
+                .map(|(at, answer)| match answer {
+                    Ok(answer) => (at, answer),
+                    Err(panic) => (at, Ok(programs[at].panicked(&*panic))),
+                })
+                .collect();
             // An `env!` the builds were the first to see was told the place of the loaded
             // checkout.
             let late: Vec<_> = viewed
@@ -5767,7 +5757,30 @@ struct Edit {
     changed: usize,
 }
 
+/// What a panic said, from what it unwound with.
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> &str {
+    panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .unwrap_or("no message")
+}
+
 impl Program {
+    /// Takes a build that panicked as the build's error, not the worker's: the clients are
+    /// told why, the worker stays, and the next build is a whole one, since what the build
+    /// left of the patch base and of the executable may be half written.
+    fn panicked(&mut self, panic: &(dyn std::any::Any + Send)) -> Result<String, String> {
+        let patching = self.known.patching;
+        self.known = Rejections::default();
+        self.known.patching = patching;
+        self.unbuilt.stale = true;
+        (self.wrote, self.whole) = (None, None);
+        let why = format!("a build of {} panicked: {}", self.args.krate, panic_message(panic));
+        eprintln!("{why}");
+        Err(why)
+    }
+
     /// Notes the crates rustc did not compile from the files this program is of, when it joins
     /// linked with what rustc built: of the first checkout, whose files as the daemon read them
     /// are `as_compiled`, or of its own checkout as it was when rustc built it.

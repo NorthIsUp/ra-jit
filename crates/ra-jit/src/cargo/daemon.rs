@@ -12,7 +12,7 @@ use std::{
     process::{Child, Command, Stdio},
     sync::{
         Arc, Mutex, MutexGuard, PoisonError,
-        atomic::{AtomicUsize, Ordering::Relaxed},
+        atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed},
     },
     time::{Duration, Instant, SystemTime},
 };
@@ -39,6 +39,13 @@ const TICK: Duration = Duration::from_secs(1);
 
 /// How often a worker that is loading is looked at.
 const POLL: Duration = Duration::from_millis(20);
+
+/// How long a worker that hung up without an answer is given to be seen to have exited: its
+/// socket closes as it exits, a moment before it can be waited for.
+const EXITING: Duration = Duration::from_secs(2);
+
+/// How many of the last lines of a worker's log the daemon's log shows when it ends.
+const LAST_LINES: usize = 12;
 
 /// The variable that has a worker end when its standard input does, which is when the
 /// daemon that started it is gone.
@@ -259,6 +266,8 @@ struct Worker {
     child: Mutex<Child>,
     checkouts: Mutex<FxHashMap<String, Loaded>>,
     asked: Mutex<Instant>,
+    /// Whether the daemon's log says it ended: it says so once.
+    noted: AtomicBool,
 }
 
 impl Worker {
@@ -331,27 +340,49 @@ impl Worker {
             child: Mutex::new(child),
             checkouts: Mutex::new(FxHashMap::from_iter([(checkout.key.clone(), loading)])),
             asked: Mutex::new(Instant::now()),
+            noted: AtomicBool::new(false),
         })
     }
 
-    /// Whether the process has ended, and how.
+    /// Whether the process has ended, and how: its exit status and what it said last.
     fn ended(&self) -> Option<String> {
-        let status = lock(&self.child).try_wait();
-        match status {
-            Ok(None) => None,
-            Ok(Some(status)) => Some(format!("{status}: {}", self.last_words())),
-            Err(error) => Some(error.to_string()),
+        let status = exited(&mut lock(&self.child));
+        status.map(|status| format!("{status}: {}", last_words(&self.log)))
+    }
+
+    /// Whether the process has ended, given `patience` to.
+    fn ended_within(&self, patience: Duration) -> Option<String> {
+        let asked = Instant::now();
+        loop {
+            match self.ended() {
+                None if asked.elapsed() < patience => std::thread::sleep(POLL),
+                ended => return ended,
+            }
         }
     }
 
-    /// The last line the worker logged that says what went wrong.
-    fn last_words(&self) -> String {
-        let log = std::fs::read_to_string(&self.log).unwrap_or_default();
-        let last = log.lines().rev().find(|it| it.starts_with("Error") || it.contains("panicked"));
-        last.or(log.lines().last()).unwrap_or("no output").to_owned()
+    /// Says in the daemon's log, once, that the process ended by itself: how, and the end
+    /// of its own log, which has what it panicked with.
+    fn note_end(&self) {
+        let (pid, status) = {
+            let mut child = lock(&self.child);
+            (child.id(), exited(&mut child))
+        };
+        let Some(status) = status else { return };
+        if self.noted.swap(true, Relaxed) {
+            return;
+        }
+        eprintln!(
+            "the worker of pid {pid} for {} ended ({status}); its log {} ends with:\n{}",
+            self.project.display(),
+            self.log.display(),
+            log_tail(&self.log)
+        );
     }
 
     fn stop(&self) {
+        // One that ended by itself says so before it goes.
+        self.note_end();
         let mut child = lock(&self.child);
         // One that has exited already has nothing to kill.
         let _ = child.kill();
@@ -401,7 +432,11 @@ impl Worker {
                 Ok(stream) => return Ok(stream),
                 Err(_) => {
                     if let Some(how) = self.ended() {
-                        anyhow::bail!("the daemon could not load the workspace ({how})");
+                        self.note_end();
+                        anyhow::bail!(
+                            "the daemon could not load the workspace ({how}); the worker's log is {}",
+                            self.log.display()
+                        );
                     }
                     std::thread::sleep(POLL);
                 }
@@ -412,9 +447,14 @@ impl Worker {
     /// Asks the process for `plan` of `checkout`. The outer error is the worker's failing,
     /// the inner one its answer that it does not build this.
     fn ask(&self, checkout: &Checkout, plan: &Plan) -> anyhow::Result<Result<String, String>> {
-        let failed = || match self.ended() {
-            Some(how) => format!("the daemon's worker ended ({how})"),
-            None => "the daemon's worker did not answer".to_owned(),
+        let failed = || match self.ended_within(EXITING) {
+            Some(how) => {
+                self.note_end();
+                format!("the daemon's worker ended ({how}); its log is {}", self.log.display())
+            }
+            None => {
+                format!("the daemon's worker did not answer; its log is {}", self.log.display())
+            }
         };
         let mut stream = self.connected()?;
         let mut env = self.env.clone();
@@ -599,12 +639,23 @@ pub(crate) fn socket_in(home: &Path) -> PathBuf {
 }
 
 /// What two processes have to agree on to talk: the version of the crate and the executable
-/// itself, so that a daemon of an older build of the same version is replaced too.
+/// itself, so that a daemon of an older build of the same version is replaced too. The
+/// executable is told by where it is as well as by its size and time: every build in the nix
+/// store has the same time, and two builds of a small change can have the same size, but no
+/// two have the same path.
 pub(crate) fn version() -> String {
-    let executable = std::env::current_exe().and_then(std::fs::metadata);
-    let built = executable.map(|it| (it.len(), it.modified().map_or(0, stamp_of)));
+    let executable = std::env::current_exe().and_then(std::fs::canonicalize);
+    let place: String = executable.as_ref().map_or_else(
+        |_| String::new(),
+        |it| {
+            let digest = Sha256::digest(it.as_os_str().as_encoded_bytes());
+            digest.iter().take(4).map(|it| format!("{it:02x}")).collect()
+        },
+    );
+    let built = executable.and_then(std::fs::metadata);
+    let built = built.map(|it| (it.len(), it.modified().map_or(0, stamp_of)));
     let (len, written) = built.unwrap_or_default();
-    format!("{}-{len:x}-{written:x}", env!("CARGO_PKG_VERSION"))
+    format!("{}-{place}-{len:x}-{written:x}", env!("CARGO_PKG_VERSION"))
 }
 
 /// `ra-jit daemon`: serves the user's builds until it has been idle for long enough or is
@@ -835,6 +886,11 @@ impl Daemon {
     fn reap(&self) {
         loop {
             std::thread::sleep(self.idle.map_or(TICK, |idle| idle.min(TICK)));
+            // A worker that ended by itself is in the daemon's log when it ends, not when a
+            // build next asks for it.
+            for worker in lock(&self.workers).values() {
+                worker.note_end();
+            }
             // The next spare starts when the worker that was one has loaded its workspace.
             let loading = lock(&self.workers).values().any(|it| it.loading());
             if !loading && lock(&self.ahead).is_empty() {
@@ -883,8 +939,14 @@ impl Daemon {
             return;
         }
         let mut spare = lock(&self.spare);
-        if spare.as_mut().is_some_and(|it| matches!(it.child.try_wait(), Ok(None))) {
-            return;
+        if let Some(old) = spare.as_mut() {
+            let Some(status) = exited(&mut old.child) else { return };
+            eprintln!(
+                "the spare worker of pid {} ended ({status}); its log {} ends with:\n{}",
+                old.child.id(),
+                old.log.display(),
+                log_tail(&old.log)
+            );
         }
         let dir = self.home.join("spares").join(self.spares.fetch_add(1, Relaxed).to_string());
         *spare = match Spare::start(&dir) {
@@ -911,6 +973,60 @@ impl Daemon {
         eprintln!("daemon of pid {} ends at {:?}", std::process::id(), SystemTime::now());
         std::process::exit(0)
     }
+}
+
+/// The exit status of a process that has ended, or why it can't be told.
+fn exited(child: &mut Child) -> Option<String> {
+    match child.try_wait() {
+        Ok(None) => None,
+        Ok(Some(status)) => Some(status.to_string()),
+        Err(error) => Some(format!("not known: {error}")),
+    }
+}
+
+/// The line of a worker's log that says what went wrong: what it panicked with, else the
+/// last error, else its last line.
+fn last_words(log: &Path) -> String {
+    let log = std::fs::read_to_string(log).unwrap_or_default();
+    let lines: Vec<&str> = log.lines().collect();
+    if let Some(at) = lines.iter().rposition(|it| it.contains(" panicked at ")) {
+        // `thread '…' panicked at <place>:`, and the message on the line after it.
+        let place = lines[at].split_once(" panicked at ").map_or(lines[at], |it| it.1);
+        let message = lines.get(at + 1).copied().unwrap_or_default();
+        return format!("panicked at {place} {message}");
+    }
+    let last = lines.iter().rev().find(|it| it.starts_with("Error"));
+    last.or(lines.last()).copied().unwrap_or("no output").to_owned()
+}
+
+/// The end of a worker's log, for the daemon's: where it panicked and with what, then its
+/// last lines without the frames of a backtrace, each indented.
+fn log_tail(log: &Path) -> String {
+    let text = std::fs::read_to_string(log).unwrap_or_default();
+    let lines: Vec<&str> = text.lines().collect();
+    let frame = |line: &str| {
+        let line = line.trim_start();
+        let numbered = line.split_once(':').is_some_and(|(number, _)| {
+            !number.is_empty() && number.bytes().all(|it| it.is_ascii_digit())
+        });
+        numbered || line.starts_with("at ") || line.to_lowercase().starts_with("stack backtrace")
+    };
+    let mut kept: Vec<&str> = match lines.iter().rposition(|it| it.contains(" panicked at ")) {
+        Some(at) => lines[at..].iter().take(2).copied().collect(),
+        None => Vec::new(),
+    };
+    let mut last: Vec<&str> =
+        lines.iter().rev().copied().filter(|it| !frame(it)).take(LAST_LINES).collect();
+    last.reverse();
+    for line in last {
+        if !kept.contains(&line) {
+            kept.push(line);
+        }
+    }
+    if kept.is_empty() {
+        return "  (nothing)".to_owned();
+    }
+    kept.iter().map(|it| format!("  {it}")).collect::<Vec<_>>().join("\n")
 }
 
 /// The lock, also after a thread panicked with it: what it guards is whole between any two
