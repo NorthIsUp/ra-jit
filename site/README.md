@@ -10,6 +10,16 @@ bun run build
 bun run deploy   # build + wrangler deploy
 ```
 
+## Benchmark history (`/bench`)
+
+Prerendered from `docs/benchmarks/history/*.jsonl` at the repo root, one line per benchmark run, appended by CI with
+`harness/benchhistory.py` (its docstring describes a line). `src/routes/bench/+page.server.ts` reads the files with
+`import.meta.glob` when the site is built, so a new line shows after the next deploy; the `site` workflow deploys on a
+change under `docs/benchmarks/`. Lines are grouped by machine, and the charts keep each machine's last 120 runs.
+
+To look at the page with other data, point `BENCH_HISTORY` at a directory of `.jsonl` files:
+`BENCH_HISTORY=/tmp/history bun run dev`.
+
 ## Signups (`/updates`)
 
 One row per email in `signups` (email lowercased; a repeat signup updates `company` and `why`, keeps the first-touch

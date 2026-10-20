@@ -26,7 +26,7 @@ All notable changes to ra-jit are written here. The format follows
   them on a dedicated Linux x86-64 machine after pushes to main and nightly, and commits the
   numbers to main when they moved beyond noise.
 - `harness/bench.py` measures what [#7](https://github.com/indexable-inc/ra-jit/issues/7)
-  asks of real projects: helix and a bevy example join the seven, every project gets two more
+  asks of real projects: helix, a bevy example and zed (1.7M lines) join the seven, every project gets two more
   edits (a new function, a struct field set wherever the struct is built), the cold build is
   run `--cold-runs` times against fresh cargo, each with an empty store, and as many times
   in a second checkout with the store the first filled, the store's size is kept, and `--tests`
@@ -45,6 +45,10 @@ All notable changes to ra-jit are written here. The format follows
   the runs before it on the same machine; the `bench-readme` workflow commits the history on
   every run, starts the site's deploy, and on a regression past the noise band opens (or
   comments on) an issue labelled `bench-regression` and fails.
+- [ra-jit.ix.dev/bench](https://ra-jit.ix.dev/bench): the benchmark history over commits, from
+  `docs/benchmarks/history`: the latest run's table per project, and charts of each edit,
+  the cold build, the daemon's peak memory, the store size and live edit-to-running latency
+  ([#10](https://github.com/indexable-inc/ra-jit/issues/10)).
 - LLVM is given what rustc gives it: reference parameters marked `noalias`, `readonly`,
   `dereferenceable`, `align`, `nonnull` and `noundef` as rustc marks them, addresses as
   pointers rather than integers, branches threaded before `-O3`, and, at a level above 1, the

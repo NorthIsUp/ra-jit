@@ -44,6 +44,7 @@ loop {
 			</tbody>
 		</table>
 	</div>
+	<p class="dim"><a href="/bench">Benchmark history</a>: every run on real projects, next to plain cargo.</p>
 
 	<h2>Try it</h2>
 	<Code lang="bash" text="nix run github:indexable-inc/ra-jit -- build" />
