@@ -1039,8 +1039,10 @@ def plain(work):
         compare = test_results if command == "test" else program_output
         wrong = difference(compare(mine), compare(other))
         if wrong and mine.returncode != other.returncode:
-            # How it ended is in what it said last: a signal has no other word.
-            wrong += f"; {mine.stderr.strip()[-600:]!r}"
+            # How it ended is in what it said last: a signal has no other word. Cargo's line
+            # with the whole command of a compiler that failed would leave no room for why.
+            said = "\n".join(line for line in mine.stderr.splitlines() if "process didn't exit successfully" not in line)
+            wrong += f"; {said.strip()[-1500:]!r}"
         return mine, here.how_built(mine.stderr), wrong
 
     first, how, wrong = same("run")
