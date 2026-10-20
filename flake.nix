@@ -91,13 +91,12 @@
         };
         daemonUnits = units ./nix/units/daemon.json;
         lifeUnits = units ./nix/units/life.json;
-        # ra-jit, cargo-ra-jit and ra-jit-rustc run each other from next to themselves; the
-        # toolchain comes along on PATH.
-        daemon-units = pkgs.runCommand "ra-jit-units" { nativeBuildInputs = [ pkgs.makeWrapper ]; } ''
+        # ra-jit, cargo-ra-jit and ra-jit-rustc run each other from next to themselves, found by
+        # their own path: the binaries are copied together, not wrapped or linked. The toolchain
+        # has to be on PATH (the launcher puts it there).
+        daemon-units = pkgs.runCommand "ra-jit-units" { } ''
           mkdir -p $out/bin
-          for bin in ${daemonUnits.bins}/bin/*; do
-            makeWrapper $bin $out/bin/$(basename $bin) --prefix PATH : ${rust}/bin
-          done
+          cp -L ${daemonUnits.bins}/bin/* $out/bin/
         '';
         life-bin = pkgs.runCommand "ra-jit-life-bin" { nativeBuildInputs = [ pkgs.makeWrapper ]; } ''
           mkdir -p $out/bin
