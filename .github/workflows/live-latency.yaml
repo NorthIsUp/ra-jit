@@ -51,7 +51,7 @@ jobs:
           for log in "$HOME"/.cache/ra-jit/workers/*/log "$HOME"/.cache/ra-jit/spares/*/log; do
             [ -f "$log" ] || continue
             echo "::group::$log (filtered)"
-            grep -E "request:|timeline-us|apply-us|splice-us|steps:|asked:|edit-to-binary|link:|live:|panicked|error" "$log" | cut -c1-400 | tail -300 || true
+            grep -E "request:|timeline-us|apply-us|splice|steps:|asked:|edit-to-binary|link:|live:|panicked|error" "$log" | cut -c1-400 | tail -300 || true
             echo "::endgroup::"
           done
       - uses: actions/upload-artifact@v4

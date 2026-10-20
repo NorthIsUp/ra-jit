@@ -28,23 +28,19 @@ impl BuildStatus {
             Some(Err(why)) => BuildStatus { ok: false, text: why.clone() },
         }
     }
-
-    /// How long the daemon took to build, as its answer says (`ms=N`).
-    fn ms(&self) -> Option<&str> {
-        self.text.split(' ').find_map(|it| it.strip_prefix("ms="))
-    }
 }
 
 struct App {
     life: Life,
-    /// What the thread that applies patches says, and the time from the keystroke to the
-    /// new code in place for an applied one.
-    applied: Receiver<(Outcome, Option<Duration>)>,
+    /// What the thread that applies patches says, and for an applied one the time from the
+    /// keystroke to the new code in place and the part of it the edit waited to be sent.
+    applied: Receiver<(Outcome, Option<(Duration, Duration)>)>,
     /// Whether live edits are on, or why not.
     live_note: String,
-    /// The last patch outcome, and keystroke-to-running time for an applied one.
+    /// The last patch outcome, and keystroke-to-running time for an applied one, with the
+    /// part of it the edit waited in the editor for the one before.
     outcome: Option<(String, bool)>,
-    edit_to_running: Option<Duration>,
+    edit_to_running: Option<(Duration, Duration)>,
     /// What applying the last patch took, and how long it waited to be applied.
     apply: Option<(Duration, Duration)>,
     patches: u64,
@@ -87,23 +83,22 @@ impl App {
         let t = self.theme;
         ui.horizontal_wrapped(|ui| {
             match (&self.outcome, self.edit_to_running) {
-                (Some((_, true)), Some(took)) => {
+                (Some((_, true)), Some((total, queued))) => {
+                    let ms = |it: Duration| it.as_secs_f64() * 1e3;
                     ui.heading(
-                        egui::RichText::new(format!(
-                            "edit to running: {:.1} ms",
-                            took.as_secs_f64() * 1e3
-                        ))
-                        .color(t.function),
+                        egui::RichText::new(format!("edit to running: {:.1} ms", ms(total)))
+                            .color(t.function),
                     );
-                    // Where the time went: the daemon's build, then the program's write.
-                    let mut parts = Vec::new();
-                    if let Some(ms) = self.build.ms() {
-                        parts.push(format!("build {ms} ms"));
-                    }
+                    // Where the time of this one edit went, adding up to it: waiting in the
+                    // editor for the edit before to be answered, the daemon's build and the
+                    // patch's way here, and the program's wait for its apply thread and the
+                    // apply (what ra-jit-live's line says too).
+                    let mut parts = vec![format!("in the editor {:.1} ms", ms(queued))];
                     if let Some((took, waited)) = self.apply {
-                        let ms = |it: Duration| it.as_secs_f64() * 1e3;
+                        let daemon = total.saturating_sub(queued + waited + took);
+                        parts.push(format!("daemon {:.1} ms", ms(daemon)));
+                        parts.push(format!("in the program {:.2} ms", ms(waited)));
                         parts.push(format!("apply {:.2} ms", ms(took)));
-                        parts.push(format!("queued {:.2} ms", ms(waited)));
                     }
                     ui.colored_label(t.comment, format!("({})", parts.join(", ")));
                 }
@@ -359,13 +354,16 @@ pub fn run(life: Life) -> eframe::Result {
                 live.apply_as_they_come(move |outcome| {
                     // Timed here, the moment the new code is in place, as the readout says.
                     let took = match outcome {
-                        Outcome::Applied { .. } => {
-                            editor::lock(&shared).in_flight.take().map(|at| at.elapsed())
-                        }
+                        Outcome::Applied { .. } => editor::lock(&shared)
+                            .in_flight
+                            .take()
+                            .map(|(typed, sent)| (typed.elapsed(), sent - typed)),
                         _ => None,
                     };
                     match took {
-                        Some(took) => eprintln!("life: {outcome}; edit to running {took:.2?}"),
+                        Some((took, queued)) => eprintln!(
+                            "life: {outcome}; edit to running {took:.2?}, of it {queued:.2?} in the editor"
+                        ),
                         None => eprintln!("life: {outcome}"),
                     }
                     let _ = tell.send((outcome, took));
