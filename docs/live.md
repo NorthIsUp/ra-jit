@@ -76,6 +76,12 @@ The program is told to start again (`Outcome::Restart`) when:
 
 A patch that can't be applied (`Outcome::Declined`) leaves the program as it was.
 
+## Tiers
+
+The same patches also make the program faster while it runs: the daemon asks it to sample
+itself, compiles its hot functions again with LLVM and publishes them as patches like an
+edit's. See [tiers.md](tiers.md).
+
 ## Signing
 
 On macOS the linker signs ad hoc. A package with

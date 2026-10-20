@@ -52,7 +52,7 @@ done until all of it exits 0 under both backends.
     python3 remote.py                                         # needs MinIO or SeaweedFS
 
 On AArch64 add `RA_JIT_SPLICE=1 python3 farsplices.py`. On macOS CI also runs
-`worktrees.py --join --together` and `worktrees.py --overlay`.
+`worktrees.py --join --together`, `worktrees.py --overlay` and, under Cranelift, `tiers.py`.
 
 Alongside the harnesses, CI runs `cargo fmt --all -- --check` and
 `cargo test --release -p hir-ty -p hir-def -p parser -p syntax -p ra-jit`.
@@ -116,6 +116,8 @@ with reasons. The daemon's log says `backend: llvm -O2 fast emit` when LLVM is i
 | `buildmodel.py` | One small cargo project per feature of cargo's build model, under both backends, with steps that change one input at a time |
 | `cargo_ra_jit.py` | `cargo ra-jit` against plain cargo on seven real projects, 22 flag combinations, and 11 daemon lifecycle checks. Needs the network and about 20 minutes; not in CI |
 | `debuginfo.py` | Backtraces, `llvm-dwarfdump --verify`, gdb stopping and stepping, locals |
+| `live_e2e.py` | Edits of a running program that links `ra-jit-live`, each applied as a patch. macOS on AArch64 |
+| `tiers.py` | Tiers ([tiers.md](tiers.md)): `demo/lifebench` running under the daemon reaches levels 2 and 3 with output identical to cargo's, an edit of a tiered function demotes it and is applied at once, and `RA_JIT_TIER=off` changes nothing. macOS on AArch64 with `--features llvm`; it exits 0 elsewhere |
 
 ### The store and the remote
 
