@@ -82,10 +82,10 @@ use self::fragment::{
 use self::unwind::{FunctionUnwind, UnwindContext};
 use self::vtable::{Slot, Upcast, VtableLayout};
 use super::{
-    AggregateKind, BasicBlockId, BinOp, CastKind, LocalId, MirBody, MirPhase, MirSpan, Operand,
-    OperandKind, PlaceTy, ProjectionElem, Rvalue, StatementKind, StoredPlace, TerminatorKind, UnOp,
-    eval::interpret_mir, lower::is_builtin_index, monomorphization::monomorphized,
-    monomorphized_promoted_mir_body_query, return_slot,
+    AggregateKind, AssertKind, BasicBlockId, BinOp, CastKind, LocalId, MirBody, MirPhase, MirSpan,
+    Operand, OperandKind, PlaceTy, ProjectionElem, Rvalue, StatementKind, StoredPlace,
+    TerminatorKind, UnOp, eval::interpret_mir, lower::is_builtin_index,
+    monomorphization::monomorphized, monomorphized_promoted_mir_body_query, return_slot,
 };
 
 mod asm;
@@ -677,7 +677,7 @@ impl CodegenUnit {
             // An instance of ours can still poll a future rustc's code made: one of a generic
             // function that awaits a function left to rustc, or that rustc's copy of a
             // forwarded instance hands back.
-            if failed.is_empty() {
+            if failed.is_empty() && futures_kept_apart() {
                 let before = futures.len();
                 for root in from_rustc.iter().chain(&generic) {
                     futures.extend(async_blocks(db, *root).iter().flatten().copied());
@@ -693,6 +693,7 @@ impl CodegenUnit {
                 }
             }
             if failed.is_empty()
+                && futures_kept_apart()
                 && (!from_rustc.is_empty() || !generic.is_empty() || !futures.is_empty())
             {
                 let mut theirs = Some(futures.clone());
@@ -1932,6 +1933,17 @@ fn body_types<'db>(
     })
 }
 
+/// Whether a future and everything that makes, polls or drops it have to come from one
+/// compiler. They need not: ra-jit lays a future out as rustc does, from the same MIR
+/// (`docs/mir-passes.md` of the fork). `RA_JIT_SPLIT_FUTURES=1` keeps them apart as before,
+/// a temporary way back until mixing is verified (`harness/mixfutures`).
+// FIXME: delete with what it guards once mixed futures are verified on den-native.
+fn futures_kept_apart() -> bool {
+    static APART: LazyLock<bool> =
+        LazyLock::new(|| std::env::var_os("RA_JIT_SPLIT_FUTURES").is_some_and(|it| it != "0"));
+    *APART
+}
+
 /// Whether a non-generic function returns a future of an `async` block, by itself or inside
 /// another type. rustc lays such a future out differently, so the function that makes one has
 /// to come from the compiler that compiles what holds and polls it.
@@ -3079,27 +3091,15 @@ fn build<'db>(
         blocks: ArenaMap::new(),
         layouts: Default::default(),
         glue: Default::default(),
-        drop_flags: ArenaMap::new(),
-        moved_paths: Vec::new(),
-        deferred_drops: Vec::new(),
-        at: None,
-        moved_here: None,
-        cleanup: None,
         inner_pad: None,
-        runtime: false,
         unwind_to: None,
         pads: Vec::new(),
         exception: None,
-        drop_order: Vec::new(),
-        operand_temps: Default::default(),
         argument_slots: Vec::new(),
         free_argument_slots: Vec::new(),
         given_away: None,
-        index_spans: Default::default(),
         in_cleanup: false,
-        drops_all: false,
         guarded: false,
-        deferred_clears: Vec::new(),
         ret_mode: PassMode::Ignore,
         tracked,
         variadic: false,
@@ -3110,7 +3110,6 @@ fn build<'db>(
         registers: FxHashMap::default(),
         args: None,
         suspended: None,
-        suspended_drop: None,
         held_at: Vec::new(),
     };
     fill(&mut fx)?;
@@ -4817,6 +4816,7 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
             && let Some(symbol) = self.rustc_copy(symbol, instance.checked)
             // rustc's copy of a function of another crate would hand out rustc's future.
             && (self.own_statics.crates.contains(&func.krate(self.db))
+                || !futures_kept_apart()
                 || !returns_async_block(self.db, func))
         {
             self.want(func);
@@ -5077,7 +5077,7 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
     /// Whether `instance` is the poll or the drop of a future rustc's code makes. Everything
     /// that reads such a future goes through one of those, so refusing them refuses the rest.
     fn handles_rustc_future(&self, instance: &Instance) -> bool {
-        if self.rustc_futures.is_empty() {
+        if self.rustc_futures.is_empty() || !futures_kept_apart() {
             return false;
         }
         let block = match instance.def {
@@ -5566,44 +5566,6 @@ impl DiscriminantWidth {
     }
 }
 
-/// The step in a [`MovedPath`] from a `Box` to what it owns.
-const BOX_CONTENTS: u32 = u32::MAX;
-/// The step in a [`MovedPath`] from an enum to the fields of one of its variants, combined with
-/// the variant's index.
-const VARIANT_FIELDS: u32 = 1 << 30;
-
-/// Where the drop flag of a local is and how wide: a word on the stack, and as many bytes as
-/// its bits need in a future.
-#[derive(Clone, Copy)]
-struct DropFlag {
-    addr: Value,
-    ty: ir::Type,
-}
-
-impl DropFlag {
-    fn load(self, builder: &mut FunctionBuilder<'_>) -> Value {
-        builder.ins().load(self.ty, MEM, self.addr, 0)
-    }
-
-    fn store(self, builder: &mut FunctionBuilder<'_>, state: Value) {
-        builder.ins().store(MEM, state, self.addr, 0);
-    }
-
-    fn set(self, builder: &mut FunctionBuilder<'_>, state: i64) {
-        let state = builder.ins().iconst(self.ty, state);
-        self.store(builder, state);
-    }
-}
-
-/// A field of a local, by the fields that lead to it.
-type FieldOfLocal = (LocalId, Vec<u32>);
-
-struct MovedPath {
-    local: LocalId,
-    path: Vec<u32>,
-    bit: u32,
-}
-
 /// The locals a call's operands move whole, whose memory the callee can be handed as it is.
 struct GivenAway {
     /// The local the call's result is written to.
@@ -5650,37 +5612,16 @@ struct FunctionCx<'cx, 'db> {
     layouts: std::cell::RefCell<FxHashMap<Ty<'db>, Arc<Layout>>>,
     /// Whether dropping each type asked about so far does anything.
     glue: std::cell::RefCell<FxHashMap<Ty<'db>, DropGlue>>,
-    /// One byte per local with drop glue: whether it currently holds a value. RA's MIR has no
-    /// drop elaboration, so `Drop` terminators are conditional on these.
-    /// Address of a word per local that needs dropping. Bit 0 says the local holds a value, and
-    /// the bits `moved_paths` hands out say which of its fields have been moved out since.
-    drop_flags: ArenaMap<LocalId, DropFlag>,
-    moved_paths: Vec<MovedPath>,
-    /// The block to generate each `Drop` terminator in, with its place and target, the
-    /// statement the drop is of, and the block of the body it ends.
-    deferred_drops: Vec<(ir::Block, StoredPlace, BasicBlockId, MirSpan, BasicBlockId)>,
-    /// The block of the body being generated.
-    at: Option<BasicBlockId>,
-    /// While a `Drop` terminator is generated: the fields that may be moved out of their
-    /// locals when the body gets to it.
-    moved_here: Option<FxHashSet<FieldOfLocal>>,
-    /// Where a call that unwinds lands, taking the exception.
-    cleanup: Option<ir::Block>,
-    /// A landing pad that takes over from `cleanup` for the calls made while it is set.
+    /// A landing pad that takes over from the cleanup block of `unwind_to` for the calls
+    /// made while it is set: drop glue unwinding from one field's drop to the rest.
     inner_pad: Option<ir::Block>,
-    /// The body is in `MirPhase::Runtime`: its drops are elaborated and it names its
-    /// cleanup blocks, so none of the drop flags and landing pads above are made for it.
-    runtime: bool,
-    /// For such a body, the cleanup block that what is being generated unwinds to.
+    /// The cleanup block that what is being generated unwinds to. The body is in
+    /// `MirPhase::Runtime`: its drops are elaborated and it names its cleanup blocks.
     unwind_to: Option<BasicBlockId>,
     /// The landing pad of each cleanup block something unwinds to.
     pads: Vec<(BasicBlockId, ir::Block)>,
     /// Where the exception is kept while the cleanup blocks run.
     exception: Option<ir::StackSlot>,
-    /// The locals the body drops, in the order it gets to dropping them.
-    drop_order: Vec<LocalId>,
-    /// Temporaries that hold an operand: never borrowed, only moved whole.
-    operand_temps: rustc_hash::FxHashSet<LocalId>,
     /// The slots the arguments of the calls so far were copied to since the last were
     /// freed, each with its size and the power of two it is aligned to.
     argument_slots: Vec<(ir::StackSlot, (u32, u8))>,
@@ -5689,14 +5630,9 @@ struct FunctionCx<'cx, 'db> {
     /// While a call is generated: the local its result goes to, and where the locals moved
     /// whole into it are. Nothing reads those again, so the callee can be handed them.
     given_away: Option<GivenAway>,
-    /// The index expression each local that holds an index was made for.
-    index_spans: FxHashMap<LocalId, MirSpan>,
     in_cleanup: bool,
-    /// Whether what is being built drops every local, as a landing pad does.
-    drops_all: bool,
     /// Whether a call was made by [`Self::guarded_call`].
     guarded: bool,
-    deferred_clears: Vec<(ir::Block, StoredPlace, ir::Block)>,
     ret_mode: PassMode,
     /// Whether the function is `#[track_caller]` and so takes its caller's location as a last,
     /// hidden argument.
@@ -5717,8 +5653,6 @@ struct FunctionCx<'cx, 'db> {
     args: Option<StoredGenericArgs>,
     /// While compiling an `async` body: where it says where it left off.
     suspended: Option<SuspendedState>,
-    /// Where a suspended future is dropped, and where that carries on.
-    suspended_drop: Option<(ir::Block, ir::Block)>,
     /// The locals an `async` body keeps in its future, and how far into it each is.
     held_at: Vec<(LocalId, u32)>,
 }
@@ -5728,13 +5662,6 @@ struct SuspendedState {
     addr: Value,
     ty: Type,
     held: crate::mir::HeldLocals,
-}
-
-/// The drop flags of the locals an `async` body keeps: the ones in the future, and of the rest
-/// which held local each is the flag of.
-struct FrameFlags {
-    in_frame: Vec<DropFlag>,
-    kept: Vec<(usize, DropFlag)>,
 }
 
 /// Whether calls to `func` pass a `&Location` after the declared arguments. A method of a trait
@@ -7061,6 +6988,9 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             self.builder.ins().store(MEM, stack, addr, 0);
             self.locals.insert(list, LocalSlot { addr, borrowed: false });
         }
+        if body.phase != MirPhase::Runtime {
+            unsupported!("a body whose drops are not elaborated");
+        }
         // An `async` body keeps its locals in the future, where they survive a return.
         let frame = match body.coroutine {
             Some(_) => {
@@ -7072,10 +7002,8 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                     unsupported!("async body of {ty:?}");
                 };
                 let upvars = args.as_coroutine().tupled_upvars_ty().tuple_fields().len();
-                let held = body.locals_held_across_yields(|local| {
-                    self.glue_of(body.locals[local].ty.as_ref()) != DropGlue::None
-                });
-                let frame = CoroutineFrame { upvars, flags: held.flagged().count() };
+                let held = body.locals_held_across_yields();
+                let frame = CoroutineFrame { upvars };
                 let addr = self.builder.ins().load(ptr(), MEM, self.locals[receiver].addr, 0);
                 Some((frame, self.layout(ty)?, addr, ty, held))
             }
@@ -7090,7 +7018,8 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             let (.., held) = frame.as_ref()?;
             held.locals.binary_search(&local).ok()
         };
-        let forwarded = forwarded_temps(body);
+        // In an `async` body a temporary may be kept in the future where its binding is not.
+        let forwarded = if frame.is_none() { forwarded_temps(body) } else { FxHashMap::default() };
         // A local kept in a register gets a slot only when it needs memory: see `local_slot`.
         let mut registers = Vec::new();
         if frame.is_none() {
@@ -7114,6 +7043,15 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                 continue;
             }
             let layout = self.layout(data.ty.as_ref())?;
+            // A capture an `async` body uses in place is the future's field.
+            if let Some((_, frame_layout, frame_addr, ..)) = &frame
+                && let Some(&(_, field)) = body.upvars_in_place.iter().find(|it| it.0 == local)
+            {
+                let offset = frame_layout.fields.offset(field as usize).bytes();
+                let addr = self.builder.ins().iadd_imm(*frame_addr, offset as i64);
+                self.locals.insert(local, LocalSlot { addr, borrowed: false });
+                continue;
+            }
             if let Some((_, frame_layout, frame_addr, _, held)) = &frame
                 && let Some(at) = held_at(local)
             {
@@ -7148,44 +7086,6 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         }
         for (temp, to) in forwarded {
             self.locals.insert(temp, self.locals[to]);
-        }
-        let mut frame_flags = Vec::new();
-        let mut kept_flags = Vec::new();
-        self.runtime = body.phase == MirPhase::Runtime;
-        for (local, data) in body.locals.iter() {
-            let ty = data.ty.as_ref();
-            if self.runtime || local == returned_local(body) || self.glue_of(ty) == DropGlue::None {
-                continue;
-            }
-            let is_param = body.param_locals.contains(&local);
-            // A local that holds nothing when the body yields is not live then either: its
-            // flag starts cleared at every `poll`. One that is kept has a flag in the future if
-            // where the body yielded does not say whether it holds a value, and is set from
-            // that otherwise.
-            let flagged = match (&frame, held_at(local)) {
-                (Some((frame, .., held)), Some(at)) if !is_param && held.is_flagged(at) => {
-                    let nth = held.flagged().position(|it| it == at).expect("a flagged local");
-                    let bits = 8 * held.flag_bytes(at) as u16;
-                    Some((frame.drop_flag(nth), ir::Type::int(bits).expect("a flag of bytes")))
-                }
-                _ => None,
-            };
-            let flag = match flagged {
-                Some((field, ty)) => {
-                    let flag = DropFlag { addr: in_frame(self, field), ty };
-                    frame_flags.push(flag);
-                    flag
-                }
-                None => {
-                    let flag = DropFlag { addr: self.scratch(), ty: types::I64 };
-                    flag.set(&mut self.builder, is_param as i64);
-                    if let Some(at) = held_at(local) {
-                        kept_flags.push((at, flag));
-                    }
-                    flag
-                }
-            };
-            self.drop_flags.insert(local, flag);
         }
         for (id, _) in body.basic_blocks.iter() {
             let block = self.builder.create_block();
@@ -7222,14 +7122,14 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                     | TerminatorKind::FalseUnwind { real_target: target, .. },
                 ) => worklist.push(*target),
                 Some(TerminatorKind::Call { target, .. }) => worklist.extend(*target),
-                Some(TerminatorKind::Yield { resume, .. }) => worklist.push(*resume),
+                Some(TerminatorKind::Yield { resume, drop, .. }) => {
+                    worklist.push(*resume);
+                    worklist.extend(*drop);
+                }
                 _ => (),
             }
             let block = &body.basic_blocks[id];
             worklist.extend(block.terminator.as_ref().and_then(|it| it.kind.unwind()));
-            if !block.is_cleanup && block.statements.iter().any(|it| it.kind.may_panic()) {
-                worklist.extend(body.panic_cleanup);
-            }
         }
         let state = frame.as_ref().map(|(frame, ..)| frame.state()).map(|it| in_frame(self, it));
         match (frame, state) {
@@ -7238,50 +7138,33 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                     unsupported!("an async block without a state");
                 };
                 let state = SuspendedState { addr: state, ty: self.scalar(tag)?.ty, held };
-                let flags = FrameFlags { in_frame: frame_flags, kept: kept_flags };
-                self.enter_coroutine(body, &state, &flags, addr, ty, &layout)?;
+                self.enter_coroutine(body, &state, addr, ty, &layout)?;
                 self.suspended = Some(state);
             }
             _ => {
                 self.builder.ins().jump(self.blocks[body.start_block], &[]);
             }
         }
-        self.drop_order = drop_order(body, &reachable);
-        self.operand_temps = operand_temps(body);
-        self.index_spans = index_spans(body);
         for (id, block) in body.basic_blocks.iter() {
             if !reachable.contains(&id) {
                 continue;
             }
             self.builder.switch_to_block(self.blocks[id]);
-            self.at = Some(id);
-            if self.runtime {
-                self.in_cleanup = block.is_cleanup;
-                if block.is_cleanup {
-                    self.builder.set_cold_block(self.blocks[id]);
-                }
+            self.in_cleanup = block.is_cleanup;
+            if block.is_cleanup {
+                self.builder.set_cold_block(self.blocks[id]);
             }
             for statement in &block.statements {
                 self.at(statement.span);
-                if self.runtime {
-                    self.unwind_to =
-                        statement.kind.may_panic().then_some(body.panic_cleanup).flatten();
-                }
+                // No statement unwinds: what panics is an `Assert`.
+                self.unwind_to = None;
                 match &statement.kind {
                     // A promoted constant already holds its value.
                     StatementKind::Assign(place, _)
                         if self.constant_locals.contains(&place.local) => {}
-                    StatementKind::Assign(place, rvalue) => {
-                        self.assign(place, rvalue)?;
-                        self.set_drop_flag(place, true);
-                    }
+                    StatementKind::Assign(place, rvalue) => self.assign(place, rvalue)?,
                     StatementKind::Deinit(_) => unsupported!("deinit"),
                     StatementKind::InlineAsm(asm) => self.inline_asm(asm)?,
-                    // A place that is matched on and not read is still indexed, and the
-                    // index is checked: `let _ = items[at]` panics when `at` is out of bounds.
-                    StatementKind::FakeRead(place) if is_indexed(place) => {
-                        self.place(place)?;
-                    }
                     StatementKind::StorageLive(_)
                     | StatementKind::StorageDead(_)
                     | StatementKind::FakeRead(_)
@@ -7292,9 +7175,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                 unsupported!("block without terminator");
             };
             self.at(terminator.span);
-            if self.runtime {
-                self.unwind_to = terminator.kind.unwind();
-            }
+            self.unwind_to = terminator.kind.unwind();
             let target = match &terminator.kind {
                 // A promoted call already holds its value, and that value is read-only.
                 TerminatorKind::Call { destination, target: Some(target), .. }
@@ -7311,506 +7192,10 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                 None => self.terminator(&terminator.kind)?,
             }
         }
-        // Drops are generated last, when every field that gets moved out of a local is known.
-        for (block, place, target) in std::mem::take(&mut self.deferred_clears) {
-            self.builder.switch_to_block(block);
-            self.clear_moved_now(&place);
-            self.builder.ins().jump(target, &[]);
-        }
-        let drops = std::mem::take(&mut self.deferred_drops);
-        let mut moved = match drops.is_empty() || self.moved_paths.is_empty() {
-            true => FxHashMap::default(),
-            false => self.moved_where_blocks_end(body),
-        };
-        for (block, place, target, span, from) in drops {
-            self.moved_here = moved.remove(&from);
-            self.builder.switch_to_block(block);
-            self.at(span);
-            // `place = value` drops what `place` held and then writes to it. If that drop
-            // unwinds the write still happens, so that `place` is not dropped twice.
-            let replace =
-                body.basic_blocks[target].statements.iter().find_map(|it| match &it.kind {
-                    StatementKind::Assign(to, rvalue) => Some((to, rvalue)),
-                    _ => None,
-                });
-            let target = self.blocks[target];
-            match replace {
-                Some((to, rvalue))
-                    if *to == place
-                        && !place.projection.as_slice().is_empty()
-                        && !self.in_cleanup =>
-                {
-                    let dropped = self.builder.create_block();
-                    self.guarded(
-                        |this| {
-                            this.drop_place(&place, dropped)?;
-                            this.builder.switch_to_block(dropped);
-                            Ok(())
-                        },
-                        |this| {
-                            this.assign(to, rvalue)?;
-                            this.clear_moved_now(to);
-                            Ok(())
-                        },
-                    )?;
-                    self.builder.ins().jump(target, &[]);
-                }
-                _ => self.drop_place(&place, target)?,
-            }
-        }
-        self.moved_here = None;
-        // So is dropping a suspended future, which drops the same locals as unwinding does.
-        // Nothing is unwinding then, so a destructor that panics leaves the rest to be dropped.
-        if let Some((suspended, done)) = self.suspended_drop.take() {
-            self.builder.switch_to_block(suspended);
-            self.at(Self::returns_at(body));
-            self.drop_live_locals(Some(&Self::scope_ends(body)))?;
-            self.builder.ins().jump(done, &[]);
-        }
         self.in_cleanup = false;
         self.unwind_to = None;
         self.emit_pads();
-        self.emit_cleanup()
-    }
-
-    /// The fields a place selects in its local, if it is nothing but fields of structs, tuples
-    /// and closures. Those are the places that can be moved out of on their own.
-    fn field_path(&self, place: &StoredPlace) -> Option<Vec<u32>> {
-        Some(self.path_of(place.local, place.projection.as_slice())?.0)
-    }
-
-    /// The paths a move out of `place` takes away: its own, or one for each element when it
-    /// is a subslice of an array.
-    fn moved_out_paths(&self, place: &StoredPlace) -> Option<Vec<Vec<u32>>> {
-        let projection = place.projection.as_slice();
-        let Some((&ProjectionElem::Subslice { from, to }, array)) = projection.split_last() else {
-            return Some(vec![self.field_path(place)?]);
-        };
-        let (path, ty) = self.path_of(place.local, array)?;
-        let TyKind::Array(_, len) = ty.ty.kind() else { return None };
-        let len = crate::consteval::try_const_usize(self.cg.db, len)? as u64;
-        (from..len.checked_sub(to)?)
-            .map(|index| {
-                let index = u32::try_from(index).ok().filter(|&it| it < VARIANT_FIELDS)?;
-                Some(path.iter().copied().chain([index]).collect())
-            })
-            .collect()
-    }
-
-    fn path_of(
-        &self,
-        local: LocalId,
-        projection: &[crate::mir::PlaceElem],
-    ) -> Option<(Vec<u32>, PlaceTy<'db>)> {
-        let mut ty = PlaceTy::from_ty(self.body?.locals[local].ty.as_ref());
-        let mut path = Vec::new();
-        for proj in projection {
-            if let (ProjectionElem::Deref, TyKind::Adt(adt_def, _)) = (proj, ty.ty.kind())
-                && adt_def.is_box()
-            {
-                path.push(BOX_CONTENTS);
-                ty = ty.projection_ty(&self.infcx, proj, self.env.param_env);
-                continue;
-            }
-            if let (ProjectionElem::Downcast(VariantId::EnumVariantId(variant)), TyKind::Adt(..)) =
-                (proj, ty.ty.kind())
-            {
-                path.push(VARIANT_FIELDS | variant.index(self.cg.db) as u32);
-                ty = ty.projection_ty(&self.infcx, proj, self.env.param_env);
-                continue;
-            }
-            if let (&ProjectionElem::ConstantIndex { offset, from_end }, TyKind::Array(_, len)) =
-                (proj, ty.ty.kind())
-            {
-                let len = crate::consteval::try_const_usize(self.cg.db, len)? as u64;
-                let index = if from_end { len.checked_sub(offset)? } else { offset };
-                path.push(u32::try_from(index).ok().filter(|&it| it < VARIANT_FIELDS)?);
-                ty = ty.projection_ty(&self.infcx, proj, self.env.param_env);
-                continue;
-            }
-            let ProjectionElem::Field(field) = proj else { return None };
-            match ty.ty.kind() {
-                TyKind::Tuple(_) | TyKind::Closure(..) => (),
-                TyKind::Adt(..) if ty.variant_id.is_some() => (),
-                TyKind::Adt(adt_def, _)
-                    if matches!(adt_def.def_id(), AdtId::StructId(_)) && !adt_def.is_box() => {}
-                _ => return None,
-            }
-            path.push(field.0 as u32);
-            ty = ty.projection_ty(&self.infcx, proj, self.env.param_env);
-        }
-        Some((path, ty))
-    }
-
-    /// Says that the fields of `place` are all there again, after an assignment to it. A
-    /// subslice of an array is its elements, as it is for a move out.
-    fn clear_moved(&mut self, place: &StoredPlace) {
-        if !self.drop_flags.contains_idx(place.local)
-            || self.moved_out_paths(place).is_none_or(|it| it.iter().any(Vec::is_empty))
-        {
-            return;
-        }
-        // Filled in last, when every field that gets moved out of the local is known.
-        let clear = self.builder.create_block();
-        let after = self.builder.create_block();
-        self.builder.ins().jump(clear, &[]);
-        self.builder.switch_to_block(after);
-        self.deferred_clears.push((clear, place.clone(), after));
-    }
-
-    fn clear_moved_now(&mut self, place: &StoredPlace) {
-        let (Some(&flag), Some(paths)) =
-            (self.drop_flags.get(place.local), self.moved_out_paths(place))
-        else {
-            return;
-        };
-        let within = |it: &&MovedPath| {
-            it.local == place.local && paths.iter().any(|path| it.path.starts_with(path))
-        };
-        let mask = self.moved_paths.iter().filter(within).fold(0u64, |mask, it| mask | 1 << it.bit);
-        if mask != 0 {
-            let state = flag.load(&mut self.builder);
-            let state = self.builder.ins().band_imm(state, !mask as i64);
-            flag.store(&mut self.builder, state);
-        }
-    }
-
-    /// The bit in a local's drop flag that says one of its fields has been moved out.
-    fn moved_bit(&mut self, local: LocalId, path: Vec<u32>) -> Option<u32> {
-        let known = self.moved_paths.iter().find(|it| it.local == local && it.path == path);
-        if let Some(known) = known {
-            return Some(known.bit);
-        }
-        let bit = 1 + self.moved_paths.iter().filter(|it| it.local == local).count() as u32;
-        if bit >= self.drop_flags[local].ty.bits() {
-            return None;
-        }
-        self.moved_paths.push(MovedPath { local, path, bit });
-        Some(bit)
-    }
-
-    /// A new block, which is laid out behind the body's if what is being built is what drops
-    /// every local, so that no line of the body starts in code that runs only once the body
-    /// is unwound or dropped.
-    fn dropping_block(&mut self) -> ir::Block {
-        let block = self.builder.create_block();
-        if self.drops_all {
-            self.builder.set_cold_block(block);
-        }
-        block
-    }
-
-    /// Drops what is left of a place, which is nothing if its local holds no value.
-    fn drop_place(&mut self, place: &StoredPlace, target: ir::Block) -> Result<()> {
-        let flag = self.drop_flags.get(place.local).copied();
-        let (Some(flag), Some(mut path)) = (flag, self.field_path(place)) else {
-            let place = self.place_ref(place)?;
-            self.drop_value(place.addr, place.meta, place.ty.ty)?;
-            self.builder.ins().jump(target, &[]);
-            return Ok(());
-        };
-        let state = flag.load(&mut self.builder);
-        let live = self.builder.ins().band_imm(state, 1);
-        let drop = self.dropping_block();
-        self.builder.ins().brif(live, drop, &[], target, &[]);
-        self.builder.switch_to_block(drop);
-        if path.is_empty() {
-            flag.set(&mut self.builder, 0);
-        }
-        let local = place.local;
-        let place = self.place_ref(place)?;
-        self.drop_unmoved(place.addr, place.meta, place.ty.ty, local, &mut path, state)?;
-        self.builder.ins().jump(target, &[]);
         Ok(())
-    }
-
-    /// Drops the value at `path` in `local`, except for the fields that `state` says are moved
-    /// out.
-    fn drop_unmoved(
-        &mut self,
-        addr: Value,
-        meta: Option<Value>,
-        ty: Ty<'db>,
-        local: LocalId,
-        path: &mut Vec<u32>,
-        state: Value,
-    ) -> Result<()> {
-        // A field nothing has moved out on any way here is there, whatever its bit would say.
-        let within = |it: &&MovedPath| {
-            it.local == local
-                && it.path.starts_with(path)
-                && self
-                    .moved_here
-                    .as_ref()
-                    .is_none_or(|moved| moved.contains(&(local, it.path.clone())))
-        };
-        let exact = self.moved_paths.iter().filter(within).find(|it| it.path.len() == path.len());
-        let exact = exact.map(|it| it.bit);
-        let nested = self.moved_paths.iter().filter(within).any(|it| it.path.len() > path.len());
-        if exact.is_none() && !nested {
-            return self.drop_value(addr, meta, ty);
-        }
-        let done = self.dropping_block();
-        if let Some(bit) = exact {
-            let moved = self.builder.ins().band_imm(state, 1i64 << bit);
-            let present = self.dropping_block();
-            self.builder.ins().brif(moved, done, &[], present, &[]);
-            self.builder.switch_to_block(present);
-        }
-        if nested {
-            let ty = self.normalize(ty);
-            let fields: Vec<Ty<'db>> = match ty.kind() {
-                TyKind::Tuple(tys) => tys.iter().collect(),
-                TyKind::Array(element, len) => {
-                    match crate::consteval::try_const_usize(self.cg.db, len) {
-                        Some(len) => vec![element; len as usize],
-                        None => unsupported!("partial move out of {ty:?}"),
-                    }
-                }
-                TyKind::Closure(..) | TyKind::CoroutineClosure(..) => {
-                    match ty.closure_upvars_ty().map(|it| it.kind()) {
-                        Some(TyKind::Tuple(tys)) => tys.iter().collect(),
-                        _ => unsupported!("partial move out of a closure without tupled upvars"),
-                    }
-                }
-                TyKind::Adt(adt_def, subst) if adt_def.is_box() => {
-                    let pointee = subst.type_at(0);
-                    let pointer = self.builder.ins().load(ptr(), MEM, addr, 0);
-                    let pointee_meta = self
-                        .is_unsized(pointee)
-                        .then(|| self.builder.ins().load(ptr(), MEM, addr, meta_at()));
-                    self.drop_ladder(2, |this, at| {
-                        if at == 0 {
-                            path.push(BOX_CONTENTS);
-                            let dropped = this.drop_unmoved(
-                                pointer,
-                                pointee_meta,
-                                pointee,
-                                local,
-                                path,
-                                state,
-                            );
-                            path.pop();
-                            return dropped;
-                        }
-                        this.call_drop_impl(addr, meta, ty)?;
-                        if let AdtId::StructId(id) = adt_def.def_id() {
-                            let layout = this.layout(ty)?;
-                            this.drop_fields(addr, &layout, id.into(), subst, ty, meta)?;
-                        }
-                        Ok(())
-                    })?;
-                    self.builder.ins().jump(done, &[]);
-                    self.builder.switch_to_block(done);
-                    return Ok(());
-                }
-                TyKind::Adt(adt_def, subst) if matches!(adt_def.def_id(), AdtId::EnumId(_)) => {
-                    let AdtId::EnumId(id) = adt_def.def_id() else { unreachable!() };
-                    let db = self.cg.db;
-                    let layout = self.layout(ty)?;
-                    let wide = match &layout.variants {
-                        Variants::Multiple { tag, .. } => DiscriminantWidth::of(tag),
-                        _ => DiscriminantWidth::Word,
-                    };
-                    let single = match &layout.variants {
-                        Variants::Empty => {
-                            self.builder.ins().jump(done, &[]);
-                            self.builder.switch_to_block(done);
-                            return Ok(());
-                        }
-                        Variants::Single { index } => Some(index.0),
-                        Variants::Multiple { .. } => None,
-                    };
-                    let mut switch = Switch::new();
-                    let mut arms = Vec::new();
-                    for &(variant, _) in id.enum_variants(db).variants.values() {
-                        if single.is_some_and(|index| index != variant.index(db)) {
-                            continue;
-                        }
-                        let value = db
-                            .const_eval_discriminant(variant)
-                            .map_err(|e| CodegenError::Frontend(format!("discriminant: {e:?}")))?;
-                        let block = self.builder.create_block();
-                        if single.is_none() {
-                            switch.set_entry(wide.entry(value), block);
-                        }
-                        arms.push((block, variant));
-                    }
-                    if single.is_some() {
-                        match arms.first() {
-                            Some(&(block, _)) => self.builder.ins().jump(block, &[]),
-                            None => self.builder.ins().jump(done, &[]),
-                        };
-                    } else {
-                        let discr = self.discriminant(addr, ty, wide.scalar())?;
-                        switch.emit(&mut self.builder, discr, done);
-                    }
-                    for (block, variant) in arms {
-                        self.builder.switch_to_block(block);
-                        let index = variant.index(db);
-                        let variant_layout = match &layout.variants {
-                            Variants::Multiple { .. } => {
-                                Layout::for_variant(&layout, RustcEnumVariantIdx(index))
-                            }
-                            _ => (*layout).clone(),
-                        };
-                        path.push(VARIANT_FIELDS | index as u32);
-                        let field_types = db.field_types(variant.into());
-                        let fields: Vec<_> = field_types
-                            .iter()
-                            .map(|(field, ty)| {
-                                let ty = ty.ty().instantiate(self.interner, subst).skip_norm_wip();
-                                (u32::from(field.into_raw()), ty)
-                            })
-                            .filter(|&(_, ty)| self.needs_drop(ty))
-                            .collect();
-                        self.drop_ladder(fields.len(), |this, at| {
-                            let (field, field_ty) = fields[at];
-                            let offset = variant_layout.fields.offset(field as usize).bytes();
-                            let field_addr = this.builder.ins().iadd_imm(addr, offset as i64);
-                            path.push(field);
-                            let dropped =
-                                this.drop_unmoved(field_addr, None, field_ty, local, path, state);
-                            path.pop();
-                            dropped
-                        })?;
-                        path.pop();
-                        self.builder.ins().jump(done, &[]);
-                    }
-                    self.builder.switch_to_block(done);
-                    return Ok(());
-                }
-                TyKind::Adt(adt_def, subst) => match adt_def.def_id() {
-                    AdtId::StructId(id) => self
-                        .cg
-                        .db
-                        .field_types(id.into())
-                        .iter()
-                        .map(|(_, ty)| ty.ty().instantiate(self.interner, subst).skip_norm_wip())
-                        .collect(),
-                    _ => unsupported!("partial move out of {ty:?}"),
-                },
-                _ => unsupported!("partial move out of {ty:?}"),
-            };
-            let layout = self.layout(ty)?;
-            let mut fields: Vec<_> = fields.into_iter().enumerate().collect();
-            if matches!(ty.kind(), TyKind::Array(..)) {
-                // An array that may have lost elements drops what is left from the back,
-                // except that a run of whole elements is dropped front to back.
-                let mut runs: Vec<Vec<(usize, Ty<'db>)>> = Vec::new();
-                let mut in_run = false;
-                for (i, field) in fields {
-                    path.push(i as u32);
-                    let whole = !self.may_have_lost(local, path);
-                    path.pop();
-                    match runs.last_mut() {
-                        Some(run) if whole && in_run => run.push((i, field)),
-                        _ => runs.push(vec![(i, field)]),
-                    }
-                    in_run = whole;
-                }
-                runs.reverse();
-                fields = runs.into_iter().flatten().collect();
-            }
-            fields.retain(|&(_, field)| self.needs_drop(field));
-            self.drop_ladder(fields.len(), |this, at| {
-                let (i, field) = fields[at];
-                let offset = layout.fields.offset(i).bytes() as i64;
-                let field_addr = this.builder.ins().iadd_imm(addr, offset);
-                let field_addr = this.aligned_for_drop(field_addr, field, ty)?;
-                path.push(i as u32);
-                let dropped = this.drop_unmoved(field_addr, None, field, local, path, state);
-                path.pop();
-                dropped
-            })?;
-        } else {
-            self.drop_value(addr, meta, ty)?;
-        }
-        self.builder.ins().jump(done, &[]);
-        self.builder.switch_to_block(done);
-        Ok(())
-    }
-
-    /// Whether something may be moved out of the field at `path` of `local` where the drop
-    /// being generated is. Without a place in the body to ask about, anything the function
-    /// moves out anywhere counts.
-    fn may_have_lost(&self, local: LocalId, path: &[u32]) -> bool {
-        self.moved_paths.iter().filter(|it| it.local == local && it.path.starts_with(path)).any(
-            |it| match &self.moved_here {
-                Some(moved) => moved.contains(&(local, it.path.clone())),
-                None => true,
-            },
-        )
-    }
-
-    /// The fields that may be moved out of their locals where each block ends: moved out on
-    /// some way there, and not assigned since.
-    fn moved_where_blocks_end(
-        &self,
-        body: &MirBody<'db>,
-    ) -> FxHashMap<BasicBlockId, FxHashSet<FieldOfLocal>> {
-        let mut starts: FxHashMap<BasicBlockId, FxHashSet<FieldOfLocal>> = FxHashMap::default();
-        let mut ends = FxHashMap::default();
-        starts.insert(body.start_block, FxHashSet::default());
-        let mut pending = vec![body.start_block];
-        while let Some(id) = pending.pop() {
-            let mut moved = starts[&id].clone();
-            self.moves_of_block(&body.basic_blocks[id], &mut moved);
-            for next in successors(body, id) {
-                if body.unreached.contains(&next) {
-                    continue;
-                }
-                let known = starts.entry(next).or_insert_with(|| {
-                    pending.push(next);
-                    FxHashSet::default()
-                });
-                let before = known.len();
-                known.extend(moved.iter().cloned());
-                if known.len() != before && !pending.contains(&next) {
-                    pending.push(next);
-                }
-            }
-            ends.insert(id, moved);
-        }
-        ends
-    }
-
-    /// Follows a block: adds the fields it moves out to `moved`, and takes out the ones it
-    /// assigns.
-    fn moves_of_block(&self, block: &crate::mir::BasicBlock, moved: &mut FxHashSet<FieldOfLocal>) {
-        for statement in &block.statements {
-            if let StatementKind::Assign(place, rvalue) = &statement.kind {
-                operands_of(rvalue).into_iter().for_each(|it| self.note_move(it, moved));
-                self.note_assignment(place, moved);
-            }
-        }
-        match block.terminator.as_ref().map(|it| &it.kind) {
-            Some(TerminatorKind::Call { func, args, destination, .. }) => {
-                self.note_move(func, moved);
-                args.iter().for_each(|it| self.note_move(it, moved));
-                self.note_assignment(destination, moved);
-            }
-            Some(TerminatorKind::Yield { value, .. }) => self.note_move(value, moved),
-            Some(TerminatorKind::DropAndReplace { place, value, .. }) => {
-                self.note_move(value, moved);
-                self.note_assignment(place, moved);
-            }
-            _ => (),
-        }
-    }
-
-    fn note_move(&self, operand: &Operand, moved: &mut FxHashSet<FieldOfLocal>) {
-        let (OperandKind::Copy(place) | OperandKind::Move(place)) = &operand.kind else { return };
-        if self.drop_flags.contains_idx(place.local) {
-            let paths = self.moved_out_paths(place).unwrap_or_default();
-            moved.extend(paths.into_iter().map(|path| (place.local, path)));
-        }
-    }
-
-    fn note_assignment(&self, place: &StoredPlace, moved: &mut FxHashSet<FieldOfLocal>) {
-        if let Some(path) = self.field_path(place) {
-            moved.retain(|(local, field)| *local != place.local || !field.starts_with(&path));
-        }
     }
 
     /// Field types can still be projections such as `<str as ToOwned>::Owned`.
@@ -7846,7 +7231,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         let (OperandKind::Copy(place) | OperandKind::Move(place)) = &discr.kind else {
             return None;
         };
-        if self.field_path(place).is_none_or(|it| !it.is_empty()) {
+        if !place.projection.as_slice().is_empty() {
             return None;
         }
         let assigned = block.statements.iter().rev().find_map(|it| match &it.kind {
@@ -8008,12 +7393,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                             self.builder.ins().load(ptr(), MEM, index, 0)
                         }
                     };
-                    // An index out of bounds is reported at the index expression, which may be
-                    // an operand of the statement that reads it.
-                    let statement = self.span;
-                    self.at(self.index_spans.get(local).copied().unwrap_or(statement));
-                    addr = self.element(addr, meta, prev.ty, index)?;
-                    self.at(statement);
+                    addr = self.element(addr, prev.ty, index)?;
                     meta = None;
                 }
                 ProjectionElem::ConstantIndex { offset, from_end } => {
@@ -8023,7 +7403,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                     } else {
                         self.builder.ins().iconst(ptr(), *offset as i64)
                     };
-                    addr = self.element(addr, meta, prev.ty, index)?;
+                    addr = self.element(addr, prev.ty, index)?;
                     meta = None;
                 }
                 ProjectionElem::Subslice { from, to } => {
@@ -8063,18 +7443,9 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         }
     }
 
-    /// Address of `container[index]`, after a bounds check.
-    fn element(
-        &mut self,
-        addr: Value,
-        meta: Option<Value>,
-        container: Ty<'db>,
-        index: Value,
-    ) -> Result<Value> {
+    /// Address of `container[index]`: the `Assert` before what reads it has checked the index.
+    fn element(&mut self, addr: Value, container: Ty<'db>, index: Value) -> Result<Value> {
         let size = self.element_size(container)?;
-        let len = self.len(container, meta)?;
-        let out_of_bounds = self.builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, index, len);
-        self.bounds_panic_if(out_of_bounds, index, len)?;
         let offset = self.builder.ins().imul_imm(index, size as i64);
         Ok(self.builder.ins().iadd(addr, offset))
     }
@@ -8130,47 +7501,13 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                 if let Some(given) = &mut self.given_away {
                     given.read.push(addr);
                 }
-                if self.runtime
-                    && let OperandKind::Move(_) = operand.kind
+                if let OperandKind::Move(_) = operand.kind
                     && place.projection.as_slice().is_empty()
                     && self.glue_of(ty.ty) != DropGlue::None
                     && let Some(given) = &mut self.given_away
                     && given.result != place.local
                 {
                     given.whole.insert(addr);
-                }
-                if let OperandKind::Move(_) = operand.kind
-                    && self.drop_flags.contains_idx(place.local)
-                    && self.glue_of(ty.ty) != DropGlue::None
-                {
-                    let flag = self.drop_flags[place.local];
-                    let paths = self
-                        .moved_out_paths(place)
-                        .filter(|paths| paths.iter().all(|it| !it.is_empty()));
-                    let mask = paths.and_then(|paths| {
-                        let mask = paths.iter().try_fold(0i64, |mask, path| {
-                            Some(mask | 1i64 << self.moved_bit(place.local, path.clone())?)
-                        })?;
-                        Some(mask)
-                    });
-                    let state = match mask {
-                        Some(mask) => {
-                            let state = flag.load(&mut self.builder);
-                            self.builder.ins().bor_imm(state, mask)
-                        }
-                        // FIXME: a move out of an enum or a box forgets the rest of the local,
-                        // which leaks it.
-                        None => {
-                            if let Some(given) = &mut self.given_away
-                                && place.projection.as_slice().is_empty()
-                                && given.result != place.local
-                            {
-                                given.whole.insert(addr);
-                            }
-                            self.builder.ins().iconst(flag.ty, 0)
-                        }
-                    };
-                    flag.store(&mut self.builder, state);
                 }
                 Ok((addr, ty.ty))
             }
@@ -8254,45 +7591,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
 
     /// Whether `ty` is known to have no `UnsafeCell` outside of indirections.
     fn is_freeze(&self, ty: Ty<'db>) -> bool {
-        let db = self.cg.db;
-        match ty.kind() {
-            TyKind::Bool
-            | TyKind::Char
-            | TyKind::Int(_)
-            | TyKind::Uint(_)
-            | TyKind::Float(_)
-            | TyKind::Str
-            | TyKind::Never
-            | TyKind::Ref(..)
-            | TyKind::RawPtr(..)
-            | TyKind::FnPtr(..)
-            | TyKind::FnDef(..) => true,
-            TyKind::Array(element, _) | TyKind::Slice(element) | TyKind::Pat(element, _) => {
-                self.is_freeze(element)
-            }
-            TyKind::Tuple(fields) => fields.iter().all(|field| self.is_freeze(field)),
-            TyKind::Adt(def, args) => {
-                let variants: Vec<VariantId> = match def.def_id() {
-                    AdtId::StructId(id) => {
-                        if Some(id) == self.interner.lang_items().UnsafeCell {
-                            return false;
-                        }
-                        vec![id.into()]
-                    }
-                    AdtId::EnumId(id) => {
-                        id.enum_variants(db).variants.iter().map(|(_, it)| it.0.into()).collect()
-                    }
-                    AdtId::UnionId(_) => return false,
-                };
-                variants.into_iter().all(|variant| {
-                    db.field_types(variant).iter().all(|(_, field)| {
-                        let ty = field.ty().instantiate(self.interner, args).skip_norm_wip();
-                        self.is_freeze(ty)
-                    })
-                })
-            }
-            _ => false,
-        }
+        crate::drop::is_freeze(self.cg.db, self.interner, ty)
     }
 
     fn eval_const(&mut self, unevaluated: UnevaluatedConst<'db>) -> Result<Allocation<'db>> {
@@ -8820,7 +8119,6 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                 let size = self.layout(ty.ty)?.size;
                 let from = self.builder.ins().iadd_imm(slot, *offset as i64);
                 self.copy(addr, from, size);
-                self.set_drop_flag(output, true);
             }
         }
         Ok(())
@@ -9053,7 +8351,20 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                     self.builder.switch_to_block(done);
                 }
             }
-            Rvalue::CheckedBinaryOp(op, lhs, rhs) => {
+            Rvalue::BinaryOp(
+                op @ (BinOp::AddWithOverflow | BinOp::SubWithOverflow | BinOp::MulWithOverflow),
+                lhs,
+                rhs,
+            ) => {
+                let (value, overflow) = self.overflowing_op(op, lhs, rhs)?;
+                let Some(overflow) = overflow else { unsupported!("{op:?} of floats") };
+                let layout = self.layout(dst_ty.ty)?;
+                let [value_at, flag_at] =
+                    [0, 1].map(|field| layout.fields.offset(field).bytes() as i32);
+                self.builder.ins().store(MEM, value, dst, value_at);
+                self.builder.ins().store(MEM, overflow, dst, flag_at);
+            }
+            Rvalue::BinaryOp(op, lhs, rhs) => {
                 let value = self.binary_op(op, lhs, rhs)?;
                 store(self, value);
             }
@@ -9074,9 +8385,8 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                             types::I64 => zero,
                             _ => self.builder.ins().ireduce(ty, zero),
                         };
-                        let (value, overflow) = self.builder.ins().ssub_overflow(zero, value);
-                        self.panic_if_overflow(overflow, OverflowOp::Neg)?;
-                        value
+                        // An `Assert` before it has ruled out `MIN`.
+                        self.builder.ins().isub(zero, value)
                     }
                 };
                 store(self, value);
@@ -9359,6 +8669,23 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
     }
 
     fn binary_op(&mut self, op: &BinOp, lhs: &Operand, rhs: &Operand) -> Result<Value> {
+        Ok(self.overflowing_op(op, lhs, rhs)?.0)
+    }
+
+    /// `lhs op rhs`, which never panics: runtime MIR checks with an `Assert` before it. For
+    /// `AddWithOverflow` and the like, also whether it overflowed.
+    fn overflowing_op(
+        &mut self,
+        op: &BinOp,
+        lhs: &Operand,
+        rhs: &Operand,
+    ) -> Result<(Value, Option<Value>)> {
+        let (op, overflowing) = match op {
+            BinOp::AddWithOverflow => (&BinOp::Add, true),
+            BinOp::SubWithOverflow => (&BinOp::Sub, true),
+            BinOp::MulWithOverflow => (&BinOp::Mul, true),
+            op => (op, false),
+        };
         let (mut l_addr, mut ty) = self.operand(lhs)?;
         let (mut r_addr, mut r_ty) = self.operand(rhs)?;
         // RA lowers comparisons of references without the deref.
@@ -9402,7 +8729,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             let unequal = self.builder.ins().iconst(types::I8, matches!(op, BinOp::Ne) as i64);
             self.builder.ins().jump(done, &[unequal.into()]);
             self.builder.switch_to_block(done);
-            return Ok(self.builder.block_params(done)[0]);
+            return Ok((self.builder.block_params(done)[0], None));
         }
         if matches!(ty.kind(), TyKind::RawPtr(..))
             && matches!(self.layout(ty)?.backend_repr, BackendRepr::ScalarPair { .. })
@@ -9424,11 +8751,12 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             let same_ptr = self.builder.ins().icmp(IntCC::Equal, l_ptr, r_ptr);
             let by_meta = self.builder.ins().icmp(cc, l_meta, r_meta);
             let by_ptr = self.builder.ins().icmp(cc, l_ptr, r_ptr);
-            return Ok(match op {
+            let value = match op {
                 BinOp::Eq => self.builder.ins().band(same_ptr, by_meta),
                 BinOp::Ne => self.builder.ins().bor(by_ptr, by_meta),
                 _ => self.builder.ins().select(same_ptr, by_meta, by_ptr),
-            });
+            };
+            return Ok((value, None));
         }
         let scalar = self.scalar_of(ty)?;
         let r_scalar = self.scalar_of(r_ty)?;
@@ -9443,7 +8771,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         };
         let signed = scalar.signed;
         if scalar.ty.is_float() {
-            return self.float_binary_op(op, l, r);
+            return Ok((self.float_binary_op(op, l, r)?, None));
         }
         let cc = match (op, signed) {
             (BinOp::Eq, _) => Some(IntCC::Equal),
@@ -9459,17 +8787,16 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             _ => None,
         };
         if let Some(cc) = cc {
-            return Ok(self.builder.ins().icmp(cc, l, r));
+            return Ok((self.builder.ins().icmp(cc, l, r), None));
         }
         if let BinOp::Mul = op
             && self.builder.func.dfg.value_type(l) == types::I128
         {
             let (value, overflow) = self.wide_mul_overflow(l, r, signed)?;
-            self.panic_if_overflow(overflow, OverflowOp::Mul)?;
-            return Ok(value);
+            return Ok((value, overflowing.then_some(overflow)));
         }
         let ins = self.builder.ins();
-        Ok(match op {
+        let value = match op {
             BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
                 unreachable!("comparisons return above")
             }
@@ -9485,56 +8812,25 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                     (BinOp::Mul, true) => ins.smul_overflow(l, r),
                     (_, _) => ins.umul_overflow(l, r),
                 };
-                let op = match op {
-                    BinOp::Add => OverflowOp::Add,
-                    BinOp::Sub => OverflowOp::Sub,
-                    _ => OverflowOp::Mul,
-                };
-                self.panic_if_overflow(overflow, op)?;
-                value
+                return Ok((value, overflowing.then_some(overflow)));
             }
-            BinOp::Div | BinOp::Rem => {
-                let div = matches!(op, BinOp::Div);
-                let zero = self.builder.ins().icmp_imm(IntCC::Equal, r, 0);
-                self.panic_if(
-                    zero,
-                    if div { OverflowOp::DivByZero } else { OverflowOp::RemByZero },
-                )?;
-                if signed {
-                    let ty = scalar.ty;
-                    let min = if ty == types::I128 {
-                        let low = self.builder.ins().iconst(types::I64, 0);
-                        let high = self.builder.ins().iconst(types::I64, i64::MIN);
-                        self.builder.ins().iconcat(low, high)
-                    } else {
-                        self.builder.ins().iconst(ty, i64::MIN >> (64 - ty.bits()))
-                    };
-                    let is_min = self.builder.ins().icmp(IntCC::Equal, l, min);
-                    let minus_one = self.builder.ins().icmp_imm(IntCC::Equal, r, -1);
-                    let overflow = self.builder.ins().band(is_min, minus_one);
-                    self.panic_if(overflow, if div { OverflowOp::Div } else { OverflowOp::Rem })?;
-                }
-                self.divide(l, r, div, signed)?
-            }
+            // An `Assert` before it has ruled out a zero divisor and `MIN / -1`.
+            BinOp::Div | BinOp::Rem => self.divide(l, r, matches!(op, BinOp::Div), signed)?,
+            // The amount is taken modulo the width, as rustc's `Shl` and `Shr` do.
             BinOp::Shl | BinOp::Shr => {
-                let (r, beyond_a_word) = self.shift_amount_word(r);
-                let bits = i64::from(scalar.ty.bits());
-                let overflow =
-                    self.builder.ins().icmp_imm(IntCC::UnsignedGreaterThanOrEqual, r, bits);
-                let overflow = match beyond_a_word {
-                    Some(beyond) => self.builder.ins().bor(overflow, beyond),
-                    None => overflow,
-                };
-                let (shift_op, value) = match (op, signed) {
-                    (BinOp::Shl, _) => (OverflowOp::Shl, self.builder.ins().ishl(l, r)),
-                    (_, true) => (OverflowOp::Shr, self.builder.ins().sshr(l, r)),
-                    (_, false) => (OverflowOp::Shr, self.builder.ins().ushr(l, r)),
-                };
-                self.panic_if_overflow(overflow, shift_op)?;
-                value
+                let (r, _) = self.shift_amount_word(r);
+                match (op, signed) {
+                    (BinOp::Shl, _) => self.builder.ins().ishl(l, r),
+                    (_, true) => self.builder.ins().sshr(l, r),
+                    (_, false) => self.builder.ins().ushr(l, r),
+                }
             }
             BinOp::Offset => unsupported!("pointer offset"),
-        })
+            BinOp::AddWithOverflow | BinOp::SubWithOverflow | BinOp::MulWithOverflow => {
+                unreachable!("taken apart above")
+            }
+        };
+        Ok((value, None))
     }
 
     /// A shift amount as at most one machine word, and whether the part cut off was not zero.
@@ -9652,11 +8948,6 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             return Ok(false);
         }
         Ok(self.cg.checked)
-    }
-
-    /// Branches to a panic when `overflow` is set, if the body is one that checks.
-    fn panic_if_overflow(&mut self, overflow: Value, op: OverflowOp) -> Result<()> {
-        if self.checks_overflow()? { self.panic_if(overflow, op) } else { Ok(()) }
     }
 
     /// Branches to a call of rustc's `panic_const_*` when `cond` is set.
@@ -9961,21 +9252,53 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             TerminatorKind::Unreachable => {
                 self.builder.ins().trap(TrapCode::user(2).expect("non-zero trap code"));
             }
-            TerminatorKind::Drop { place, target, .. } if self.runtime => {
+            TerminatorKind::Drop { place, target, .. } => {
                 let place = self.place_ref(place)?;
                 self.drop_value(place.addr, place.meta, place.ty.ty)?;
                 self.builder.ins().jump(self.blocks[*target], &[]);
             }
-            TerminatorKind::UnwindResume if self.runtime => {
+            TerminatorKind::UnwindResume => {
+                // An `async` body that unwinds is poisoned, as rustc has it.
+                if let Some(state) = &self.suspended {
+                    let (addr, ty) = (state.addr, state.ty);
+                    self.store_state(addr, ty, PANICKED);
+                }
                 let slot = self.exception_slot();
                 let exception = self.builder.ins().stack_load(ptr(), ptr(), slot, 0);
                 self.resume_unwinding(exception)?;
             }
-            TerminatorKind::Drop { place, target, .. } => {
-                let block = self.builder.create_block();
-                self.builder.ins().jump(block, &[]);
-                let Some(from) = self.at else { unsupported!("drop outside a block") };
-                self.deferred_drops.push((block, place.clone(), *target, self.span, from));
+            // A suspended future has been dropped: its state already says it returned.
+            TerminatorKind::CoroutineDrop => self.return_()?,
+            TerminatorKind::Assert { cond, expected, msg, target, .. } => {
+                // rustc's codegen skips an overflow check where overflow is not checked.
+                if !msg.is_optional_overflow_check() || self.checks_overflow()? {
+                    let (holds, _) = self.load_scalar(cond)?;
+                    let cc = if *expected { IntCC::Equal } else { IntCC::NotEqual };
+                    let failed = self.builder.ins().icmp_imm(cc, holds, 0);
+                    let op = match msg {
+                        AssertKind::BoundsCheck { len, index } => {
+                            let (len, _) = self.load_scalar(len)?;
+                            let (index, _) = self.load_scalar(index)?;
+                            self.bounds_panic_if(failed, index, len)?;
+                            None
+                        }
+                        AssertKind::Overflow(BinOp::Add, ..) => Some(OverflowOp::Add),
+                        AssertKind::Overflow(BinOp::Sub, ..) => Some(OverflowOp::Sub),
+                        AssertKind::Overflow(BinOp::Mul, ..) => Some(OverflowOp::Mul),
+                        AssertKind::Overflow(BinOp::Div, ..) => Some(OverflowOp::Div),
+                        AssertKind::Overflow(BinOp::Rem, ..) => Some(OverflowOp::Rem),
+                        AssertKind::Overflow(BinOp::Shl, ..) => Some(OverflowOp::Shl),
+                        AssertKind::Overflow(BinOp::Shr, ..) => Some(OverflowOp::Shr),
+                        AssertKind::Overflow(op, ..) => unsupported!("overflow check of {op:?}"),
+                        AssertKind::OverflowNeg(_) => Some(OverflowOp::Neg),
+                        AssertKind::DivisionByZero(_) => Some(OverflowOp::DivByZero),
+                        AssertKind::RemainderByZero(_) => Some(OverflowOp::RemByZero),
+                    };
+                    if let Some(op) = op {
+                        self.panic_if(failed, op)?;
+                    }
+                }
+                self.builder.ins().jump(self.blocks[*target], &[]);
             }
             TerminatorKind::Call { func, args, destination, target, .. } => {
                 self.call(func, args, destination, *target)?
@@ -12855,27 +12178,15 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         if self.inner_pad.is_some() {
             return self.inner_pad;
         }
-        if self.runtime {
-            let target = self.unwind_to?;
-            if let Some(&(_, pad)) = self.pads.iter().find(|(it, _)| *it == target) {
-                return Some(pad);
-            }
-            let pad = self.builder.create_block();
-            self.builder.append_block_param(pad, ptr());
-            self.builder.set_cold_block(pad);
-            self.pads.push((target, pad));
+        let target = self.unwind_to?;
+        if let Some(&(_, pad)) = self.pads.iter().find(|(it, _)| *it == target) {
             return Some(pad);
         }
-        if self.drop_flags.iter().next().is_none() {
-            return None;
-        }
-        if self.cleanup.is_none() {
-            let block = self.builder.create_block();
-            self.builder.append_block_param(block, ptr());
-            self.builder.set_cold_block(block);
-            self.cleanup = Some(block);
-        }
-        self.cleanup
+        let pad = self.builder.create_block();
+        self.builder.append_block_param(pad, ptr());
+        self.builder.set_cold_block(pad);
+        self.pads.push((target, pad));
+        Some(pad)
     }
 
     fn exception_table(
@@ -12951,85 +12262,6 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         })
     }
 
-    /// Fills in the landing pad: drops every local that holds a value, last declared first, and
-    /// carries on unwinding.
-    fn emit_cleanup(&mut self) -> Result<()> {
-        let Some(cleanup) = self.cleanup else { return Ok(()) };
-        self.in_cleanup = true;
-        self.builder.switch_to_block(cleanup);
-        let exception = self.builder.block_params(cleanup)[0];
-        self.drop_live_locals(None)?;
-        if let Some(state) = &self.suspended {
-            let (addr, ty) = (state.addr, state.ty);
-            self.store_state(addr, ty, PANICKED);
-        }
-        self.resume_unwinding(exception)
-    }
-
-    /// Drops every local that holds a value. Each is dropped at where `ends` has it, if that is
-    /// given, and where the code being generated is otherwise.
-    fn drop_live_locals(&mut self, ends: Option<&FxHashMap<LocalId, MirSpan>>) -> Result<()> {
-        self.drops_all = true;
-        for local in self.unwinding_order() {
-            let next = self.builder.create_block();
-            self.builder.set_cold_block(next);
-            let place = crate::mir::Place::from(local).store();
-            if let Some(&end) = ends.and_then(|ends| ends.get(&local)) {
-                self.at(end);
-            }
-            self.drop_place(&place, next)?;
-            self.builder.switch_to_block(next);
-        }
-        self.drops_all = false;
-        Ok(())
-    }
-
-    /// Where the scope of each local the body drops ends.
-    fn scope_ends(body: &MirBody<'db>) -> FxHashMap<LocalId, MirSpan> {
-        let mut ends = FxHashMap::default();
-        for (_, block) in body.basic_blocks.iter() {
-            if let Some(crate::mir::Terminator {
-                kind: TerminatorKind::Drop { place, .. },
-                span: span @ MirSpan::ExprEnd(_),
-            }) = &block.terminator
-            {
-                ends.entry(place.local).or_insert(*span);
-            }
-        }
-        ends
-    }
-
-    /// The locals with a drop flag in the order a landing pad drops them.
-    fn unwinding_order(&self) -> Vec<LocalId> {
-        let body = self.body.expect("MIR body");
-        let named: rustc_hash::FxHashSet<LocalId> =
-            body.binding_locals.values().chain(&body.param_locals).copied().collect();
-        let flagged = |local: &LocalId| self.drop_flags.contains_idx(*local);
-        let mut undropped: Vec<LocalId> = self
-            .drop_flags
-            .iter()
-            .map(|(local, _)| local)
-            .filter(|local| !self.drop_order.contains(local))
-            .collect();
-        undropped.reverse();
-        // Temporaries the body never drops are moved by the expression that made them, so one
-        // that still holds a value belongs to the expression that unwound: its operands come
-        // first, before the temporaries it borrowed, which live to the end of the statement.
-        // The rest go in the order the body drops them when nothing unwinds, which is innermost
-        // scope first.
-        let (variables, mut order): (Vec<LocalId>, Vec<LocalId>) =
-            undropped.into_iter().partition(|local| named.contains(local));
-        order.sort_by_key(|local| !self.operand_temps.contains(local));
-        order.extend(self.drop_order.iter().copied().filter(flagged));
-        // A variable the body never drops is in a scope no path leaves by its end. It goes
-        // after what its scope holds and before the variables declared ahead of it.
-        for variable in variables {
-            let outer = order.iter().position(|it| named.contains(it) && *it < variable);
-            order.insert(outer.unwrap_or(order.len()), variable);
-        }
-        order
-    }
-
     fn store_state(&mut self, state: Value, ty: Type, value: i64) {
         let value = self.builder.ins().iconst(ty, value);
         self.builder.ins().store(MEM, value, state, 0);
@@ -13051,13 +12283,12 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
 
     /// The way into an `async` body. `poll` carries on from where the body last returned
     /// `Poll::Pending`. A null context instead asks for the future to be dropped: what it
-    /// captured if it never ran, and what its locals hold if it is suspended.
-    #[allow(clippy::too_many_arguments)]
+    /// captured if it never ran, and what is in scope where it yielded if it is suspended,
+    /// which the yield's drop path in the MIR does.
     fn enter_coroutine(
         &mut self,
         body: &MirBody<'db>,
         state: &SuspendedState,
-        flags: &FrameFlags,
         addr: Value,
         ty: Ty<'db>,
         layout: &Layout,
@@ -13072,69 +12303,37 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             _ => self.builder.ins().uextend(types::I64, at),
         };
         let (poll, drop) = (self.builder.create_block(), self.builder.create_block());
-        // What is kept where the body yielded holds a value, to be used or to be dropped.
-        let entered = self.builder.create_block();
-        let mut kept = Switch::new();
-        let mut restores = Vec::new();
-        for (index, point) in state.held.yields.iter().enumerate() {
-            let flags: Vec<DropFlag> = flags
-                .kept
-                .iter()
-                .filter(|(local, _)| point.kept.contains(local))
-                .map(|&(_, flag)| flag)
-                .collect();
-            if !flags.is_empty() {
-                let restore = self.builder.create_block();
-                kept.set_entry(SUSPENDED as u128 + index as u128, restore);
-                restores.push((restore, flags));
-            }
-        }
-        kept.emit(&mut self.builder, at, entered);
-        for (restore, flags) in restores {
-            self.builder.switch_to_block(restore);
-            for flag in flags {
-                flag.set(&mut self.builder, 1);
-            }
-            self.builder.ins().jump(entered, &[]);
-        }
-        self.builder.switch_to_block(entered);
         self.builder.ins().brif(context, poll, &[], drop, &[]);
 
-        let (first, finished) = (self.builder.create_block(), self.builder.create_block());
+        let finished = self.builder.create_block();
         self.builder.switch_to_block(poll);
         let mut switch = Switch::new();
-        switch.set_entry(UNRESUMED as u128, first);
+        switch.set_entry(UNRESUMED as u128, self.blocks[body.start_block]);
         for (index, point) in state.held.yields.iter().enumerate() {
             switch.set_entry(SUSPENDED as u128 + index as u128, self.blocks[point.resume]);
         }
         switch.emit(&mut self.builder, at, finished);
-        self.builder.switch_to_block(first);
-        for &flag in &flags.in_frame {
-            flag.set(&mut self.builder, 0);
-        }
-        self.builder.ins().jump(self.blocks[body.start_block], &[]);
         // FIXME: rustc panics with "`async fn` resumed after completion".
         self.builder.switch_to_block(finished);
         self.builder.ins().trap(TrapCode::user(3).expect("non-zero trap code"));
 
-        let (unresumed, resumed, suspended, done) = (
-            self.builder.create_block(),
-            self.builder.create_block(),
-            self.builder.create_block(),
-            self.builder.create_block(),
-        );
+        let (unresumed, done) = (self.builder.create_block(), self.builder.create_block());
         // Dropping is laid out behind the body, so that the code a function begins with is
         // that of its first statement and not of the drops of a future given up half-way.
-        for block in [drop, resumed, unresumed, suspended] {
+        for block in [drop, unresumed] {
             self.builder.set_cold_block(block);
         }
         self.builder.switch_to_block(drop);
         self.store_state(state.addr, state.ty, RETURNED);
-        self.builder.ins().brif(at, resumed, &[], unresumed, &[]);
-        self.builder.switch_to_block(resumed);
-        let is_suspended =
-            self.builder.ins().icmp_imm(IntCC::UnsignedGreaterThanOrEqual, at, SUSPENDED);
-        self.builder.ins().brif(is_suspended, suspended, &[], done, &[]);
+        let mut dropping = Switch::new();
+        dropping.set_entry(UNRESUMED as u128, unresumed);
+        for (index, point) in state.held.yields.iter().enumerate() {
+            let Some(dropped) = point.drop else {
+                unsupported!("a yield without a drop path");
+            };
+            dropping.set_entry(SUSPENDED as u128 + index as u128, self.blocks[dropped]);
+        }
+        dropping.emit(&mut self.builder, at, done);
         self.in_cleanup = true;
         self.builder.switch_to_block(unresumed);
         self.at(Self::returns_at(body));
@@ -13148,7 +12347,6 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         }
         self.builder.ins().jump(done, &[]);
         self.in_cleanup = false;
-        self.suspended_drop = Some((suspended, done));
         self.builder.switch_to_block(done);
         self.return_()
     }
@@ -13256,19 +12454,6 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         Ok(())
     }
 
-    fn set_drop_flag(&mut self, place: &StoredPlace, live: bool) {
-        if !place.projection.as_slice().is_empty() {
-            if live {
-                self.clear_moved(place);
-            }
-            return;
-        }
-        if let Some(&flag) = self.drop_flags.get(place.local) {
-            flag.set(&mut self.builder, live as i64);
-        }
-    }
-
-    /// Drops the value at `addr` in place.
     fn drop_value(&mut self, addr: Value, meta: Option<Value>, ty: Ty<'db>) -> Result<()> {
         let ty = self.normalize(ty);
         if self.glue_of(ty) == DropGlue::None {
@@ -13892,7 +13077,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         destination: &StoredPlace,
         target: Option<BasicBlockId>,
     ) -> Result<()> {
-        self.set_drop_flag(destination, true);
+        let _ = destination;
         match target {
             Some(target) => self.builder.ins().jump(self.blocks[target], &[]),
             None => self.builder.ins().trap(TrapCode::user(2).expect("non-zero trap code")),
@@ -13931,70 +13116,6 @@ fn dump_mir(body: &MirBody<'_>) {
     }
 }
 
-/// Whether a place is an element of an array or slice at an index that is only known when
-/// the program runs.
-fn is_indexed(place: &StoredPlace) -> bool {
-    place.projection.as_slice().iter().any(|it| matches!(it, ProjectionElem::Index(_)))
-}
-
-/// Where each local of a body starts to live. A local that holds the index of `base[index]`
-/// starts at that expression.
-fn index_spans(body: &MirBody<'_>) -> FxHashMap<LocalId, MirSpan> {
-    let statements = body.basic_blocks.iter().flat_map(|(_, block)| &block.statements);
-    statements
-        .filter_map(|statement| match statement.kind {
-            StatementKind::StorageLive(local) => Some((local, statement.span)),
-            _ => None,
-        })
-        .collect()
-}
-
-/// The temporaries that no place of the body holds on to: the ones an expression made for its
-/// operands.
-fn operand_temps(body: &MirBody<'_>) -> rustc_hash::FxHashSet<LocalId> {
-    let mut temps: rustc_hash::FxHashSet<LocalId> = body.locals.iter().map(|(id, _)| id).collect();
-    for &local in body.binding_locals.values().chain(&body.param_locals) {
-        temps.remove(&local);
-    }
-    let mut held = |place: &StoredPlace| {
-        temps.remove(&place.local);
-    };
-    let operand = |operand: &Operand, held: &mut dyn FnMut(&StoredPlace)| {
-        if let OperandKind::Copy(place) | OperandKind::Move(place) = &operand.kind
-            && !place.projection.as_slice().is_empty()
-        {
-            held(place);
-        }
-    };
-    for (_, block) in body.basic_blocks.iter() {
-        for statement in &block.statements {
-            let StatementKind::Assign(to, rvalue) = &statement.kind else { continue };
-            if !to.projection.as_slice().is_empty() {
-                held(to);
-            }
-            match rvalue {
-                Rvalue::Ref(_, place)
-                | Rvalue::CopyForDeref(place)
-                | Rvalue::Discriminant(place)
-                | Rvalue::Len(place) => held(place),
-                Rvalue::Use(it) | Rvalue::UnaryOp(_, it) | Rvalue::Cast(_, it, _) => {
-                    operand(it, &mut held)
-                }
-                Rvalue::Aggregate(_, operands) => {
-                    operands.iter().for_each(|it| operand(it, &mut held))
-                }
-                _ => (),
-            }
-        }
-        if let Some(TerminatorKind::Call { args, .. }) =
-            block.terminator.as_ref().map(|it| &it.kind)
-        {
-            args.iter().for_each(|it| operand(it, &mut held));
-        }
-    }
-    temps
-}
-
 /// The locals that can be kept in a register as far as the body goes: temporaries written
 /// whole by assignments only, that nothing takes the address of.
 fn register_locals(body: &MirBody<'_>, forwarded: &FxHashMap<LocalId, LocalId>) -> Vec<LocalId> {
@@ -14011,7 +13132,7 @@ fn register_locals(body: &MirBody<'_>, forwarded: &FxHashMap<LocalId, LocalId>) 
             mentions.entry(local).or_default().1 += 1;
         }
     };
-    let mut read = |operand: &Operand, plain: &mut dyn FnMut(&StoredPlace)| {
+    let read = |operand: &Operand, plain: &mut dyn FnMut(&StoredPlace)| {
         if let OperandKind::Copy(place) | OperandKind::Move(place) = &operand.kind {
             plain(place);
         }
@@ -14149,24 +13270,6 @@ fn forwarded_temps(body: &MirBody<'_>) -> FxHashMap<LocalId, LocalId> {
     forwarded
 }
 
-/// The blocks a block goes on to when nothing unwinds.
-fn successors(body: &MirBody<'_>, id: BasicBlockId) -> Vec<BasicBlockId> {
-    match body.basic_blocks[id].terminator.as_ref().map(|it| &it.kind) {
-        Some(TerminatorKind::SwitchInt { targets, .. }) => targets.all_targets().to_vec(),
-        Some(
-            TerminatorKind::Goto { target }
-            | TerminatorKind::Drop { target, .. }
-            | TerminatorKind::DropAndReplace { target, .. }
-            | TerminatorKind::Assert { target, .. }
-            | TerminatorKind::FalseEdge { real_target: target, .. }
-            | TerminatorKind::FalseUnwind { real_target: target, .. },
-        ) => vec![*target],
-        Some(TerminatorKind::Call { target, .. }) => target.iter().copied().collect(),
-        Some(TerminatorKind::Yield { resume, .. }) => vec![*resume],
-        _ => Vec::new(),
-    }
-}
-
 /// The operands an rvalue reads.
 fn operands_of(rvalue: &Rvalue) -> Vec<&Operand> {
     match rvalue {
@@ -14180,55 +13283,4 @@ fn operands_of(rvalue: &Rvalue) -> Vec<&Operand> {
         Rvalue::Aggregate(_, operands) => operands.iter().collect(),
         _ => Vec::new(),
     }
-}
-
-/// The locals a body drops whole, in the order their scopes end: of two that hold a value at
-/// once, the first one here is dropped first.
-fn drop_order(body: &MirBody<'_>, reachable: &rustc_hash::FxHashSet<BasicBlockId>) -> Vec<LocalId> {
-    let successors = |id| successors(body, id);
-    let mut seen = rustc_hash::FxHashSet::default();
-    let mut post_order = Vec::new();
-    let mut stack = vec![(body.start_block, successors(body.start_block))];
-    seen.insert(body.start_block);
-    while let Some((id, pending)) = stack.last_mut() {
-        match pending.pop() {
-            Some(next) if reachable.contains(&next) && seen.insert(next) => {
-                stack.push((next, successors(next)));
-            }
-            Some(_) => (),
-            None => {
-                post_order.push(*id);
-                stack.pop();
-            }
-        }
-    }
-    // `local = value` drops what the local held first, which says nothing about its scope, so
-    // those drops only count for a local that has no other.
-    let replaces = |place: &StoredPlace, target: BasicBlockId| {
-        let assigned = body.basic_blocks[target].statements.iter().find_map(|it| match &it.kind {
-            StatementKind::Assign(to, _) => Some(to),
-            _ => None,
-        });
-        assigned == Some(place)
-    };
-    let mut order: Vec<LocalId> = Vec::new();
-    for replaced in [false, true] {
-        for &id in post_order.iter().rev() {
-            if let Some(TerminatorKind::Drop { place, target, .. }) =
-                body.basic_blocks[id].terminator.as_ref().map(|it| &it.kind)
-                && place.projection.as_ref().as_slice().is_empty()
-                && replaces(place, *target) == replaced
-                && !order.contains(&place.local)
-            {
-                order.push(place.local);
-            }
-        }
-    }
-    // The scopes say which of two locals is dropped first. Where the blocks come in the body
-    // does not: the exit of a loop can come before its body. A parameter is in no scope and
-    // outlives them all.
-    let ends: rustc_hash::FxHashMap<LocalId, usize> =
-        body.scope_ends.iter().enumerate().map(|(at, &local)| (local, at)).collect();
-    order.sort_by_key(|local| ends.get(local).copied().unwrap_or(ends.len()));
-    order
 }

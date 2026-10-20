@@ -355,6 +355,7 @@ impl SymbolResolver for Resolver<'_> {
         let source = sema.source(it)?;
         let mut names = vec![name.as_str().to_owned()];
         let mut closures = Vec::new();
+        let mut around = Vec::new();
         let mut owner = None;
         for node in sema.ancestors_with_macros(source.value.syntax().clone()).skip(1) {
             if is_closure(&node) {
@@ -385,11 +386,25 @@ impl SymbolResolver for Resolver<'_> {
                     _ => None,
                 }
             };
-            names.extend(name.map(|it| it.text().to_string()));
+            if let Some(name) = name {
+                let named = |other: &SyntaxNode| {
+                    let other = match_ast! {
+                        match other {
+                            ast::Const(it) => it.name(),
+                            ast::Static(it) => it.name(),
+                            _ => None,
+                        }
+                    };
+                    other.is_some_and(|it| it.text() == name.text())
+                };
+                around.push(place_in_definition(&sema, &node, &named)?.into());
+                names.push(name.text().to_string());
+            }
         }
         let owner = match owner {
             Some(owner) => owner,
             None => {
+                around.pop();
                 let outer = names.pop()?;
                 self.item_path(module.nearest_non_block_module(self.db), &outer)?
             }
@@ -397,6 +412,7 @@ impl SymbolResolver for Resolver<'_> {
         names.push(owner);
         names.reverse();
         closures.reverse();
+        around.reverse();
         let path = names.join("::");
         // Only a path through a closure or an anonymous constant has segments left out of it.
         let named = |node: &SyntaxNode| {
@@ -406,8 +422,8 @@ impl SymbolResolver for Resolver<'_> {
         let place = place_in_definition(&sema, source.value.syntax(), &named)?.into();
         let symbol = self
             .table
-            .get_nested(&path, &closures, place)
-            .or_else(|| self.table.get_at(&path, place));
+            .get_nested(&path, &closures, place, &around)
+            .or_else(|| self.table.get_at(&path, place, &around));
         symbol.map(str::to_owned)
     }
 
