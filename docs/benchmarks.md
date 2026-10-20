@@ -68,9 +68,12 @@ or the run stops.
 ## Tiers
 
 Each project is measured with each code producer ra-jit has: Cranelift (the default, in the
-README) and LLVM (`RA_JIT_BACKEND=llvm RA_JIT_OPT=2 RA_JIT_EMIT=fast`). The binary is built once
-with `--features llvm` and the backend is chosen by environment, so a new tier is one more entry
-in `BACKENDS` in `harness/bench.py`; the report makes a table for every backend in the result.
+README) and LLVM (`RA_JIT_BACKEND=llvm RA_JIT_OPT=2 RA_JIT_EMIT=fast`). Cranelift is measured
+with ra-jit as it is installed and released, without the `llvm` feature (`RA_JIT_BIN`), and LLVM
+with a build that has it (`RA_JIT_LLVM_BIN`): a binary that links libLLVM loads it each time it
+starts, about 6 ms on the benchmark machine, and every `cargo ra-jit` starts it once. A new tier
+is one more entry in `BACKENDS` in `harness/bench.py`; the report makes a table for every
+backend in the result.
 
 ## The machine
 
@@ -121,7 +124,8 @@ On Linux x86-64 with Nix (or with Rust 1.99.0, rust-src, LLVM 20 and Python 3 in
 
 ```
 nix develop .#bench
-cargo build -p ra-jit --release --features llvm
+cargo build -p ra-jit --release
+CARGO_TARGET_DIR=target-llvm cargo build -p ra-jit --release --features llvm
 python3 harness/bench.py ripgrep fd --runs 5 --out /tmp/bench.json   # any of the projects
 python3 harness/benchreport.py /tmp/bench.json --check               # what would change
 ```

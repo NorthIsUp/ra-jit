@@ -44,13 +44,17 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-      - name: Build ra-jit (Cranelift and LLVM in one binary)
+      # The Cranelift tier is measured with ra-jit as it is installed and released, without
+      # the `llvm` feature: on Linux a binary that links libLLVM spends about 6 ms loading it
+      # each time it starts, which every `cargo ra-jit` does.
+      - name: Build ra-jit (as released, and with the llvm feature)
         run: |
           mkdir -p "$BENCH_HOME"
-          CARGO_TARGET_DIR="$BENCH_HOME/target" nix develop .#bench -c cargo build -p ra-jit --release --features llvm
+          CARGO_TARGET_DIR="$BENCH_HOME/target" nix develop .#bench -c cargo build -p ra-jit --release
+          CARGO_TARGET_DIR="$BENCH_HOME/target-llvm" nix develop .#bench -c cargo build -p ra-jit --release --features llvm
       - name: Bench
         run: |
-          export RA_JIT_BIN="$BENCH_HOME/target/release/ra-jit" RA_JIT_LLVM_BIN="$BENCH_HOME/target/release/ra-jit"
+          export RA_JIT_BIN="$BENCH_HOME/target/release/ra-jit" RA_JIT_LLVM_BIN="$BENCH_HOME/target-llvm/release/ra-jit"
           export RA_JIT_PROJECTS="$BENCH_HOME/projects"
           rm -rf "$BENCH_HOME/work"
           nix develop .#bench -c env -u CARGO_INCREMENTAL -u RUSTC_WRAPPER python3 harness/bench.py \
