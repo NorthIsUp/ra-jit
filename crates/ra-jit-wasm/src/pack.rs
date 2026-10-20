@@ -12,7 +12,7 @@ use hir_expand::proc_macro::{
 };
 use ide_db::base_db::{
     CrateDisplayName, CrateGraphBuilder, CrateName, CrateOrigin, CrateWorkspaceData,
-    DependencyBuilder, Env, LangCrateOrigin, SourceDatabase, SourceRoot,
+    DependencyBuilder, Env, LangCrateOrigin, SourceDatabase, SourceRoot, TargetKind,
     target::{Arch, TargetData},
 };
 use intern::Symbol;
@@ -241,7 +241,7 @@ impl Pack {
                 krate.env.iter().cloned().collect(),
                 origin,
                 krate.attrs.clone(),
-                krate.macros.is_some(),
+                TargetKind::Lib { is_proc_macro: krate.macros.is_some() },
                 cwd.clone(),
                 workspace.clone(),
             );

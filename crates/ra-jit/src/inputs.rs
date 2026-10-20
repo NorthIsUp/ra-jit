@@ -8,8 +8,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use ide_db::base_db::Env;
-use project_model::{CargoConfig, ProjectWorkspace, ProjectWorkspaceKind, TargetKind};
+use ide_db::base_db::{Env, TargetKind};
+use project_model::{CargoConfig, ProjectWorkspace, ProjectWorkspaceKind};
 use rustc_hash::{FxHashMap, FxHasher};
 
 /// The variables cargo takes flags for rustc from.

@@ -115,7 +115,7 @@ impl Contents {
         field(b"ra-jit crate 3");
         let name = krate.extra_data(db).display_name.as_ref().map(|it| it.to_string());
         field(name.unwrap_or_default().as_bytes());
-        field(format!("{:?} {}", data.edition, data.is_proc_macro).as_bytes());
+        field(format!("{:?} {}", data.edition, data.target_kind.is_proc_macro()).as_bytes());
         for attr in &data.crate_attrs {
             field(attr.as_bytes());
         }
