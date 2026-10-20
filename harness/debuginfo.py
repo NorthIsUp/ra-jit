@@ -831,6 +831,8 @@ def debugger(tally, what, binary, cwd, place, env=None):
     stepped = {m for part in out.split("<step>")[1:] for m in re.findall(r"^#0 .*? at (\S+:\d+)", part, re.M)}
     stepped = {s for s in stepped if not s.endswith(f":{line}")}
     if not stepped:
+        # What gdb said from the line on is what tells where the steps went.
+        print("\n".join("    gdb: " + it[:200] for it in (out.split("<line>")[1] + ran.stderr).strip().splitlines()[-24:]))
         return tally.say(said, "NOT STEPPED")
     frames = len(re.findall(r"^#\d+ ", out.split("<where>")[1].split("<mapped>")[0], re.M))
     tally.say(said, "stopped", f"in {name.group(1)[:40] if name else '?'}, {frames} frames up, stepped to {', '.join(sorted(stepped))[:60]}")
