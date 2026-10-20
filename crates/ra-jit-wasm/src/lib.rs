@@ -19,6 +19,10 @@ pub mod pack;
 #[allow(dead_code)]
 #[path = "../../ra-jit/src/symbols.rs"]
 mod symbols;
+// What the table reads the sources of a crate from.
+#[allow(dead_code)]
+#[path = "../../ra-jit/src/dep_info.rs"]
+mod dep_info;
 
 use std::time::Duration;
 

@@ -126,9 +126,14 @@ What is specific to the port:
   `__unwind_info` and `__eh_frame` only in the segment named `__TEXT`, so `__unwind_info`
   moves into the header's spare room and the patch's frames take its place in front of the
   program's; a patch whose frames are larger than the program's unwind table is linked in
-  full. The room for two more load commands and the table comes from
-  `-Wl,-headerpad,0x100000` on the link line; without it the splice declines. The file
-  does not grow from splice to splice.
+  full. The room for two more load commands and the table comes from `-Wl,-headerpad`,
+  which `cargo ra-jit` gives the link in a file of its own beside the executable
+  (`bin.headerpad`), last on the line: 1 MiB, or what the line asks for. The table grows
+  with the program (3 MB for a GUI app of 570 crates), so after each full link the daemon
+  reads the header, and when the room is short it writes what the table needs and a quarter
+  more into that file and links once again; the links after start from it. A link line
+  given to the daemon by hand keeps the headerpad it has, and without enough the splice
+  declines. The file does not grow from splice to splice.
 - Executables with chained fixups are declined and linked in full. That was measured with
   `MACOSX_DEPLOYMENT_TARGET=13.0`; rustc's default deployment target of 11.0 produces dyld
   info and splices.
