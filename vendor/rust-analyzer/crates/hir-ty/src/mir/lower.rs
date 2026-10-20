@@ -1530,6 +1530,9 @@ impl<'a, 'db> MirLowerCtx<'a, 'db> {
                             | TyKind::Float(_)
                     ) && (lhs_ty == rhs_ty || builtin_inequal_impls)
                 };
+                // rustc's typeck drops the autoref it records for the operands of a comparison
+                // of scalars (writeback's `fix_scalar_builtin_expr`): the values are compared.
+                let compares_scalars = is_builtin && matches!(op, BinaryOp::CmpOp(_));
                 if !is_builtin
                     && let Some((func_id, generic_args)) = self.infer.method_resolution(expr_id)
                 {
@@ -1589,6 +1592,11 @@ impl<'a, 'db> MirLowerCtx<'a, 'db> {
                         span: Some((*lhs).into()),
                     };
                     (operand, current)
+                } else if compares_scalars {
+                    let Some(it) = self.lower_scalar_operand(*lhs, current)? else {
+                        return Ok(None);
+                    };
+                    it
                 } else {
                     let Some(it) = self.lower_expr_to_some_operand(*lhs, current)? else {
                         return Ok(None);
@@ -1636,8 +1644,11 @@ impl<'a, 'db> MirLowerCtx<'a, 'db> {
                     );
                     return Ok(self.merge_blocks(end_of_then, end_of_else, expr_id.into()));
                 }
-                let Some((rhs_op, current)) = self.lower_expr_to_some_operand(*rhs, current)?
-                else {
+                let rhs_op = match compares_scalars {
+                    true => self.lower_scalar_operand(*rhs, current)?,
+                    false => self.lower_expr_to_some_operand(*rhs, current)?,
+                };
+                let Some((rhs_op, current)) = rhs_op else {
                     return Ok(None);
                 };
                 self.push_assignment(
@@ -2659,6 +2670,40 @@ impl<'a, 'db> MirLowerCtx<'a, 'db> {
         Ok(my.end)
     }
 
+    /// An operand of a comparison of scalars: the value, without the autoref inference records
+    /// for `PartialEq::eq(&a, &b)`, as rustc has it after writeback.
+    fn lower_scalar_operand(
+        &mut self,
+        expr_id: ExprId,
+        current: BasicBlockId,
+    ) -> Result<'db, Option<(Operand, BasicBlockId)>> {
+        let adjustments = self.infer.expr_adjustments.get(&expr_id).cloned().unwrap_or_default();
+        let Some((Adjustment { kind: Adjust::Borrow(AutoBorrow::Ref(_)), .. }, rest)) =
+            adjustments.split_last()
+        else {
+            return self.lower_expr_to_some_operand(expr_id, current);
+        };
+        if rest.is_empty()
+            && let Expr::Literal(l) = &self.store[expr_id]
+        {
+            let ty = self.expr_ty_without_adjust(expr_id);
+            let mut operand = self.lower_literal_to_operand(ty, l)?;
+            operand.span = Some(expr_id.into());
+            return Ok(Some((operand, current)));
+        }
+        let ty = match rest.last() {
+            Some(it) => it.target.as_ref(),
+            None => self.expr_ty_without_adjust(expr_id),
+        };
+        let temp: Place<'db> = self.temp(ty, current, expr_id.into())?.into();
+        let Some(current) = self.lower_expr_to_place_with_adjust(expr_id, temp, current, rest)?
+        else {
+            return Ok(None);
+        };
+        let operand = Operand { kind: OperandKind::Copy(temp.store()), span: Some(expr_id.into()) };
+        Ok(Some((operand, current)))
+    }
+
     fn has_adjustments(&self, expr_id: ExprId) -> bool {
         !self.infer.expr_adjustments.get(&expr_id).map(|it| it.is_empty()).unwrap_or(true)
     }
@@ -2862,18 +2907,32 @@ impl<'a, 'db> MirLowerCtx<'a, 'db> {
                     self.declare_bindings(*pat);
                     // `let x = e` with `x` bound by value: rustc lowers `e` into `x` itself
                     // (`expr_into_pattern`), so `x` holds the value before the temporaries of
-                    // `e` are dropped, which is what a coroutine's storage conflicts see.
+                    // `e` are dropped, which is what a coroutine's storage conflicts see. A
+                    // value of a type without a size can't be a local, so that goes the other
+                    // way, which says so.
                     if let (Some(expr_id), None, false, Pat::Bind { id, subpat: None }) =
                         (initializer, else_branch, *is_super, &self.store[*pat])
                         && matches!(
                             self.store[*id].mode,
                             BindingAnnotation::Unannotated | BindingAnnotation::Mutable
                         )
+                        && !matches!(
+                            self.infer.binding_ty(*id).kind(),
+                            TyKind::Slice(_) | TyKind::Str | TyKind::Dynamic(..)
+                        )
                     {
                         let binding = *id;
                         self.extend_temporaries(*expr_id, *pat);
-                        self.push_storage_live(binding, current)?;
                         let local = self.binding_local(binding)?;
+                        // rustc's storage_live_binding: the storage starts here, and the drop of
+                        // the value is scheduled only once it holds one, after the initializer
+                        // and the temporaries it extends, so that nothing unwinding out of the
+                        // initializer drops it.
+                        let at = MirSpan::BindingId(binding);
+                        self.push_statement(
+                            current,
+                            StatementKind::StorageLive(local).with_span(at),
+                        );
                         let temporaries = self.push_drop_scope();
                         self.drop_scopes.last_mut().unwrap().temporaries = true;
                         let Some(c) = self.lower_expr_to_place(*expr_id, local.into(), current)?
@@ -2883,6 +2942,12 @@ impl<'a, 'db> MirLowerCtx<'a, 'db> {
                             return Ok(None);
                         };
                         current = temporaries.pop_and_drop(self, c, span);
+                        if let Some(scope) =
+                            self.drop_scopes.iter_mut().rev().find(|it| !it.temporaries)
+                            && !scope.locals.contains(&local)
+                        {
+                            scope.locals.push(local);
+                        }
                         continue;
                     }
                     if let Some(expr_id) = initializer {
