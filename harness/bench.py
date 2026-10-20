@@ -416,10 +416,12 @@ def machine():
             return None
 
     memory = read("/proc/meminfo", r"^MemTotal:\s+(\d+) kB")
+    # A run pinned to some of the cores (taskset) has those, and cargo's jobs follow them.
+    cores = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count()
     return dict(
         # Named by whoever runs it (the workflow names the instance type).
         name=os.environ.get("RA_JIT_BENCH_MACHINE"),
-        cpu=read("/proc/cpuinfo", r"^model name\s*:\s*(.*)$"), cores=os.cpu_count(),
+        cpu=read("/proc/cpuinfo", r"^model name\s*:\s*(.*)$"), cores=cores, machine_cores=os.cpu_count(),
         memory_gib=round(int(memory) / 1024 / 1024) if memory else None,
         os=platform.system(), arch=platform.machine(), kernel=platform.release(),
         rustc=first_line("rustc", "-V"), cc=first_line("cc", "--version"), ld=first_line("ld", "--version"),
