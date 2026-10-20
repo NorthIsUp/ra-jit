@@ -430,6 +430,10 @@ def machine():
 
 
 def ra_jit_commit():
+    """The commit of ra-jit measured: `RA_JIT_BENCH_COMMIT` when the caller knows better than the
+    checkout (a branch that changes only the harness, measured for main)."""
+    if os.environ.get("RA_JIT_BENCH_COMMIT"):
+        return os.environ["RA_JIT_BENCH_COMMIT"]
     ran = subprocess.run(["git", "-C", ROOT, "rev-parse", "HEAD"], capture_output=True, text=True)
     return ran.stdout.strip() or None
 

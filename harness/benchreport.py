@@ -85,11 +85,9 @@ def short(commit):
 
 def machine_line(result):
     host = result.get("host") or {}
-    name = host.get("name") or host.get("cpu") or "unnamed machine"
-    if host.get("name") and host.get("cpu"):
-        name += f" ({host['cpu']})"
-    sizes = [f"{host.get('cores') or result.get('cores')} cores"] + ([f"{host['memory_gib']} GiB"] if host.get("memory_gib") else [])
-    return f"{name}: {', '.join(sizes)}"
+    details = [p for p in (host.get("cpu"), f"{host.get('cores') or result.get('cores')} cores",
+                           f"{host['memory_gib']} GiB" if host.get("memory_gib") else None) if p]
+    return f"{host.get('name') or 'one machine'} ({', '.join(details)})"
 
 
 def readme_section(result):
@@ -98,9 +96,9 @@ def readme_section(result):
     commit = result.get("commit")
     lines = [
         START,
-        f"Edit, then build, on real projects at pinned commits ({machine_line(result)}, Linux x86-64; "
-        f"incremental `cargo build` → `cargo ra-jit build`, both warm, same linker, median of {result['runs']}; "
-        f"ra-jit [`{short(commit)}`]({REPO}/commit/{commit}), {result['date'][:10]}):",
+        f"Edit, then build, on real projects at pinned commits. Each cell is incremental `cargo build` → "
+        f"`cargo ra-jit build`, both warm, same linker, median of {result['runs']} edits. Linux x86-64, "
+        f"{machine_line(result)}, ra-jit [`{short(commit)}`]({REPO}/commit/{commit}) on {result['date'][:10]}.",
         "",
         "| Project | " + " | ".join(EDITS[p] for p in README_PHASES) + " |",
         "|---|" + "---:|" * len(README_PHASES),
