@@ -14,7 +14,7 @@ nix run github:indexable-inc/ra-jit
 
 That opens a Game of Life window you can edit while it runs (live on macOS Apple silicon).
 
-![Editing the running Game of Life: rule, colours and speed change live](docs/demo.webp)
+![Editing the running Game of Life: rule, colours and speed change live](docs/demo.avif)
 
 <p align="center">
   <a href="https://ra-jit.ix.dev/updates?src=readme">

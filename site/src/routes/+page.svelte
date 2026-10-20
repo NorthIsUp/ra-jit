@@ -22,9 +22,7 @@ loop {
 
 	<Copy text="nix run github:indexable-inc/ra-jit" />
 
-	<video src="/demo.mp4" poster="/demo.webp" autoplay loop muted playsinline controls>
-		<img src="/demo.webp" alt="Editing the running Game of Life: rule, colours and speed change live" />
-	</video>
+	<img src="/demo.avif" width="2560" height="1440" alt="Editing the running Game of Life: rule, colours and speed change live" />
 
 	<h2>What you get</h2>
 	<ul>
@@ -87,5 +85,5 @@ loop {
 	main { max-width: 720px; margin: 0 auto; padding: 64px 20px 96px; }
 	h1 { margin: 0 0 0.2em; font-size: 44px; font-weight: 700; letter-spacing: -0.03em; color: var(--ink-1); }
 	.lede { font-size: 20px; line-height: 1.45; color: var(--ink-1); }
-	video, img { display: block; width: 100%; height: auto; margin: 0 0 1.5em; border-radius: 12px; box-shadow: inset 0 0 0 1px var(--line); background: var(--code-bg); }
+	img { display: block; width: 100%; height: auto; margin: 0 0 1.5em; border-radius: 12px; box-shadow: inset 0 0 0 1px var(--line); background: var(--code-bg); }
 </style>
