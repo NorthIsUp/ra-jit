@@ -42,6 +42,7 @@ numbers go to $LATENCY_JSON when it is set. Python 3.13, stdlib only.
 """
 
 import asyncio
+import io
 import json
 import os
 import random
@@ -295,19 +296,17 @@ async def burst(program: Program, running: Running, logs: Logs, rng: random.Rand
     async def sender() -> None:
         # The demo's `send_as_typed`: one edit on the wire, then the newest text typed.
         while True:
-            await ready.wait()
-            ready.clear()
             if not newest:
                 if done:
                     return
+                await ready.wait()
+                ready.clear()
                 continue
             text, value = newest.pop()
             newest.clear()
             sent.append((value, now_us()))
             replies.append(await send_edit(program.source, text))
             program.source.write_text(text)
-            if newest:
-                ready.set()
 
     logs.skip()
     running.mark()
@@ -347,6 +346,9 @@ async def burst(program: Program, running: Running, logs: Logs, rng: random.Rand
 
 
 async def main(program_name: str, modes: list[str]) -> None:
+    # Lines as they happen, in order with the errors, also into a pipe.
+    if isinstance(sys.stdout, io.TextIOWrapper):
+        sys.stdout.reconfigure(line_buffering=True)
     bin_dir = Path(os.environ["RA_JIT_BIN"]).resolve().parent
     work = Path(tempfile.mkdtemp(prefix="ra-jit-live-latency-"))
     probe = None
