@@ -16,10 +16,15 @@ that is given, which lets the two be on different disks):
   signature  a function gets another parameter, and every caller the argument
   leaf       a body in a crate of the workspace that the others depend on
   generic    the body of a generic function that is used at many types
+  runtime    (projects with a `runtime` workload) the program ra-jit linked, cargo's debug build
+             and cargo's release build run the same command in turn, `--runs` times (at least
+             10) each; the output of the three has to be the same
 Every edit is made and taken back `--runs` times, or once when the daemon turned it down and
-cargo built it; the time of each is the median. None of
+cargo built it; the time of each is the median, and every sample of both sides is kept. None of
 them changes what the program does: after the first of each kind the program is run and has
-to say what cargo's says.
+to say what cargo's says. The result also names the commit of ra-jit, the date and the machine
+(`RA_JIT_BENCH_MACHINE` names it, for example the instance type); `benchreport.py` turns it
+into the README's table and docs/benchmarks.md.
 
 For every phase the result has the wall time of the command, cargo's time for the same
 step, the most memory the daemon's workers have held so far, who built it (the daemon, or
@@ -63,6 +68,8 @@ PROJECTS = {
             leaf=body("crates/matcher/src/lib.rs", "pub fn len(&self) -> usize {"),
             generic=[("crates/matcher/src/lib.rs", "        let mut last_end = at;", "        let _bench_edit = 1u32;\n        let mut last_end = at;")],
         ),
+        # The toolchain's own library source, which is pinned with it.
+        runtime=dict(bin="rg", args=["-uuu", "--sort", "path", "-c", r"\w+_unchecked\(|unsafe \{", "{library}"]),
     ),
     "cargo": dict(
         repo="rust-lang/cargo", tag="0.92.0", rev="ea2d97820c16195b0ca3fadb4319fe512c199a43",
@@ -72,6 +79,51 @@ PROJECTS = {
             signature=parameter("src/cargo/util/context/mod.rs", "cli_unstable", "&CliUnstable", "src/**/*.rs"),
             leaf=body("crates/cargo-util/src/paths.rs", "pub fn normalize_path(path: &Path) -> PathBuf {"),
             generic=body("src/cargo/util/context/mod.rs", "pub fn get<'de, T: serde::de::Deserialize<'de>>(&self, key: &str) -> CargoResult<T> {"),
+        ),
+    ),
+    "fd": dict(
+        repo="sharkdp/fd", tag="v10.3.0", rev="d38148f0aabdd073b4080cde770f679f3197b920",
+        run=["--extension", "rs", "main", "src"],
+        edits=dict(
+            body=body("src/main.rs", "fn run() -> Result<ExitCode> {"),
+            signature=parameter("src/cli.rs", "max_results", "Option<usize>", "src/**/*.rs"),
+            leaf=body("src/dir_entry.rs", "pub fn path(&self) -> &Path {"),
+        ),
+    ),
+    "bat": dict(
+        repo="sharkdp/bat", tag="v0.26.0", rev="c734087e1d15fb730d7653389c841fd9e3016556",
+        run=["--plain", "--color=never", "rustfmt.toml"],
+        edits=dict(
+            body=body("src/bin/bat/main.rs", "fn run() -> Result<bool> {"),
+            signature=parameter("src/assets.rs", "get_theme_set", "&LazyThemeSet", "src/assets.rs"),
+            leaf=body("src/assets.rs", "pub fn get_syntax_set(&self) -> Result<&SyntaxSet> {"),
+        ),
+    ),
+    "hyperfine": dict(
+        repo="sharkdp/hyperfine", tag="v1.19.0", rev="12fec42098642a19855ead34c8cb1e0be28c8ead",
+        run=["--help"],
+        edits=dict(
+            body=body("src/main.rs", "fn run() -> Result<()> {"),
+            signature=parameter("src/command.rs", "get_name", "String", "src/**/*.rs"),
+            leaf=body("src/command.rs", "pub fn get_command_line(&self) -> String {"),
+        ),
+    ),
+    "just": dict(
+        repo="casey/just", tag="1.43.0", rev="b7e7c46495b34e9407982ffbbb25eb2808ec40b7",
+        run=["--list", "--unsorted"],
+        edits=dict(
+            body=body("src/run.rs", "pub fn run(args: impl Iterator<Item = impl Into<OsString> + Clone>) -> Result<(), i32> {"),
+            signature=parameter("src/lexer.rs", "rest", "&'src str", "src/lexer.rs"),
+            leaf=body("src/lexer.rs", "  fn lexeme(&self) -> &'src str {"),
+        ),
+    ),
+    # A server: it is built, not run, so nothing checks what it does.
+    "axum": dict(
+        repo="tokio-rs/axum", tag="axum-v0.8.6", rev="c1bb9c3e90625fb8de4f9c9750f669cb4edac3df",
+        build=["-p", "example-hello-world"], run=None,
+        edits=dict(
+            body=body("examples/hello-world/src/main.rs", "async fn handler() -> Html<&'static str> {"),
+            leaf=body("axum-core/src/body.rs", "pub fn empty() -> Self {"),
         ),
     ),
     "nushell": dict(
@@ -221,15 +273,18 @@ def measure(name, spec, backend, runs, work, reference_dir):
     env = cargo_ra_jit.base_env(os.path.join(work, f"home-{name}-{backend}"))
     env["PATH"] = os.path.dirname(ra_jit) + os.pathsep + env["PATH"]
     env.update(BACKENDS[backend], RA_JIT_STATS="1", RA_JIT_CACHE=os.path.join(work, f"store-{name}-{backend}"))
+    # Neither side gets a compiler cache: a cold build is a cold build.
+    env.pop("RUSTC_WRAPPER", None)
     ours, theirs = Side(ws, env, True), Side(ws, env, False)
     if reference_dir:
         theirs.env["CARGO_TARGET_DIR"] = os.path.join(reference_dir, f"target-ref-{name}-{backend}")
     daemon, phases, wrong = Daemon(ours), {}, []
+    build, run = spec.get("build", []), spec.get("run")
     subprocess.run(["cargo", "fetch"], cwd=ws, env=env, capture_output=True)
     ours.cargo("stop")
 
     def both():
-        (took, mine), (reference, other) = ours.cargo("build"), theirs.cargo("build")
+        (took, mine), (reference, other) = ours.cargo("build", *build), theirs.cargo("build", *build)
         for side, ran in (("ra-jit", mine), ("cargo", other)):
             if ran.returncode != 0:
                 raise SystemExit(f"{name} {backend}: the {side} build failed:\n{ran.stderr[-3000:]}")
@@ -240,7 +295,9 @@ def measure(name, spec, backend, runs, work, reference_dir):
         return took, reference, built
 
     def runs_right(label):
-        _, mine = ours.cargo("run", "--", *spec["run"])
+        if run is None:
+            return
+        _, mine = ours.cargo("run", *build, "--", *run)
         if program_output(mine) != expected:
             wrong.append(f"{label}: the program says {program_output(mine)!r}")
 
@@ -250,13 +307,15 @@ def measure(name, spec, backend, runs, work, reference_dir):
               f"{phase['built'][:60]}  {phase.get('link') or ''}", flush=True)
 
     # Cargo's own cold build waits until the daemon is warm: the two would share the cores.
-    took, mine = ours.cargo("build")
+    took, mine = ours.cargo("build", *build)
     warm, states = wait_warm(ours, ws)
     if mine.returncode != 0 or states != ["ready"]:
         raise SystemExit(f"{name} {backend}: the daemon did not get ready: {states}\n{mine.stderr[-3000:]}")
     said, built = daemon.said(), how_built(mine.stderr)
-    reference, other = theirs.cargo("run", "--", *spec["run"])
-    expected = program_output(other)
+    reference, other = theirs.cargo("build", *build)
+    if other.returncode != 0:
+        raise SystemExit(f"{name} {backend}: the cargo build failed:\n{other.stderr[-3000:]}")
+    expected = program_output(theirs.cargo("run", *build, "--", *run)[1]) if run is not None else None
     report("cold", dict(wall_s=round(took + warm, 3), cargo_s=round(reference, 3), rss_mb=daemon.peak_mb(), built=built,
                         build_s=round(took, 3), warm_s=round(warm, 3), compiled=compiled(said), steps_s=cold_steps(said),
                         threads_s=thread_steps(said), started_over=rounds(said)))
@@ -264,7 +323,8 @@ def measure(name, spec, backend, runs, work, reference_dir):
     samples = [both() for _ in range(max(runs, 3))]
     said = daemon.said()
     report("no-op", dict(wall_s=round(statistics.median(s[0] for s in samples), 3), cargo_s=round(statistics.median(s[1] for s in samples), 3),
-                         rss_mb=daemon.peak_mb(), built=samples[-1][2], compiled=compiled(said)))
+                         rss_mb=daemon.peak_mb(), built=samples[-1][2], compiled=compiled(said),
+                         samples_s=[round(s[0], 3) for s in samples], cargo_samples_s=[round(s[1], 3) for s in samples]))
     runs_right("no-op")
 
     for kind, changes in spec["edits"].items():
@@ -294,9 +354,84 @@ def measure(name, spec, backend, runs, work, reference_dir):
                           steps_ms=slowest["steps_ms"], threads_s=slowest["threads_s"], started_over=slowest["started_over"], slowest_s=round(slowest["wall_s"], 3),
                           back_s=median(back, "wall_s"), back_cargo_s=median(back, "cargo_s"),
                           back_link=max(back, key=lambda s: s["wall_s"])["link"],
-                          samples_s=[round(s["wall_s"], 3) for s in made]))
+                          samples_s=[round(s["wall_s"], 3) for s in made], cargo_samples_s=[round(s["cargo_s"], 3) for s in made]))
     ours.cargo("stop")
-    return dict(phases=phases, wrong=wrong, tag=spec["tag"])
+    result = dict(phases=phases, wrong=wrong, tag=spec["tag"], rev=spec["rev"])
+    if "runtime" in spec:
+        result["runtime"] = runtime(name, spec, theirs, ws, build, max(runs, 10), wrong)
+    return result
+
+
+def library():
+    """The source of the toolchain's standard library, which is pinned with the toolchain."""
+    sysroot = subprocess.run(["rustc", "--print", "sysroot"], capture_output=True, text=True,
+                             env=dict(os.environ, RUSTUP_TOOLCHAIN=TOOLCHAIN), check=True).stdout.strip()
+    return os.path.join(sysroot, "lib/rustlib/src/rust/library")
+
+
+def runtime(name, spec, theirs, ws, build, runs, wrong):
+    """How fast the program ra-jit linked runs, against cargo's debug and release builds of the
+    same source. The three are run in turn, `runs` times each after two runs to warm the page
+    cache, so that the machine's drift falls on all of them alike. Seconds per run."""
+    spec = spec["runtime"]
+    _, released = theirs.cargo("build", "--release", *build)
+    if released.returncode != 0:
+        raise SystemExit(f"{name}: the cargo release build failed:\n{released.stderr[-3000:]}")
+    target = theirs.env["CARGO_TARGET_DIR"]
+    programs = {"ra-jit": os.path.join(ws, "target/debug", spec["bin"]), "cargo debug": os.path.join(target, "debug", spec["bin"]),
+                "cargo release": os.path.join(target, "release", spec["bin"])}
+    args = [a.replace("{library}", library()) for a in spec["args"]]
+    times, outputs = {label: [] for label in programs}, {}
+    for turn in range(runs + 2):
+        for label, program in programs.items():
+            began = time.perf_counter()
+            ran = subprocess.run([program, *args], cwd=ws, capture_output=True)
+            took = time.perf_counter() - began
+            outputs.setdefault(label, (ran.returncode, ran.stdout))
+            if turn >= 2:
+                times[label].append(took)
+    for label, said in outputs.items():
+        if said != outputs["cargo debug"]:
+            wrong.append(f"runtime: the program ra-jit linked ({label}) says something else than cargo's")
+    result = {label: dict(median_s=round(statistics.median(t), 4), min_s=round(min(t), 4), max_s=round(max(t), 4), runs=len(t))
+              for label, t in times.items()}
+    print("  runtime    " + "  ".join(f"{label} {r['median_s']:.3f}s" for label, r in result.items()), flush=True)
+    return dict(command=[spec["bin"], *spec["args"]], **result)
+
+
+def machine():
+    """What the numbers were measured on."""
+    def first_line(*argv):
+        try:
+            ran = subprocess.run(argv, capture_output=True, text=True, env=dict(os.environ, RUSTUP_TOOLCHAIN=TOOLCHAIN))
+            return (ran.stdout or ran.stderr).strip().splitlines()[0]
+        except (OSError, IndexError):
+            return None
+
+    def read(path, pattern):
+        try:
+            found = re.search(pattern, open(path).read(), re.M)
+            return found[1].strip() if found else None
+        except OSError:
+            return None
+
+    memory = read("/proc/meminfo", r"^MemTotal:\s+(\d+) kB")
+    return dict(
+        # Named by whoever runs it (the workflow names the instance type).
+        name=os.environ.get("RA_JIT_BENCH_MACHINE"),
+        cpu=read("/proc/cpuinfo", r"^model name\s*:\s*(.*)$"), cores=os.cpu_count(),
+        memory_gib=round(int(memory) / 1024 / 1024) if memory else None,
+        os=platform.system(), arch=platform.machine(), kernel=platform.release(),
+        rustc=first_line("rustc", "-V"), cc=first_line("cc", "--version"), ld=first_line("ld", "--version"),
+        llvm=first_line("llvm-config", "--version"),
+        incremental=os.environ.get("CARGO_INCREMENTAL", "profile default (on for dev)"),
+        wrapper=None, linker="the toolchain's default (cc)",
+    )
+
+
+def ra_jit_commit():
+    ran = subprocess.run(["git", "-C", ROOT, "rev-parse", "HEAD"], capture_output=True, text=True)
+    return ran.stdout.strip() or None
 
 
 def compare(baseline, result, threshold):
@@ -350,7 +485,9 @@ def main():
     keep = "--keep" in argv
     names = [a for a in argv if not a.startswith("--")] or list(PROJECTS)
     os.makedirs(work, exist_ok=True)
-    result = dict(toolchain=TOOLCHAIN, machine=platform.machine(), cores=os.cpu_count(), runs=runs, results={})
+    result = dict(toolchain=TOOLCHAIN, machine=platform.machine(), cores=os.cpu_count(), runs=runs,
+                  commit=ra_jit_commit(), date=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), host=machine(),
+                  backends={b: BACKENDS[b] for b in backends}, results={})
     for name in names:
         for backend in backends:
             print(f"{name} {backend} ({ra_jit_of(backend)}; work {work})", flush=True)
