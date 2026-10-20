@@ -36,7 +36,10 @@ pub enum Outcome {
         statics: u64,
         /// How many places an earlier edit wrote were put back as they first were.
         restored: u64,
+        /// How long writing it into the program took.
         took: Duration,
+        /// How long it waited between arriving and [`Live::poll`] applying it.
+        waited: Duration,
     },
     /// The edit needs the program started again, for this reason.
     Restart(String),
@@ -47,7 +50,7 @@ pub enum Outcome {
 impl fmt::Display for Outcome {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Outcome::Applied { sequence, functions, statics, restored, took } => {
+            Outcome::Applied { sequence, functions, statics, restored, took, waited } => {
                 write!(f, "edit {sequence} applied: {functions} functions")?;
                 if *statics != 0 {
                     write!(f, ", {statics} statics")?;
@@ -55,7 +58,7 @@ impl fmt::Display for Outcome {
                 if *restored != 0 {
                     write!(f, ", {restored} put back")?;
                 }
-                write!(f, " in {took:.1?}")
+                write!(f, " in {took:.1?} after waiting {waited:.1?}")
             }
             Outcome::Restart(why) => write!(f, "restart needed: {why}"),
             Outcome::Declined(why) => write!(f, "edit not applied: {why}"),
