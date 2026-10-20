@@ -193,6 +193,14 @@ pub fn moved(path: &str, from: &str, to: &str) -> Option<String> {
     rest.starts_with(['/', '\\']).then(|| format!("{to}{rest}"))
 }
 
+/// `path` as rustc spells it in a location or in debug info. For a file of the installed
+/// standard library rustc joins `lib/rustlib/src/rust` to the sysroot as one piece, so on
+/// Windows it reads `<sysroot>\lib/rustlib/src/rust\library\..` where the file system
+/// names it with backslashes throughout. Elsewhere the two are already the same.
+fn as_rustc_spells(path: &str) -> String {
+    path.replacen(r"\lib\rustlib\src\rust\", r"\lib/rustlib/src/rust\", 1)
+}
+
 /// The sources of the standard library: rustc names them where they are on this machine, and
 /// what is stored names them where they were when the library was built, as every machine can.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -4633,7 +4641,8 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
 
     fn source_path(&mut self, file: base_db::FileId) -> Option<String> {
         let symbols = self.symbols;
-        self.source_paths.entry(file).or_insert_with(|| symbols.source_path(file)).clone()
+        let spelled = || symbols.source_path(file).map(|it| as_rustc_spells(&it));
+        self.source_paths.entry(file).or_insert_with(spelled).clone()
     }
 
     /// The data object of a static: rustc's when it exports one, else our own copy of its value.
