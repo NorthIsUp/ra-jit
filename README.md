@@ -18,6 +18,15 @@ That opens a Game of Life window you can edit while it runs (live on macOS Apple
 
 [mp4](docs/demo.mp4)
 
+<a href="https://ra-jit.ix.dev/updates?src=readme">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/signup-on-dark.svg">
+    <img alt="Tell us you use ra-jit" src="docs/brand/signup-on-light.svg" height="36">
+  </picture>
+</a>
+
+For release news: Watch → Custom → Releases on GitHub.
+
 ## What you get
 
 - **Live edits.** Save a file and the running program has the new code about a millisecond

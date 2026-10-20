@@ -2,6 +2,19 @@
   "name": "ra-jit",
   "compatibility_date": "2026-10-01",
   "workers_dev": true,
-  "assets": { "directory": "./build" },
-  "routes": [{ "pattern": "ra-jit.ix.dev", "custom_domain": true }]
+  "main": ".svelte-kit/cloudflare/_worker.js",
+  "assets": { "binding": "ASSETS", "directory": ".svelte-kit/cloudflare" },
+  "routes": [{ "pattern": "ra-jit.ix.dev", "custom_domain": true }],
+  // Turnstile site key (public). Empty skips the widget and verification, so dev works.
+  // The secret is set with `wrangler secret put TURNSTILE_SECRET_KEY`.
+  "vars": { "TURNSTILE_SITE_KEY": "" },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "ra-jit-updates",
+      // TODO: replace with the id printed by `wrangler d1 create ra-jit-updates` (see README.md).
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ]
 }
