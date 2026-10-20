@@ -137,9 +137,11 @@ pub(crate) struct WorkerConfig {
 }
 
 impl WorkerConfig {
+    /// 16 hex digits: it names the worker's directory, and the path of the socket in it has
+    /// to fit the 104 bytes macOS has for one, with the daemon's directory before it.
     pub(crate) fn id(&self) -> String {
         let text = serde_json::to_vec(self).unwrap_or_default();
-        Sha256::digest(text).iter().take(16).map(|it| format!("{it:02x}")).collect()
+        Sha256::digest(text).iter().take(8).map(|it| format!("{it:02x}")).collect()
     }
 }
 
@@ -675,7 +677,8 @@ pub(crate) fn serve() -> anyhow::Result<()> {
         // Another daemon is the user's: the client that started this one finds it.
         Err(NotServed::Taken) => return Ok(()),
         Err(NotServed::Failed(error)) => {
-            return Err(error).with_context(|| format!("listening on {}", socket.display()));
+            // On one line: a worker's log is read for its last line that starts `Error`.
+            anyhow::bail!("listening on {}: {error}", socket.display());
         }
     };
     let idle = match std::env::var("RA_JIT_IDLE_SECS").ok().and_then(|it| it.parse::<u64>().ok()) {

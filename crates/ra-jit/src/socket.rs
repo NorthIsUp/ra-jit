@@ -87,7 +87,7 @@ impl Served {
         }
         private_dir(&made_in)?;
         let made = made_in.join("s");
-        let listener = UnixListener::bind(&made)?;
+        let listener = UnixListener::bind(&made).map_err(|error| too_long(&made, error))?;
         only_the_user_connects(&made)?;
         std::fs::rename(&made, socket)?;
         std::fs::remove_dir(&made_in)?;
@@ -113,9 +113,24 @@ impl Served {
 /// socket can be anywhere a command line says, and what is sent to it is the request and
 /// the variables of this process: not for another user who listens there first.
 pub(crate) fn connect(socket: &Path) -> io::Result<UnixStream> {
-    let stream = UnixStream::connect(socket)?;
+    let stream = UnixStream::connect(socket).map_err(|error| too_long(socket, error))?;
     check_peer(&stream)?;
     Ok(stream)
+}
+
+/// Names the path in an error that it is too long for a socket: one has 104 bytes on
+/// macOS and 108 on Linux, with the NUL at its end, and the error alone says neither the
+/// path nor how long it is.
+fn too_long(path: &Path, error: io::Error) -> io::Error {
+    if error.kind() != io::ErrorKind::InvalidInput {
+        return error;
+    }
+    let length = path.as_os_str().len();
+    let said = format!(
+        "{error}: {} is {length} bytes; RA_JIT_HOME can name a shorter directory",
+        path.display()
+    );
+    io::Error::new(error.kind(), said)
 }
 
 /// Opens the file at `path` as `options` say, for the user alone: a lock or a log, which

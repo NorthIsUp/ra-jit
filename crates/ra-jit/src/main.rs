@@ -4939,7 +4939,9 @@ fn run_holding(
                 bail!("another daemon serves {}", path.display())
             }
             Err(socket::NotServed::Failed(error)) => {
-                return Err(error).with_context(|| format!("listening on {}", path.display()));
+                // On one line: the daemon reads a worker's log for its last line that
+                // starts `Error`, and says it as why the worker ended.
+                bail!("listening on {}: {error}", path.display());
             }
         },
         None if args.watch => None,
