@@ -3,6 +3,9 @@ updates:
   # The root workspace. The vendored crates (vendor/) are submodules and are not updated here.
   - package-ecosystem: cargo
     directory: /
+    # The root workspace's path dependencies lead into the submodule, whose `crates/*` member
+    # glob Dependabot reads against this repository's crates/ and fails on.
+    exclude-paths: ["vendor/**"]
     schedule:
       interval: weekly
     groups:
