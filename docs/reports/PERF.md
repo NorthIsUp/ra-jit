@@ -124,6 +124,26 @@ on the same switch and as lines of the same kind:
   away, and `discarded=` in `timeline-us` for their sum. `phases:` only ever described the last
   round, so a build of four rounds showed three quarters of its time as "compile-rest".
 
+The client, the daemon and the worker also record spans of every build on one clock, always
+(`crates/ra-jit/src/trace.rs`): the worker sends its own with its answer, the daemon adds its
+own, and the client puts them together. With them:
+
+- `RA_JIT_STATS=1` makes `cargo ra-jit build` print `ra-jit time: 402.1 ms: check 285.5 (71%),
+  …` and a table of where the client's wall time went, step by step (client, daemon, worker),
+  with `unaccounted` for moments no step had: the rows add up to the total.
+- `RA_JIT_TRACE=<path>` writes the spans as a Chrome trace (ui.perfetto.dev and
+  chrome://tracing open it): to `path` if it ends in `.json`, else to a new file in the
+  directory `path` for every build. Besides the steps it has a span for each rust-analyzer
+  query the worker ran (infer, MIR, impls) and each step of code generation (translate,
+  cranelift) of 0.2 ms or longer. The worker's
+  reach, resolve, define, object, statics, setup and compile-rest are sums over threads laid
+  end to end, so read them as one stretch.
+- `harness/realbench.py` runs every warm build with `RA_JIT_TRACE` and keeps the breakdown of
+  each row's median run; `realbench.py --table FILE` prints it under the results.
+
+The old `RA_JIT_TRACE` switch, which printed the rust-analyzer queries an edit ran, is now
+`RA_JIT_QUERIES`.
+
 `bench.py` puts these in the JSON as `steps_ms` (the timeline), `threads_s` (the `steps:` and
 `backend:` lines) and `started_over` (the reasons).
 

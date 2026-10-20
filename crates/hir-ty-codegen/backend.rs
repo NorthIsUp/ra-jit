@@ -127,6 +127,7 @@ impl Backend {
             #[cfg(not(feature = "llvm"))]
             Backend::Llvm(_) => {}
         }
+        let _span = tracing::info_span!(target: "ra_jit", "cranelift").entered();
         let start = Instant::now();
         let pairs = super::float_pair::lower(recorder, &mut context.func);
         let mut code = super::emit(context)?;
@@ -349,6 +350,17 @@ impl Tally {
 
     /// Runs `work` as part of `step`.
     pub(super) fn step<T>(&self, step: Step, work: impl FnOnce() -> T) -> T {
+        // For ra-jit's trace: target `ra_jit` spans of 200 µs and longer.
+        let _span = match step {
+            Step::Infer => tracing::info_span!(target: "ra_jit", "infer"),
+            Step::Mir => tracing::info_span!(target: "ra_jit", "mir"),
+            Step::Monomorphize => tracing::info_span!(target: "ra_jit", "monomorphize"),
+            Step::Translate => tracing::info_span!(target: "ra_jit", "translate"),
+            Step::Describe => tracing::info_span!(target: "ra_jit", "describe"),
+            Step::StoreRead => tracing::info_span!(target: "ra_jit", "store read"),
+            Step::StoreWrite => tracing::info_span!(target: "ra_jit", "store write"),
+        }
+        .entered();
         let start = Instant::now();
         let out = work();
         self.add(step, start.elapsed());

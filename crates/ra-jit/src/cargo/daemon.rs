@@ -99,6 +99,9 @@ pub(crate) enum Reply {
     /// did not build it.
     Synced {
         programs: Vec<Result<String, String>>,
+        /// The daemon's steps, for the client's trace. The worker's are in its `ok` lines.
+        #[serde(default)]
+        spans: Vec<crate::trace::Span>,
     },
     Warming,
     Status(Status),
@@ -481,17 +484,27 @@ impl Worker {
     /// Brings the programs of `checkout` up to date, all at once: the worker builds the
     /// requests that wait for it together.
     fn sync(&self, checkout: &Checkout) -> Reply {
+        let spans = Mutex::new(Vec::new());
         let asked: Vec<anyhow::Result<Result<String, String>>> = std::thread::scope(|scope| {
             let asking: Vec<_> = checkout
                 .programs
                 .iter()
-                .map(|plan| scope.spawn(|| self.ask(checkout, plan)))
+                .map(|plan| {
+                    scope.spawn(|| {
+                        let start = Instant::now();
+                        let asked = self.ask(checkout, plan);
+                        let level = Some(crate::trace::ASKED);
+                        let span = crate::trace::span("daemon↔worker", level, start, Instant::now());
+                        lock(&spans).push(span);
+                        asked
+                    })
+                })
                 .collect();
             let panicked = || Err(anyhow::anyhow!("asking the worker panicked"));
             asking.into_iter().map(|it| it.join().unwrap_or_else(|_| panicked())).collect()
         });
         match asked.into_iter().collect::<anyhow::Result<Vec<_>>>() {
-            Ok(programs) => Reply::Synced { programs },
+            Ok(programs) => Reply::Synced { programs, spans: spans.into_inner().unwrap_or_default() },
             // The worker is gone or stuck, which says nothing of the checkout: the next
             // build that has nothing to compile has it loaded again.
             Err(why) => {
@@ -723,6 +736,7 @@ pub(crate) fn serve() -> anyhow::Result<()> {
 impl Daemon {
     /// Reads the one request of a connection and answers it.
     fn answer(&self, stream: UnixStream) -> anyhow::Result<()> {
+        let began = Instant::now();
         let line = read_request(&stream)?;
         // An editor's text, on a line of its own that is not JSON: it is long and comes
         // with every key typed. The worker answers as to `cargo ra-jit build`.
@@ -734,10 +748,16 @@ impl Daemon {
         // A request that can't be read is one of another version too, and of a client
         // that waits for an answer it can read: it gets none, and the daemon stays.
         let replaced = envelope.as_ref().is_ok_and(|it| it.replaces && it.version != self.version);
-        let reply = match envelope {
+        let read = Instant::now();
+        let mut reply = match envelope {
             Ok(envelope) if envelope.version == self.version => self.handle(envelope.request),
             _ => Reply::Restart { version: self.version.clone() },
         };
+        if let Reply::Synced { spans, .. } = &mut reply {
+            let level = Some(crate::trace::DAEMON);
+            spans.push(crate::trace::span("daemon read request", level, began, read));
+            spans.push(crate::trace::span("daemon", level, read, Instant::now()));
+        }
         let mut text = serde_json::to_string(&reply)?;
         text.push('\n');
         let sent = (&stream).write_all(text.as_bytes());
@@ -771,7 +791,7 @@ impl Daemon {
         stream.write_all(format!("{line}\n\n").as_bytes())?;
         let mut reply = String::new();
         BufReader::new(stream).read_line(&mut reply)?;
-        match reply.trim_end() {
+        match crate::trace::without_spans(reply.trim_end()) {
             "" => anyhow::bail!("the worker hung up; its log is {}", worker.log.display()),
             reply => Ok(reply.to_owned()),
         }

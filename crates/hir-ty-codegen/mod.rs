@@ -1618,6 +1618,7 @@ fn rows_of(db: &dyn HirDatabase, compiled: &CompiledFunction) -> Vec<Row> {
 /// The code of a non-generic function.
 #[salsa::tracked(returns(ref))]
 fn compiled_root<'db>(db: &'db dyn HirDatabase, func: FunctionId) -> Result<CompiledFunction> {
+    let _span = tracing::info_span!(target: "ra_jit", "compiled_root").entered();
     tier::plain(|| root_code(db, func, None))
 }
 
@@ -1691,6 +1692,7 @@ fn compiled_instance<'db>(
     instance: Instance,
     env: StoredParamEnvAndCrate,
 ) -> Result<CompiledFunction> {
+    let _span = tracing::info_span!(target: "ra_jit", "compiled_instance").entered();
     tier::plain(|| instance_code(db, instance, env, None))
 }
 

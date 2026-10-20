@@ -20,6 +20,7 @@ mod splicer;
 mod stub;
 mod symbols;
 mod tier;
+mod trace;
 mod tree;
 mod weaken;
 
@@ -4194,7 +4195,7 @@ fn ask(request: Request, socket: &Path, target: Option<Target>) -> anyhow::Resul
     BufReader::new(stream).read_line(&mut reply)?;
     let reply = reply.trim_end();
     anyhow::ensure!(reply.starts_with("ok"), "daemon: {reply}");
-    println!("{reply}");
+    println!("{}", trace::without_spans(reply));
     Ok(())
 }
 
@@ -4247,6 +4248,7 @@ fn requested(stream: UnixStream) -> Option<Event> {
             return None;
         }
     };
+    trace::arrived();
     let (name, rest) = request.split_once('\t').unwrap_or((&request, ""));
     eprintln!("request: {name} at_us={}", live::epoch_us());
     if name == "edit"
@@ -4315,6 +4317,7 @@ pub(crate) fn version() -> String {
 }
 
 fn main() -> anyhow::Result<()> {
+    trace::began();
     let stands_in_for_rustc = std::env::var_os("RA_JIT_WRAPS_RUSTC").is_some();
     match std::env::args().nth(1).as_deref() {
         _ if stands_in_for_rustc => {}
@@ -4352,6 +4355,7 @@ fn main() -> anyhow::Result<()> {
     }
     if std::env::args().nth(1).as_deref() == Some("--spare") {
         let dir = std::env::args().nth(2).context("--spare needs a directory")?;
+        trace::install();
         return spare(Path::new(&dir));
     }
     if std::env::var_os(cargo::daemon::ENDS_WITH_INPUT).is_some() {
@@ -4374,6 +4378,7 @@ fn main() -> anyhow::Result<()> {
     if std::env::var_os(doctest::ENABLED).is_some() {
         return doctest::command(std::env::args_os().skip(1));
     }
+    trace::install();
     run(Args::parse(std::env::args().skip(1))?, None)
 }
 
@@ -6031,7 +6036,7 @@ fn run_holding(
             }
             listed.touch(&db, Some(&late));
         };
-        if std::env::var_os("RA_JIT_TRACE").is_some() {
+        if std::env::var_os("RA_JIT_QUERIES").is_some() {
             let ran: Vec<String> = ide_db::executions::take(&db)
                 .iter()
                 .take(400)
@@ -6483,11 +6488,11 @@ impl Program {
             *unbuilt = Unbuilt { unlinked, ..Unbuilt::default() };
         }
         let total = start.elapsed();
-        if std::env::var_os("RA_JIT_STATS").is_some() {
+        let steps = {
             let [roots, revalidate, compile] = warm.steps;
             let phases = known.stats.phases;
             // In the order they happen, from the save on. Each is a duration of its own.
-            let steps = [
+            [
                 ("notice", age),
                 ("settle", settled),
                 ("read", read),
@@ -6520,7 +6525,9 @@ impl Program {
                 // What could refuse the edit: types that changed, tests, stale copies.
                 ("refuse", checked - reported),
                 ("link", total - checked),
-            ];
+            ]
+        };
+        if std::env::var_os("RA_JIT_STATS").is_some() {
             let steps: Vec<String> =
                 steps.iter().map(|(name, took)| format!("{name}={}", took.as_micros())).collect();
             eprintln!("timeline-us: {}", steps.join(" "));
@@ -6546,13 +6553,41 @@ impl Program {
             (Some(patch), Some(_)) => ("patch", patch),
             _ => ("object", &args.out),
         };
-        Ok(Ok(format!(
+        let answer = format!(
             "{kind}={} functions={} files={changed} ms={}",
             object.display(),
             known.stats.patched.unwrap_or(known.stats.compiled),
             total.as_millis()
-        )))
+        );
+        Ok(Ok(trace::with_spans(answer, &worker_spans(start, settled, read, &steps))))
     }
+}
+
+/// The spans of a build for the client's trace: the worker's wait from the request to the
+/// look at the files, then the steps of the timeline one after another from `start`, and
+/// the queries and code generation under them.
+fn worker_spans(
+    start: Instant,
+    settled: Duration,
+    read: Duration,
+    steps: &[(&str, Duration)],
+) -> Vec<trace::Span> {
+    let level = Some(trace::WORKER);
+    let read_from = start.checked_sub(read).unwrap_or(start);
+    let noticed = read_from.checked_sub(settled).unwrap_or(read_from);
+    let mut spans = Vec::new();
+    if let Some(arrived) = trace::last_arrival().filter(|it| *it < noticed) {
+        spans.push(trace::span("worker wait", level, arrived, noticed));
+    }
+    spans.push(trace::span("worker settle", level, noticed, read_from));
+    spans.push(trace::span("worker read", level, read_from, start));
+    let mut at = start;
+    for &(name, took) in steps.iter().skip_while(|it| it.0 != "apply") {
+        spans.push(trace::span(format!("worker {name}"), level, at, at + took));
+        at += took;
+    }
+    spans.extend(trace::take_detail(noticed));
+    spans
 }
 
 #[allow(dead_code)]

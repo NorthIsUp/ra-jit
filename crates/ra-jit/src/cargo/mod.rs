@@ -110,6 +110,8 @@ fn plain_cargo(args: Vec<String>) -> anyhow::Result<i32> {
 /// the daemon has not been given yet and what only cargo acts on (a manifest, a build
 /// script); a program the daemon was asked for and did not build fails the build.
 fn build(asked: &Invocation) -> anyhow::Result<i32> {
+    use crate::trace::{CLIENT, note};
+    note("client start", CLIENT, crate::trace::began());
     let started = Instant::now();
     let cwd = std::env::current_dir()?;
     let key = asked.key(&cwd);
@@ -118,9 +120,13 @@ fn build(asked: &Invocation) -> anyhow::Result<i32> {
         let finished = format!("`{}` profile [ra-jit] target(s) in {took:.2}s", state.profile);
         say::status(asked.flags.quiet, "Finished", &finished);
     };
-    let state = match State::read(&key).map(|state| by_daemon(state)) {
+    let read = State::read(&key);
+    note("client read state", CLIENT, started);
+    let mut served = false;
+    let state = match read.map(|state| by_daemon(state)) {
         Ok(Ok(state)) => {
             finished(&state);
+            served = true;
             state
         }
         Ok(Err(Left::Failed(why))) => {
@@ -162,7 +168,12 @@ fn build(asked: &Invocation) -> anyhow::Result<i32> {
             }
         }
     };
+    let writing = Instant::now();
     state.write()?;
+    if served {
+        note("client write state", CLIENT, writing);
+        crate::trace::finish();
+    }
     after_build(asked, &state, &cwd)
 }
 
@@ -256,13 +267,18 @@ enum Left {
 /// them. Rustc sees none of it: the daemon builds what rust-analyzer passes, which has no
 /// borrow checker and few of rustc's lints.
 fn by_daemon(mut state: State) -> Result<State, Left> {
+    use crate::trace::{CLIENT, note};
+    let checking = Instant::now();
     let cargos = state.refusal.clone().or_else(|| state.broken_guard());
     if let Some(reason) = cargos.or_else(|| state.stale_cargos()) {
         return Err(Left::ToCargo(Box::new(state), reason));
     }
+    note("client checks", CLIENT, checking);
     let answers =
         state.checkouts.iter().map(built).collect::<Result<Vec<_>, _>>().map_err(Left::Failed)?;
+    let settling = Instant::now();
     let cargos = state.settle(&answers).map_err(Left::Failed)?;
+    note("client settle", CLIENT, settling);
     let served = cargos.len() < state.programs.len() || state.programs.is_empty();
     state.counts.served += u64::from(served);
     Ok(state)
@@ -274,10 +290,18 @@ pub(super) fn built(checkout: &Checkout) -> Result<Vec<Result<(), String>>, Stri
     if checkout.programs.is_empty() {
         return Ok(Vec::new());
     }
+    let asking_at = Instant::now();
     let reply = client::ask(Request::Build(asking(checkout)), Start::IfMissing)
         .map_err(|it| format!("{it:#}"))?;
+    crate::trace::note("client↔daemon", crate::trace::CLIENT, asking_at);
     let programs = match reply {
-        Some(Reply::Synced { programs }) => programs,
+        Some(Reply::Synced { programs, spans }) => {
+            crate::trace::note_all(spans);
+            for line in programs.iter().flatten() {
+                crate::trace::note_all(crate::trace::split(line).1);
+            }
+            programs
+        }
         None => return Err(client::why_none()),
         Some(Reply::Cold { reason }) => return Err(reason),
         Some(other) => return Err(format!("the daemon answered {other:?}")),
@@ -293,7 +317,14 @@ pub(super) fn built(checkout: &Checkout) -> Result<Vec<Result<(), String>>, Stri
 /// `checkout` as a request names it: with the variables of this process, which `env!`
 /// reads where cargo set none. The ones that make ra-jit the wrapper are cargo's alone.
 fn asking(checkout: &Checkout) -> Checkout {
-    let wraps = |name: &str| name == wrapper::DRIVEN || name == switch::VARIABLE;
+    // Nor are those that say what ra-jit prints of the build: one that changed would be an
+    // edit of every `env!`.
+    let wraps = |name: &str| {
+        name == wrapper::DRIVEN
+            || name == switch::VARIABLE
+            || name == "RA_JIT_STATS"
+            || name == "RA_JIT_TRACE"
+    };
     let mut env: BTreeMap<String, String> =
         std::env::vars().filter(|(name, _)| !wraps(name)).collect();
     env.extend(checkout.env.clone());

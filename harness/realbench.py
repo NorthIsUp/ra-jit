@@ -24,6 +24,11 @@ report gives the median, min and max.
               `--version` and with a small real command line, and their stdout, stderr and
               exit status must be the same.
 
+Every warm `cargo ra-jit build` (no-op and edits) runs with RA_JIT_TRACE, and the row keeps
+where the time of its median run went: the client's breakdown of its wall time into steps of
+the client, the daemon and the worker, plus the time outside the client (cargo, process
+start). `--table FILE` prints the results table and that breakdown table.
+
 Results go to WORK/realbench.json (rows replaced per project) and a table on stdout.
 """
 import asyncio, json, os, re, shutil, statistics, subprocess, sys, time
@@ -154,6 +159,29 @@ async def wait_ready(ws, env, began, step):
     return ready
 
 
+async def traced(argv, cwd, env, step, trace):
+    """Runs a `cargo ra-jit build` with RA_JIT_TRACE at `trace`; the result is run()'s and
+    where its time went, from the trace: the client's breakdown (ms, adding up to its wall
+    time) and the time outside the client (cargo before and after it, process start)."""
+    took, rc, out, err = await run(argv, cwd, dict(env, RA_JIT_TRACE=trace), step)
+    try:
+        ours = json.load(open(trace))["raJit"]
+        os.remove(trace)
+    except (OSError, ValueError, KeyError):
+        return took, rc, out, err, None
+    rows = [[name, round(us / 1000, 1)] for name, us in ours["breakdown"]]
+    rows.append(["outside the client", round(took * 1000 - ours["total_us"] / 1000, 1)])
+    return took, rc, out, err, rows
+
+
+def median_breakdown(times, breakdowns):
+    """The breakdown of the run whose time is the median (the upper one of an even count)."""
+    if not breakdowns or any(b is None for b in breakdowns):
+        return None
+    at = sorted(range(len(times)), key=lambda i: times[i])[len(times) // 2]
+    return dict(seconds=round(times[at], 3), steps=breakdowns[at])
+
+
 def summary(xs):
     return dict(median=round(statistics.median(xs), 3), min=round(min(xs), 3), max=round(max(xs), 3), n=len(xs), all=[round(x, 3) for x in xs])
 
@@ -246,27 +274,28 @@ async def project(name, spec, work, runs, parts):
     row["linker"] = {side: subprocess.run(["readelf", "-p", ".comment", os.path.join(t, "debug", spec["bin"])], capture_output=True, text=True).stdout
                      for side, t in (("cargo", tc), ("ra-jit", tr))}
 
+    trace = os.path.join(top, "trace.json")
     if "noop" in parts:
-        c, r, built = [], [], []
+        c, r, built, spent = [], [], [], []
         for i in range(1, runs + 1):
-            took, _, _, err = await run(["cargo", "ra-jit", "build"], ws, env, f"{name} noop ra-jit {i}")
-            r.append(took); built.append(how_built(err))
+            took, _, _, err, steps = await traced(["cargo", "ra-jit", "build"], ws, env, f"{name} noop ra-jit {i}", trace)
+            r.append(took); built.append(how_built(err)); spent.append(steps)
             took, _, _, _ = await run(["cargo", "build"], ws, cargo_env, f"{name} noop cargo {i}")
             c.append(took)
             print(f"  {'no-op':16} run {i}: ra-jit {r[-1]:6.2f}s ({built[-1]})  cargo {took:6.2f}s", flush=True)
-        row["noop"] = dict(cargo=summary(c), ra_jit=summary(r), built=built)
+        row["noop"] = dict(cargo=summary(c), ra_jit=summary(r), built=built, breakdown=median_breakdown(r, spent))
 
     if "edits" in parts:
         row["edits"] = {}
         for kind in ("main", "lib", "newfn"):
             file = os.path.join(ws, spec["lib" if kind == "lib" else "main"][0])
             pristine = open(file).read()
-            c, r, built, same = [], [], [], []
+            c, r, built, same, spent = [], [], [], [], []
             try:
                 for i in range(1, runs + 1):
                     open(file, "w").write(edit_text(kind, spec, pristine, i))
-                    took, _, _, err = await run(["cargo", "ra-jit", "build"], ws, env, f"{name} {kind} ra-jit {i}")
-                    r.append(took); built.append(how_built(err))
+                    took, _, _, err, steps = await traced(["cargo", "ra-jit", "build"], ws, env, f"{name} {kind} ra-jit {i}", trace)
+                    r.append(took); built.append(how_built(err)); spent.append(steps)
                     took, _, _, _ = await run(["cargo", "build"], ws, cargo_env, f"{name} {kind} cargo {i}")
                     c.append(took)
                     a, b = await outputs(ws, tr, spec, f"{name} {kind} run"), await outputs(ws, tc, spec, f"{name} {kind} run")
@@ -278,7 +307,8 @@ async def project(name, spec, work, runs, parts):
                 open(file, "w").write(pristine)
             await run(["cargo", "ra-jit", "build"], ws, env, f"{name} {kind} restore")
             await run(["cargo", "build"], ws, cargo_env, f"{name} {kind} restore")
-            row["edits"][kind] = dict(cargo=summary(c), ra_jit=summary(r), built=built, same=same)
+            row["edits"][kind] = dict(cargo=summary(c), ra_jit=summary(r), built=built, same=same,
+                                      breakdown=median_breakdown(r, spent))
         row["sample_output"] = (await outputs(ws, tr, spec, f"{name} sample"))[0][1].strip()
     await stop(env, ws)
     return row
@@ -313,10 +343,34 @@ def table(rows):
     return "\n".join(lines)
 
 
+def breakdown_table(rows, top=7):
+    """Where the time of each warm row's median run went: its biggest steps, then what no step
+    covers and what is outside the client, in ms. The steps add up to the run's time."""
+    lines = ["| Project | Step | ra-jit (median run) | Where the time went (ms) |", "|---|---|---:|---|"]
+    for name, row in rows.items():
+        label = f"{name} {row.get('tag', '')}".strip()
+        parts = [("no-op", row.get("noop"))] + [(f"edit: {kind}", row.get("edits", {}).get(kind)) for kind in ("main", "lib", "newfn")]
+        for what, part in parts:
+            b = (part or {}).get("breakdown")
+            if not b:
+                continue
+            fixed = ("unaccounted", "outside the client")
+            steps = sorted((s for s in b["steps"] if s[0] not in fixed), key=lambda s: -s[1])
+            shown = [f"{n} {ms:.1f}" for n, ms in steps[:top]]
+            rest = sum(ms for _, ms in steps[top:])
+            if rest:
+                shown.append(f"{len(steps) - top} more {rest:.1f}")
+            shown += [f"{n} {ms:.1f}" for n, ms in b["steps"] if n in fixed]
+            lines.append(f"| {label} | {what} | {b['seconds']:.3f} | {', '.join(shown)} |")
+            label = ""
+    return "\n".join(lines)
+
+
 async def main():
     args = sys.argv[1:]
     if args[:1] == ["--table"]:
-        print(table(json.load(open(args[1]))))
+        rows = json.load(open(args[1]))
+        print(table(rows) + "\n\n" + breakdown_table(rows))
         return
     def opt(flag, default):
         if flag in args:
