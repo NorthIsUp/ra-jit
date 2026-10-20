@@ -136,6 +136,9 @@
             pkgs.ncurses
           ];
           LLVM_SYS_201_PREFIX = "${pkgs.llvmPackages_20.llvm.dev}";
+          # A C compiler as a distribution ships it: the wrapper's _FORTIFY_SOURCE warns at the
+          # -O0 of a debug build, which fails configure probes (jemalloc's, in fd).
+          hardeningDisable = [ "all" ];
         };
       });
 }

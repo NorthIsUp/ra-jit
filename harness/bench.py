@@ -308,6 +308,8 @@ def measure(name, spec, backend, runs, work, reference_dir):
 
     # Cargo's own cold build waits until the daemon is warm: the two would share the cores.
     took, mine = ours.cargo("build", *build)
+    if mine.returncode != 0:
+        raise SystemExit(f"{name} {backend}: the first `cargo ra-jit build` failed:\n{mine.stderr[-3000:]}")
     warm, states = wait_warm(ours, ws)
     if mine.returncode != 0 or states != ["ready"]:
         raise SystemExit(f"{name} {backend}: the daemon did not get ready: {states}\n{mine.stderr[-3000:]}")
