@@ -273,11 +273,31 @@ impl Signature {
             super::read_exact_at(&file, &mut page, (index * page_len) as u64)?;
             hashes[index * Self::HASH..][..Self::HASH].copy_from_slice(&Sha256::digest(&page));
         }
-        for (index, page) in added.chunks(page_len).enumerate() {
-            if index % 256 == 0 {
-                super::go_on(give_up)?;
-            }
-            hashes.extend_from_slice(&Sha256::digest(page));
+        // Every page appended, tens of megabytes for a large debug build: the hash without the
+        // processor's SHA instructions (sha2 0.10 has them only with its `asm` feature) is
+        // about 250 MB/s, so the pages are hashed on several threads.
+        let pages: Vec<&[u8]> = added.chunks(page_len).collect();
+        let threads = std::thread::available_parallelism().map_or(1, |it| it.get()).min(8);
+        let part = pages.len().div_ceil(threads).max(1);
+        let parts: Vec<Result<Vec<u8>, super::GaveUp>> = std::thread::scope(|scope| {
+            let parts: Vec<_> = (pages.chunks(part))
+                .map(|pages| {
+                    scope.spawn(move || -> Result<Vec<u8>, super::GaveUp> {
+                        let mut hashes = Vec::with_capacity(pages.len() * Self::HASH);
+                        for (index, page) in pages.iter().enumerate() {
+                            if index % 256 == 0 {
+                                super::go_on(give_up)?;
+                            }
+                            hashes.extend_from_slice(&Sha256::digest(page));
+                        }
+                        Ok(hashes)
+                    })
+                })
+                .collect();
+            parts.into_iter().map(|it| it.join().expect("hashing pages panicked")).collect()
+        });
+        for part in parts {
+            hashes.extend_from_slice(&part?);
         }
 
         let mut directory = self.directory.clone();
