@@ -57,7 +57,7 @@ class Said:
 UNSIGNED = {**os.environ, "RA_JIT_REMOTE_UNSIGNED": "1"}
 ASKED_FOR_NOTHING = {name: value for name, value in os.environ.items() if name != "RA_JIT_REMOTE_UNSIGNED"}
 
-def ra-jit(root, verb, remote, env=UNSIGNED):
+def ra_jit(root, verb, remote, env=UNSIGNED):
     return Said([subprocess.run([RA_JIT, "deps", verb, remote, directory, name], cwd=root, capture_output=True, text=True, env=env)
                  for directory, name in PROFILES])
 
@@ -74,29 +74,29 @@ _, printed = cargo(first)
 shutil.copytree(first, second, ignore=shutil.ignore_patterns("target"))
 shutil.copytree(first, third, ignore=shutil.ignore_patterns("target"))
 
-out = ra-jit(first, "push", remote, ASKED_FOR_NOTHING)
+out = ra_jit(first, "push", remote, ASKED_FOR_NOTHING)
 check("the units are pushed", out.returncode == 0 and out.something, out.stdout.strip() + out.stderr.strip())
 listed = [line for _, name in PROFILES for line in open(f"{remote}/deps/{name}").read().split("\n")]
 check("none of a crate at a path", not any(line.rsplit("-", 1)[0] in LOCAL for line in listed))
-out = ra-jit(first, "push", remote)
+out = ra_jit(first, "push", remote)
 check("a second push sends nothing", out.nothing, out.stdout.strip())
 
-out = ra-jit(second, "pull", remote, ASKED_FOR_NOTHING)
+out = ra_jit(second, "pull", remote, ASKED_FOR_NOTHING)
 check("a pull from lists nobody signed is refused unless asked for",
       out.returncode != 0 and "RA_JIT_REMOTE_UNSIGNED=1" in out.stderr and not os.path.exists(f"{second}/target/debug/.fingerprint"),
       out.stderr.strip()[-80:])
-out = ra-jit(second, "pull", remote)
+out = ra_jit(second, "pull", remote)
 check("the units are pulled", out.returncode == 0, out.stdout.strip() + out.stderr.strip())
 said, again = cargo(second)
 check("cargo compiles the local crates only", said.get("Compiling") == set(LOCAL) and not said.get("Dirty"), str(said.get("Compiling")))
 check("and finds the others fresh", len(said.get("Fresh", ())) >= 10, str(len(said.get("Fresh", ()))))
 check("the program prints the same", again == printed and printed, repr(again))
-out = ra-jit(second, "pull", remote)
+out = ra_jit(second, "pull", remote)
 check("a second pull fetches nothing", out.nothing, out.stdout.strip())
 
 unit = sorted(os.listdir(f"{remote}/units"))[0]
 open(f"{remote}/units/{unit}", "ab").write(b"x")
-out = ra-jit(third, "pull", remote)
+out = ra_jit(third, "pull", remote)
 check("an archive that was changed is refused", out.returncode != 0 and f"rejected units/{unit}" in out.stderr
       and "1 of them rejected" in out.stderr, out.stderr.strip()[-80:])
 said, again = cargo(third)
