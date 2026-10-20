@@ -120,9 +120,11 @@ class Crate:
     dir: Path
     manifest: dict[str, Any]
     fork: bool
-    deps: set[Path] = field(
-        default_factory=set
-    )  # local crates it depends on, by directory
+    # Local crates it depends on, by directory.
+    deps: set[Path] = field(default_factory=set)
+    # Optional ones: kept in the manifest when they are published anyway, so they have to be
+    # on crates.io first (cargo publish resolves optional dependencies too).
+    optional: set[Path] = field(default_factory=set)
 
     @property
     def requirement(self) -> str:
@@ -224,11 +226,15 @@ class Repo:
                     # An optional local crate is left out with the features that name it:
                     # ra-jit enables none (proc-macro-srv, for `in-rust-tree`, is one).
                     if isinstance(spec, dict) and spec.get("optional"):
+                        if (dep := self.local_dir(d, key, spec)) is not None:
+                            crate.optional.add(dep)
                         continue
                     if (dep := self.local_dir(d, key, spec)) is not None:
                         crate.deps.add(dep)
                         todo.append(dep)
             crates[d] = crate
+        for crate in crates.values():
+            crate.deps |= crate.optional & crates.keys()
         return crates
 
 

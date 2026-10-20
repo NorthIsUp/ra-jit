@@ -627,7 +627,7 @@
    "name": "base-db",
    "readme": "",
    "repository": "https://github.com/indexable-inc/ra-jit",
-   "rust_version": "1.98",
+   "rust_version": "1.99",
    "source": {
     "dir": "vendor/rust-analyzer/crates/base-db",
     "kind": "path"
@@ -933,7 +933,7 @@
    "name": "cfg",
    "readme": "",
    "repository": "https://github.com/indexable-inc/ra-jit",
-   "rust_version": "1.98",
+   "rust_version": "1.99",
    "source": {
     "dir": "vendor/rust-analyzer/crates/cfg",
     "kind": "path"
@@ -1902,7 +1902,7 @@
    "name": "edition",
    "readme": "",
    "repository": "https://github.com/indexable-inc/ra-jit",
-   "rust_version": "1.98",
+   "rust_version": "1.99",
    "source": {
     "dir": "vendor/rust-analyzer/crates/edition",
     "kind": "path"
@@ -2582,7 +2582,7 @@
    "name": "hir-def",
    "readme": "",
    "repository": "https://github.com/indexable-inc/ra-jit",
-   "rust_version": "1.98",
+   "rust_version": "1.99",
    "source": {
     "dir": "vendor/rust-analyzer/crates/hir-def",
     "kind": "path"
@@ -2599,7 +2599,7 @@
    "name": "hir-expand",
    "readme": "",
    "repository": "https://github.com/indexable-inc/ra-jit",
-   "rust_version": "1.98",
+   "rust_version": "1.99",
    "source": {
     "dir": "vendor/rust-analyzer/crates/hir-expand",
     "kind": "path"
@@ -2616,7 +2616,7 @@
    "name": "hir-ide",
    "readme": "",
    "repository": "https://github.com/indexable-inc/ra-jit",
-   "rust_version": "1.98",
+   "rust_version": "1.99",
    "source": {
     "dir": "vendor/rust-analyzer/crates/hir-ide",
     "kind": "path"
@@ -2633,7 +2633,7 @@
    "name": "hir-ty",
    "readme": "",
    "repository": "https://github.com/indexable-inc/ra-jit",
-   "rust_version": "1.98",
+   "rust_version": "1.99",
    "source": {
     "dir": "vendor/rust-analyzer/crates/hir-ty",
     "kind": "path"
@@ -2650,7 +2650,7 @@
    "name": "hir",
    "readme": "",
    "repository": "https://github.com/indexable-inc/ra-jit",
-   "rust_version": "1.98",
+   "rust_version": "1.99",
    "source": {
     "dir": "vendor/rust-analyzer/crates/hir",
     "kind": "path"
@@ -2956,7 +2956,7 @@
    "name": "ide-db",
    "readme": "",
    "repository": "https://github.com/indexable-inc/ra-jit",
-   "rust_version": "1.98",
+   "rust_version": "1.99",
    "source": {
     "dir": "vendor/rust-analyzer/crates/ide-db",
     "kind": "path"
@@ -2973,7 +2973,7 @@
    "name": "ide-diagnostics",
    "readme": "",
    "repository": "https://github.com/indexable-inc/ra-jit",
-   "rust_version": "1.98",
+   "rust_version": "1.99",
    "source": {
     "dir": "vendor/rust-analyzer/crates/ide-diagnostics",
     "kind": "path"
@@ -3075,7 +3075,7 @@
    "name": "intern",
    "readme": "",
    "repository": "https://github.com/indexable-inc/ra-jit",
-   "rust_version": "1.98",
+   "rust_version": "1.99",
    "source": {
     "dir": "vendor/rust-analyzer/crates/intern",
     "kind": "path"
@@ -3449,7 +3449,7 @@
    "name": "load-cargo",
    "readme": "",
    "repository": "https://github.com/indexable-inc/ra-jit",
-   "rust_version": "1.98",
+   "rust_version": "1.99",
    "source": {
     "dir": "vendor/rust-analyzer/crates/load-cargo",
     "kind": "path"
@@ -3517,7 +3517,7 @@
    "name": "macros",
    "readme": "",
    "repository": "https://github.com/indexable-inc/ra-jit",
-   "rust_version": "1.98",
+   "rust_version": "1.99",
    "source": {
     "dir": "vendor/rust-analyzer/crates/macros",
     "kind": "path"
@@ -3534,7 +3534,7 @@
    "name": "mbe",
    "readme": "",
    "repository": "https://github.com/indexable-inc/ra-jit",
-   "rust_version": "1.98",
+   "rust_version": "1.99",
    "source": {
     "dir": "vendor/rust-analyzer/crates/mbe",
     "kind": "path"
@@ -4027,7 +4027,7 @@
    "name": "parser",
    "readme": "",
    "repository": "https://github.com/indexable-inc/ra-jit",
-   "rust_version": "1.98",
+   "rust_version": "1.99",
    "source": {
     "dir": "vendor/rust-analyzer/crates/parser",
     "kind": "path"
@@ -4044,7 +4044,7 @@
    "name": "paths",
    "readme": "",
    "repository": "https://github.com/indexable-inc/ra-jit",
-   "rust_version": "1.98",
+   "rust_version": "1.99",
    "source": {
     "dir": "vendor/rust-analyzer/crates/paths",
     "kind": "path"
@@ -4316,7 +4316,7 @@
    "name": "proc-macro-api",
    "readme": "",
    "repository": "https://github.com/indexable-inc/ra-jit",
-   "rust_version": "1.98",
+   "rust_version": "1.99",
    "source": {
     "dir": "vendor/rust-analyzer/crates/proc-macro-api",
     "kind": "path"
@@ -4333,7 +4333,7 @@
    "name": "proc-macro-srv",
    "readme": "",
    "repository": "https://github.com/indexable-inc/ra-jit",
-   "rust_version": "1.98",
+   "rust_version": "1.99",
    "source": {
     "dir": "vendor/rust-analyzer/crates/proc-macro-srv",
     "kind": "path"
@@ -4384,7 +4384,7 @@
    "name": "profile",
    "readme": "",
    "repository": "https://github.com/indexable-inc/ra-jit",
-   "rust_version": "1.98",
+   "rust_version": "1.99",
    "source": {
     "dir": "vendor/rust-analyzer/crates/profile",
     "kind": "path"
@@ -4401,7 +4401,7 @@
    "name": "project-model",
    "readme": "",
    "repository": "https://github.com/indexable-inc/ra-jit",
-   "rust_version": "1.98",
+   "rust_version": "1.99",
    "source": {
     "dir": "vendor/rust-analyzer/crates/project-model",
     "kind": "path"
@@ -5642,7 +5642,7 @@
    "name": "span",
    "readme": "",
    "repository": "https://github.com/indexable-inc/ra-jit",
-   "rust_version": "1.98",
+   "rust_version": "1.99",
    "source": {
     "dir": "vendor/rust-analyzer/crates/span",
     "kind": "path"
@@ -5710,7 +5710,7 @@
    "name": "stdx",
    "readme": "",
    "repository": "https://github.com/indexable-inc/ra-jit",
-   "rust_version": "1.98",
+   "rust_version": "1.99",
    "source": {
     "dir": "vendor/rust-analyzer/crates/stdx",
     "kind": "path"
@@ -5812,7 +5812,7 @@
    "name": "syntax-bridge",
    "readme": "",
    "repository": "https://github.com/indexable-inc/ra-jit",
-   "rust_version": "1.98",
+   "rust_version": "1.99",
    "source": {
     "dir": "vendor/rust-analyzer/crates/syntax-bridge",
     "kind": "path"
@@ -5829,7 +5829,7 @@
    "name": "syntax",
    "readme": "",
    "repository": "https://github.com/indexable-inc/ra-jit",
-   "rust_version": "1.98",
+   "rust_version": "1.99",
    "source": {
     "dir": "vendor/rust-analyzer/crates/syntax",
     "kind": "path"
@@ -5914,7 +5914,7 @@
    "name": "test-fixture",
    "readme": "",
    "repository": "",
-   "rust_version": "1.98",
+   "rust_version": "1.99",
    "source": {
     "dir": "vendor/rust-analyzer/crates/test-fixture",
     "kind": "path"
@@ -5931,7 +5931,7 @@
    "name": "test-utils",
    "readme": "",
    "repository": "https://github.com/indexable-inc/ra-jit",
-   "rust_version": "1.98",
+   "rust_version": "1.99",
    "source": {
     "dir": "vendor/rust-analyzer/crates/test-utils",
     "kind": "path"
@@ -6271,7 +6271,7 @@
    "name": "toolchain",
    "readme": "",
    "repository": "https://github.com/indexable-inc/ra-jit",
-   "rust_version": "1.98",
+   "rust_version": "1.99",
    "source": {
     "dir": "vendor/rust-analyzer/crates/toolchain",
     "kind": "path"
@@ -6475,7 +6475,7 @@
    "name": "tt",
    "readme": "",
    "repository": "https://github.com/indexable-inc/ra-jit",
-   "rust_version": "1.98",
+   "rust_version": "1.99",
    "source": {
     "dir": "vendor/rust-analyzer/crates/tt",
     "kind": "path"
@@ -6798,7 +6798,7 @@
    "name": "vfs-notify",
    "readme": "",
    "repository": "https://github.com/indexable-inc/ra-jit",
-   "rust_version": "1.98",
+   "rust_version": "1.99",
    "source": {
     "dir": "vendor/rust-analyzer/crates/vfs-notify",
     "kind": "path"
@@ -6815,7 +6815,7 @@
    "name": "vfs",
    "readme": "",
    "repository": "https://github.com/indexable-inc/ra-jit",
-   "rust_version": "1.98",
+   "rust_version": "1.99",
    "source": {
     "dir": "vendor/rust-analyzer/crates/vfs",
     "kind": "path"
