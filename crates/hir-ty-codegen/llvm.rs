@@ -36,10 +36,12 @@ mod lower;
 const OWN: &str = "ra-jit.own";
 const PERSONALITY: &str = "rust_eh_personality";
 
+/// `weights`, from what code of the function counted while it ran, become its `!prof`.
 pub(super) fn emit(
     recorder: &mut Recorder<'_>,
     func: &ir::Function,
     optimization: Optimization,
+    weights: Option<&super::tier::Weights>,
 ) -> Result<Code, Unhandled> {
     let tally = Tally::global();
     // LLVM's optimizing register allocator takes more than linear time, as Cranelift's does:
@@ -60,7 +62,7 @@ pub(super) fn emit(
         let constants: FxHashMap<u32, &[u8]> = recorder.constants().collect();
         let statics: FxHashSet<u32> = recorder.statics().collect();
         tally.time(Phase::Lower, || {
-            lower::Lowering::lower(context, &module, func, &named, &constants, &statics)
+            lower::Lowering::lower(context, &module, func, &named, &constants, &statics, weights)
         })?;
         if std::env::var_os("RA_JIT_DUMP_LLVM").is_some() {
             eprintln!("{}", module.print_to_string().to_string_lossy());

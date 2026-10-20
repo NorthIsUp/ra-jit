@@ -103,16 +103,7 @@ impl Backend {
         recorder: &mut Recorder<'_>,
         context: &mut cranelift_codegen::Context,
     ) -> Result<Code> {
-        let mut code = Self::produce(recorder, context)?;
-        // A function is replaced in a linked program by a jump written over its entry, so
-        // none is shorter than that jump. Nothing runs the bytes that make up the length.
-        let target = super::Target::selected().map_err(CodegenError::Backend)?;
-        if let Some((shortest, filler)) = target.arch.shortest_function()
-            && code.bytes.len() < shortest
-        {
-            code.bytes.resize(shortest, filler);
-        }
-        Ok(code)
+        pad(Self::produce(recorder, context)?)
     }
 
     fn produce(
@@ -150,6 +141,18 @@ impl Backend {
     }
 }
 
+/// A function is replaced in a linked program by a jump written over its entry, so none is
+/// shorter than that jump. Nothing runs the bytes that make up the length.
+pub(super) fn pad(mut code: Code) -> Result<Code> {
+    let target = super::Target::selected().map_err(CodegenError::Backend)?;
+    if let Some((shortest, filler)) = target.arch.shortest_function()
+        && code.bytes.len() < shortest
+    {
+        code.bytes.resize(shortest, filler);
+    }
+    Ok(code)
+}
+
 #[cfg(feature = "llvm")]
 impl Backend {
     /// What LLVM makes of the function, from the store if the same IR was compiled at the
@@ -172,7 +175,7 @@ impl Backend {
             recorder.named_slots(),
             recorder.constants(),
         )) else {
-            return super::llvm::emit(recorder, func, optimization);
+            return super::llvm::emit(recorder, func, optimization, None);
         };
         match store.lookup(&key).and_then(|it| LlvmEntry::decode(&it)) {
             Some(LlvmEntry::Code(stored)) => {
@@ -184,7 +187,7 @@ impl Backend {
             None => {}
         }
         let mark = recorder.mark();
-        let (entry, out) = match super::llvm::emit(recorder, func, optimization) {
+        let (entry, out) = match super::llvm::emit(recorder, func, optimization, None) {
             Ok(code) => (StoredCode::of(&code, recorder, mark).map(LlvmEntry::Code), Ok(code)),
             Err(unhandled) => {
                 (Some(LlvmEntry::LeftToCranelift(unhandled.to_string())), Err(unhandled))
