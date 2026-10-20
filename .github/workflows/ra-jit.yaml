@@ -12,7 +12,9 @@ on:
 
 concurrency:
   group: ra-jit-${{ github.ref }}
-  cancel-in-progress: true
+  # On main a run finishes and the newest push waits behind it (a pending run is replaced by a
+  # newer one): with several agents pushing, cancelling left main without a single finished run.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   CARGO_INCREMENTAL: 0

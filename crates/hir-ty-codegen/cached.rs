@@ -211,7 +211,7 @@ impl StoredCode {
         let isa = super::target().ok()?;
         let ir = cranelift_codegen::incremental_cache::compute_cache_key(&**isa, func);
         let mut hasher = Sha256::new();
-        hasher.update(b"ra-jit llvm 5");
+        hasher.update(b"ra-jit llvm 6");
         hasher.update(super::Backend::Llvm(optimization).to_string());
         hasher.update(ir.to_string());
         // Nor does it tell which statement an instruction is of, which the code's lines do.
@@ -303,14 +303,6 @@ impl StoredCode {
         Some(code)
     }
 
-    pub(super) fn encode(&self) -> Option<Vec<u8>> {
-        postcard::to_allocvec(self).ok()
-    }
-
-    pub(super) fn decode(bytes: &[u8]) -> Option<StoredCode> {
-        postcard::from_bytes(bytes).ok()
-    }
-
     /// Whether the code and the blobs refer only to what is kept with them and to what a
     /// function that had asked for `asked` before it was compiled could name.
     fn sound(&self, asked: super::fragment::Mark) -> bool {
@@ -322,6 +314,28 @@ impl StoredCode {
             _ => 0,
         });
         code && self.blobs.iter().all(|it| it.sound(asked.funcs, asked.datas))
+    }
+}
+
+/// What the store keeps under [`StoredCode::key`]: LLVM's code of the function, or why LLVM
+/// left it to Cranelift. The refusal is kept as the code is, so that the next build of the
+/// same IR, in this process or another, goes to Cranelift and its entry in the store straight
+/// away, instead of trying LLVM again and missing in the store every time.
+#[cfg(feature = "llvm")]
+#[derive(Serialize, Deserialize)]
+pub(super) enum LlvmEntry {
+    Code(StoredCode),
+    LeftToCranelift(String),
+}
+
+#[cfg(feature = "llvm")]
+impl LlvmEntry {
+    pub(super) fn encode(&self) -> Option<Vec<u8>> {
+        postcard::to_allocvec(self).ok()
+    }
+
+    pub(super) fn decode(bytes: &[u8]) -> Option<LlvmEntry> {
+        postcard::from_bytes(bytes).ok()
     }
 }
 
@@ -1149,16 +1163,19 @@ mod tests {
     #[test]
     fn no_bytes_break_the_reading_of_code_of_llvm() {
         use super::super::fragment::Mark;
-        let seeds = vec![stored(vec![reloc(0, 0, 2), reloc(8, 2, 0)]).encode().unwrap()];
+        let code = LlvmEntry::Code(stored(vec![reloc(0, 0, 2), reloc(8, 2, 0)]));
+        let left = LlvmEntry::LeftToCranelift("opcode `iadd`".to_owned());
+        let seeds = vec![code.encode().unwrap(), left.encode().unwrap()];
         let (mut read, mut refused) = (0, 0);
         for bytes in fuzz::inputs("stored-code", seeds) {
-            let (largest, stored) = fuzz::largest_allocation(|| StoredCode::decode(&bytes));
+            let (largest, stored) = fuzz::largest_allocation(|| LlvmEntry::decode(&bytes));
             assert!(largest <= fuzz::allowed(bytes.len()), "{largest} bytes for {}", bytes.len());
             match stored {
-                Some(stored) => {
+                Some(LlvmEntry::Code(stored)) => {
                     stored.sound(Mark { funcs: 3, datas: 2 });
                     read += 1;
                 }
+                Some(LlvmEntry::LeftToCranelift(_)) => read += 1,
                 None => refused += 1,
             }
         }

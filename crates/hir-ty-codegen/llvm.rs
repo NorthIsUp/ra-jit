@@ -277,6 +277,8 @@ pub(super) enum Unhandled {
     /// A relocation type of the object format, by its number.
     Relocation(u32),
     Llvm(String),
+    /// What an earlier build of the same IR was told, as the store kept it.
+    Kept(String),
 }
 
 impl fmt::Display for Unhandled {
@@ -286,6 +288,7 @@ impl fmt::Display for Unhandled {
             Unhandled::Type(ty) => write!(f, "type `{ty}`"),
             Unhandled::Shape(what) => f.write_str(what),
             Unhandled::Relocation(kind) => write!(f, "relocation of type {kind}"),
+            Unhandled::Kept(reason) => f.write_str(reason),
             // The first line names the problem; the rest names the function's values.
             Unhandled::Llvm(message) => {
                 write!(f, "llvm: {}", message.lines().next().unwrap_or_default())
