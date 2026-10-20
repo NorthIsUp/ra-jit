@@ -121,8 +121,14 @@ def follow(files, steps):
         else:
             verdict = "same" if run(binary) == run(built(reference, "sinc")) else "DIFFERENT OUTPUT"
         made, failed = linked(seen), verdict.isupper()
+        # `compiled N` among what a step says: how many functions its builds may compile.
+        limit = [int(it.split()[1]) for it in how if it.startswith("compiled ")]
+        how = [it for it in how if not it.startswith("compiled ")]
         if how and not failed and how[0] not in made:
             verdict, failed = f"NOT {how[0]}: {made}"[:60], True
+        compiled = sum(int(it) for it in re.findall(r"^stats: (\d+) of", open(log_path).read()[seen:], re.M))
+        if limit and not failed and compiled > limit[0]:
+            verdict, failed = f"COMPILED {compiled} > {limit[0]}", True
         wrong += failed
         print(f"{what:40} {verdict:16} {took:6.0f} ms  {reply[:90]}", flush=True)
     daemon.kill()
