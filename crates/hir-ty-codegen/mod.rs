@@ -2571,9 +2571,21 @@ fn row_location<'db>(
         }
         Err(_) => return *source_location(db, owner, span),
     };
+    written_place(db, file_id, range, Some(within))
+}
+
+/// File, line and column of where `range` of `file_id` is for a debugger: where the macro
+/// has it while the macro is the crate's own, and where the first macro that is not is
+/// called from, up to the expansion `within` or to the source.
+fn written_place(
+    db: &dyn HirDatabase,
+    file_id: HirFileId,
+    range: TextRange,
+    within: Option<span::SyntaxContext>,
+) -> Option<(base_db::FileId, u32, u32)> {
     let mut at = file_id.span_map(db).span_for_range(TextRange::empty(range.start()));
     let mut kept = at;
-    while !at.ctx.is_root() && at.ctx != within {
+    while !at.ctx.is_root() && Some(at.ctx) != within {
         let Some(call) = at.ctx.outer_expn(db) else { break };
         let call = hir_expand::MacroCallId::from(call).loc(db);
         let written = call.to_node(db);
@@ -2676,6 +2688,25 @@ fn declaration_location<'db>(
 ) -> Option<(base_db::FileId, u32, u32)> {
     let source = func.lookup(db).source(db);
     location_of(db, source.file_id, written_range(source.value.syntax()))
+}
+
+/// File, line and column a debugger is told a function is declared on, and its code ahead of
+/// the first statement is of. They are those of [`declaration_location`] but for a function
+/// a macro writes, which is where the macro has it as [`row_location`] has the statements
+/// of the body, and as rustc tells. gdb on aarch64 takes the lines after the first one that
+/// are above it as more of the prologue, so a function a macro of the crate writes, declared
+/// on the line of the call below the macro, had its whole body taken as prologue: stepping
+/// into it put the breakpoint past the calls, where a panic in them never got.
+#[salsa::tracked]
+fn debug_declaration_location<'db>(
+    db: &'db dyn HirDatabase,
+    func: FunctionId,
+) -> Option<(base_db::FileId, u32, u32)> {
+    let source = func.lookup(db).source(db);
+    if source.file_id.macro_file().is_none() {
+        return *declaration_location(db, func);
+    }
+    written_place(db, source.file_id, written_range(source.value.syntax()), None)
 }
 
 /// File, line and column of where the struct or the variant `def` constructs is written,
@@ -3583,7 +3614,7 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
         self.stitch(id, compiled)?;
         let name = super::type_name::rustc_debug_function(db, func, &[])
             .unwrap_or_else(|| FunctionSignature::of(db, func).name.as_str().to_owned());
-        let declared = self.declaration_at(func);
+        let declared = self.debug_declaration_at(func);
         let rows = self.debug.as_ref().map(|_| root_rows(db, func));
         self.describe(id, compiled, rows, FunctionDebug::new(name, symbol.clone()), declared);
         Ok(symbol)
@@ -3905,7 +3936,7 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
                 _ => lang_items.FnOnce_call_once,
             },
         };
-        self.declaration_at(func?)
+        self.debug_declaration_at(func?)
     }
 
     /// Tells the debugger about the compiled function `id`: what it is called, as `debug`
@@ -4774,6 +4805,12 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
 
     fn declaration_at(&mut self, func: FunctionId) -> Option<(String, u32, u32)> {
         declaration_location(self.db, func)
+            .and_then(|(file, line, col)| Some((self.source_path(file)?, line, col)))
+    }
+
+    /// Where a debugger is told `func` is declared: [`debug_declaration_location`].
+    fn debug_declaration_at(&mut self, func: FunctionId) -> Option<(String, u32, u32)> {
+        debug_declaration_location(self.db, func)
             .and_then(|(file, line, col)| Some((self.source_path(file)?, line, col)))
     }
 
