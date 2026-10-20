@@ -29,7 +29,6 @@ use crate::{
     consteval::try_const_usize,
     db::HirDatabase,
     db::InternedClosure,
-    drop::{DropGlue, has_drop_glue},
     generics::generics,
     layout::CoroutineFrame,
     layout::struct_tail_erasing_lifetimes,
@@ -502,22 +501,19 @@ impl<'db> Types<'db> {
             self.captures(id.0.loc(self.db), args.tupled_upvars_ty(), offset_of, pointers);
         let parent_args = GenericArgs::new_from_slice(args.parent_args());
         let body = match is_by_move_coroutine(self.db, id.0, args) {
-            true => self.db.monomorphized_mir_body_for_coroutine_by_move(
+            true => self.db.monomorphized_runtime_mir_body_for_coroutine_by_move(
                 id.0,
                 parent_args.store(),
                 self.env.store(),
             ),
-            false => self.db.monomorphized_mir_body_for_coroutine(
+            false => self.db.monomorphized_runtime_mir_body_for_coroutine(
                 id.0,
                 parent_args.store(),
                 self.env.store(),
             ),
         }
         .ok()?;
-        let held = body.locals_held_across_yields(|local| {
-            has_drop_glue(&self.infcx, body.locals[local].ty.as_ref(), self.env.param_env)
-                != DropGlue::None
-        });
+        let held = body.locals_held_across_yields();
         let closure = id.0.loc(self.db);
         let store = ExpressionStore::of(self.db, closure.owner.expression_store_owner(self.db));
         let bindings = body.local_to_binding_map();
