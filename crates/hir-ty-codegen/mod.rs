@@ -113,15 +113,15 @@ mod target;
 pub use target::{Arch, Calls, ObjectFormat, Target, UnwindFormat, VariableArguments};
 
 pub use patch::{Stale, StaleSteps};
+/// For `crates/ra-jit-bench` alone.
+#[doc(hidden)]
+pub use store::bench;
 pub use store::{
     Collected, FORMAT as STORE_FORMAT, FetchMissing, Stats, StoreDir, Verified, compiles_against,
     fetch_missing_with, identify_ahead, is_off as store_is_off, is_pack, limit_from_env,
     name_file_whole, pack_format, pack_keys, pack_name, parse_size, seal_open, settled,
     write_file_whole,
 };
-/// For `crates/ra-jit-bench` alone.
-#[doc(hidden)]
-pub use store::bench;
 mod type_id;
 mod unwind;
 mod vtable;
@@ -1983,6 +1983,52 @@ fn body_types<'db>(
         returned: body.locals[returned_local(body)].ty.clone(),
         poll: body.coroutine.map(|it| body.locals[it.poll].ty.clone()),
     })
+}
+
+/// The future of a non-generic `async fn` as `-Zprint-type-sizes` names it, with the offsets
+/// of what each variant holds (the captures, and the locals kept there) in increasing order:
+/// `{async fn body of f()} @coroutine 0,16;0,8,16`. `harness/layoutdiff.py` compares it with
+/// rustc's, which `--layouts` otherwise skips: a future both compilers make and poll has to be
+/// laid out alike to the byte.
+fn coroutine_layout_line<'db>(
+    db: &'db dyn HirDatabase,
+    ty: Ty<'db>,
+    layout: &Layout,
+) -> Option<String> {
+    use hir_def::hir::{ClosureKind, CoroutineSource, Expr};
+    let TyKind::Coroutine(id, args) = ty.kind() else { return None };
+    if !args.as_coroutine().parent_args().is_empty() {
+        return None;
+    }
+    let closure = id.0.loc(db);
+    let InferBodyId::DefWithBodyId(DefWithBodyId::FunctionId(func)) = closure.owner else {
+        return None;
+    };
+    let store =
+        hir_def::expr_store::ExpressionStore::of(db, closure.owner.expression_store_owner(db));
+    let Expr::Closure {
+        closure_kind: ClosureKind::Coroutine { source: CoroutineSource::Fn, .. },
+        ..
+    } = &store[closure.expr]
+    else {
+        return None;
+    };
+    let Variants::Multiple { tag_field, variants, .. } = &layout.variants else { return None };
+    let upvars: Vec<u64> = (0..layout.fields.count())
+        .filter(|&field| field != rustc_index::Idx::index(*tag_field))
+        .map(|field| layout.fields.offset(field).bytes())
+        .collect();
+    let variants: Vec<String> = variants
+        .iter()
+        .map(|variant| {
+            let mut offsets = upvars.clone();
+            offsets.extend(variant.field_offsets.iter().map(|it| it.bytes()));
+            offsets.sort_unstable();
+            offsets.iter().map(u64::to_string).collect::<Vec<_>>().join(",")
+        })
+        .collect();
+    let name = FunctionSignature::of(db, func).name.as_str().to_owned();
+    Some(format!("{{async fn body of {name}()}} @coroutine {}", variants.join(";")))
 }
 
 /// Whether a future and everything that makes, polls or drops it have to come from one
@@ -5979,6 +6025,10 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             .map_err(|e| CodegenError::Frontend(format!("layout of {ty:?}: {e:?}")))?;
         if let Some(log) = &self.cg.layouts {
             log.borrow_mut().entry(ty).or_insert((layout.size.bytes(), layout.align.abi.bytes()));
+            if let Some(line) = coroutine_layout_line(self.cg.db, ty, &layout) {
+                let (size, align) = (layout.size.bytes(), layout.align.abi.bytes());
+                self.cg.coroutine_layouts.borrow_mut().push((line, size, align));
+            }
         }
         self.layouts.borrow_mut().insert(ty, layout.clone());
         Ok(layout)
