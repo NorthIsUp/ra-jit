@@ -52,6 +52,16 @@ pub struct Theme {
     pub error: Color32,
     /// a dead cell of the Game of Life
     pub dead_cell: Color32,
+    /// tier 1, Cranelift: quick to build, so muted
+    pub tier_cranelift: Color32,
+    /// tier 2, LLVM -O3
+    pub tier_o3: Color32,
+    /// tier 3, LLVM -O3 with the profile
+    pub tier_pgo: Color32,
+    /// code the daemon did not compile
+    pub tier_none: Color32,
+    /// the empty part of a heat bar
+    pub tier_track: Color32,
     pub metrics: Metrics,
 }
 
@@ -89,6 +99,21 @@ pub struct Metrics {
     pub font_size: f32,
     /// ~1.43x
     pub line_height: f32,
+    /// the tiers island under the grid, fixed so the grid never jumps
+    pub tiers_height: f32,
+    pub tiers_pad: i8,
+    pub tier_font_size: f32,
+    pub tier_row_height: f32,
+    /// the level tag in front of each function
+    pub tier_badge_width: f32,
+    pub tier_name_width: f32,
+    pub tier_bar_width: f32,
+    pub tier_bar_height: f32,
+    /// hot functions shown, and events
+    pub tier_rows: usize,
+    pub tier_events: usize,
+    /// share of the island's width that the functions take; the events have the rest
+    pub tier_split: f32,
 }
 
 pub const ISLANDS_DARK: Theme = Theme {
@@ -113,6 +138,11 @@ pub const ISLANDS_DARK: Theme = Theme {
     attribute: rgb(0xb3ae60), // DEFAULT_METADATA (annotations / attributes)
     error: rgb(0xf75464),   // Islands error red (theme.json red accent)
     dead_cell: rgb(0x101114), // a shade under island_bg, so the grid reads as a grid
+    tier_cranelift: rgb(0x8a9bb8), // not in Islands: a grey blue, between comment and function
+    tier_o3: rgb(0xe8a33e), // not in Islands: amber
+    tier_pgo: rgb(0x5fb865), // not in Islands: a green a step brighter than string
+    tier_none: rgb(0x6f737a), // not in Islands: between LINE_NUMBERS_COLOR and comment
+    tier_track: rgb(0x26282c), // window_bg, so a bar's track reads as a slot in the island
     metrics: Metrics {
         editor_panel_width: 560.0,
         footer_pad_v: 6,
@@ -136,5 +166,16 @@ pub const ISLANDS_DARK: Theme = Theme {
         footer_height: 78.0, // fixed error footer, so the editor never jumps
         font_size: 14.0, // editor font size (egui's bundled Hack monospace)
         line_height: 20.0, // ~1.43x
+        tiers_height: 214.0, // the tiers island under the grid, fixed so the grid never jumps
+        tiers_pad: 12,
+        tier_font_size: 12.0,
+        tier_row_height: 19.0,
+        tier_badge_width: 36.0, // the level tag in front of each function
+        tier_name_width: 128.0,
+        tier_bar_width: 96.0,
+        tier_bar_height: 6.0,
+        tier_rows: 8, // hot functions shown
+        tier_events: 5,
+        tier_split: 0.56, // share of the island's width that the functions take
     },
 };
