@@ -133,6 +133,8 @@ with reasons. The daemon's log says `backend: llvm -O2 fast emit` when LLVM is i
 
 `bench.py`, `editloop.py`, `edittimes.py`, `scaling.py`, `dxedits.py`, `linkbench.py`,
 `shapes.py` and `heap.py` measure and do not gate. Their docstrings say how to run them.
+`bench.py` on real projects, with `benchreport.py`, is also what writes the README's build table:
+[benchmarks.md](benchmarks.md).
 
 ## The fuzzer
 

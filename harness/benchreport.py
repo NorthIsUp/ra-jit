@@ -85,9 +85,18 @@ def short(commit):
 
 def machine_line(result):
     host = result.get("host") or {}
-    details = [p for p in (host.get("cpu"), f"{host.get('cores') or result.get('cores')} cores",
+    cores, of = host.get("cores") or result.get("cores"), host.get("machine_cores")
+    cpu = re.sub(r"( \d+-Core)? Processor$", "", host.get("cpu") or "") or None
+    details = [p for p in (cpu, f"{cores} of its {of} cores" if of and of != cores else f"{cores} cores",
                            f"{host['memory_gib']} GiB" if host.get("memory_gib") else None) if p]
     return f"{host.get('name') or 'one machine'} ({', '.join(details)})"
+
+
+def provenance(result):
+    """Who ran it: the CI run, or a person with the same harness."""
+    if result.get("run_url"):
+        return f"Measured by [CI]({result['run_url']}) on the dedicated benchmark machine, which re-runs it after pushes to main."
+    return "Measured by hand with `harness/bench.py`; the `bench-readme` workflow re-runs it on the dedicated benchmark machine."
 
 
 def readme_section(result):
@@ -121,9 +130,8 @@ def readme_section(result):
     if fell_back:
         lines.append("(c): the daemon handed this edit to cargo (a fallback, so about cargo's time).")
         lines.append("")
-    lines.append("Measured by CI on a dedicated machine after pushes to main. Cold builds, the spread of every "
-                 "number, the LLVM tier and how fast the built programs run: [docs/benchmarks.md](docs/benchmarks.md) "
-                 "([raw JSON](docs/benchmarks/linux-x86_64.json)).")
+    lines.append(provenance(result) + " Cold builds, the spread of every number, the LLVM tier and how fast the "
+                 "built programs run: [docs/benchmarks.md](docs/benchmarks.md) ([raw JSON](docs/benchmarks/linux-x86_64.json)).")
     lines.append(END)
     return "\n".join(lines)
 
@@ -133,7 +141,8 @@ def doc_section(result):
     host = result.get("host") or {}
     lines = [START, f"### Latest run", "",
              f"ra-jit [`{short(commit)}`]({REPO}/commit/{commit}), {result['date']}, Rust {result['toolchain']}, "
-             f"{result['runs']} runs of each edit. Raw: [benchmarks/linux-x86_64.json](benchmarks/linux-x86_64.json).", "",
+             f"{result['runs']} runs of each edit. Raw: [benchmarks/linux-x86_64.json](benchmarks/linux-x86_64.json). "
+             f"{provenance(result)}", "",
              "| Machine | |", "|---|---|"]
     for label, field in (("Name", "name"), ("CPU", "cpu"), ("Cores", "cores"), ("Memory (GiB)", "memory_gib"), ("Kernel", "kernel"),
                          ("rustc", "rustc"), ("C compiler", "cc"), ("Linker", "ld"), ("LLVM", "llvm"),
@@ -176,7 +185,7 @@ def doc_section(result):
             for key in timed:
                 run = result["results"][key]["runtime"]
                 cell = lambda r: f"{seconds(r['median_s'])} ({seconds(r['min_s'])} to {seconds(r['max_s'])})"
-                command = " ".join(run["command"]).replace("|", "\\|")
+                command = " ".join(run["command"]).replace("{library}", "<the toolchain's library source>").replace("|", "\\|")
                 lines.append(f"| {project_name(key, result['results'][key])} | `{command}` | {cell(run['ra-jit'])} | "
                              f"{cell(run['cargo debug'])} | {cell(run['cargo release'])} |")
         lines.append("")

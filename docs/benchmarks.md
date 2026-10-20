@@ -74,17 +74,25 @@ in `BACKENDS` in `harness/bench.py`; the report makes a table for every backend 
 
 ## The machine
 
-A dedicated AWS instance, `dev-aws-bench-x86`, c8a.4xlarge in us-west-2: 16 AMD EPYC (Zen 5)
-cores, one thread per core (no SMT siblings sharing a core), 32 GiB, on demand (no Spot
-reclaims), NixOS, gp3 disk. A cloud VM is not bare metal, but its cores are not shared with
-other tenants; the spread columns below show how much the numbers move between runs. Its
-CPU, kernel, rustc, C compiler, linker and LLVM version are recorded in each run (below and in
-the JSON).
+Every result records its machine: the name it was given (`RA_JIT_BENCH_MACHINE`), the CPU, the
+cores the run could use (it may be pinned with `taskset`) and the machine's total, memory,
+kernel, rustc, C compiler, linker and LLVM version (below and in the JSON).
 
-It is a self-hosted GitHub Actions runner with the labels `self-hosted, linux, x64, bench-x86`,
-running as user `andrew` from `~/actions-runner` under a user systemd unit
-(`ra-jit-bench-runner.service`, lingering, so it starts at boot). Its `.env` names the machine
-(`RA_JIT_BENCH_MACHINE=AWS c8a.4xlarge`), which goes into each result.
+The CI machine is a dedicated AWS instance used for nothing else, registered as a self-hosted
+GitHub Actions runner with the labels `self-hosted, linux, x64, bench-x86`. It runs as user
+`andrew` from `~/actions-runner` under a user systemd unit (`ra-jit-bench-runner.service`,
+lingering, so it starts at boot); `harness/benchrunner.sh` sets all of that up, and its `.env`
+names the machine for the results. The instance meant for it is `dev-aws-bench-x86`
+(i-01666717f0de39201, us-west-2a, on demand, ttl a year, tagged `ix-dev-purpose=ra-jit-bench`):
+16 AMD EPYC 9R45 (Zen 5) cores, one thread per core, NixOS. It was launched as a c8a.4xlarge
+(32 GiB), but nushell's daemon alone holds 15 GB, so it should be resized to m8a.4xlarge (the
+same 16 cores, 64 GiB) before it takes the runner. A cloud VM is not bare metal, but its cores
+are not shared with other tenants; the spread columns show how much the numbers move.
+
+The first published run (2026-10-20) was made by hand, before that runner existed, on
+`dev-aws-11`: a bare-metal c8a.metal-24xl (96 of the same Zen 5 cores, 188 GiB) that was idle
+and claimed for the run, with the benchmark pinned to cores 0-15 (`taskset -c 0-15`), so that
+cargo and the daemon had 16 cores as on the CI machine.
 
 ## When it runs and what it commits
 
@@ -119,7 +127,9 @@ python3 harness/benchreport.py /tmp/bench.json --check               # what woul
 ```
 
 `--backend cranelift` measures one tier. Projects are cloned once into `RA_JIT_PROJECTS`
-(default `~/ra-jit-projects`). The whole CI set takes about two hours on the machine above.
+(default `~/ra-jit-projects`). The whole CI set (seven projects, both tiers, five runs) took 38
+minutes on 16 Zen 5 cores, plus the build of ra-jit. It needs about 20 GB of memory (nushell)
+and 30 GB of disk.
 `python3 harness/bench.py --compare OLD.json NEW.json` lists what got slower.
 
 ## Caveats
@@ -131,8 +141,13 @@ python3 harness/benchreport.py /tmp/bench.json --check               # what woul
 - An edit is a small, fixed change. A larger change (many functions, a new type) costs more;
   `harness/agents.py` makes random edits of the kinds coding agents make.
 - axum's output is not checked (it is a server); its build is.
-- ripgrep's runtime is one workload; the program ra-jit linked has had the edits spliced into it
-  and taken back, as a program in use would.
+- ripgrep's runtime is one short workload (tens of milliseconds, over 16 threads), so it says more
+  about start-up and directory walking than about generated code; the program ra-jit linked has
+  had the edits spliced into it and taken back, as a program in use would.
+- Cold for `cargo ra-jit build` is cargo's own build (the daemon is not loaded yet), so it matches
+  plain cargo; the daemon then loads the workspace in the background ("Daemon ready after").
+- The C compiler comes from Nix (gcc 16) with the wrapper's hardening turned off, as a
+  distribution's gcc behaves; it is the same for both sides.
 
 ## Earlier one-off measurements
 
@@ -151,4 +166,138 @@ this page existed; not updated by CI.
 ## Results
 
 <!-- bench:start -->
+### Latest run
+
+ra-jit [`6a7d245e47`](https://github.com/indexable-inc/ra-jit/commit/6a7d245e47830f26475e98db6e01905f117a2971), 2026-10-20T16:53:46Z, Rust 1.99.0, 5 runs of each edit. Raw: [benchmarks/linux-x86_64.json](benchmarks/linux-x86_64.json). Measured by hand with `harness/bench.py`; the `bench-readme` workflow re-runs it on the dedicated benchmark machine.
+
+| Machine | |
+|---|---|
+| Name | AWS c8a.metal-24xl, bare metal, pinned with taskset |
+| CPU | AMD EPYC 9R45 96-Core Processor |
+| Cores | 16 |
+| Memory (GiB) | 188 |
+| Kernel | 6.18.53 |
+| rustc | rustc 1.99.0 (b940084d7 2026-09-28) |
+| C compiler | gcc (GCC) 16.2.0 |
+| Linker | GNU ld (GNU Binutils) 2.46 |
+| LLVM | 20.1.8 |
+| Incremental | profile default (on for dev) |
+| Compiler cache | none |
+
+#### Edits, Cranelift
+
+Median, then the fastest and slowest run. Built: who built the edit (daemon, or cargo and why). Link: the change was spliced into the program, or it was linked again.
+
+| Project | Edit | cargo | ra-jit | | cargo runs | ra-jit runs | Built | Link |
+|---|---|---:|---:|---:|---|---|---|---|
+| ripgrep 15.1.0 | Edit a function | 447 ms | 90 ms | 5.0x | 441 ms to 452 ms | 88 ms to 116 ms | daemon | spliced |
+| ripgrep 15.1.0 | Edit a widely used function | 713 ms | 50 ms | 14x | 712 ms to 1.08 s | 48 ms to 69 ms | daemon | spliced |
+| ripgrep 15.1.0 | Change a signature | 556 ms | 86 ms | 6.5x | 552 ms to 558 ms | 82 ms to 100 ms | daemon | spliced |
+| ripgrep 15.1.0 | Edit a generic function | 692 ms | 50 ms | 14x | 690 ms to 1.08 s | 49 ms to 54 ms | daemon | spliced |
+| ripgrep 15.1.0 | Nothing changed | 382 ms | 28 ms | 14x | 377 ms to 386 ms | 27 ms to 71 ms | daemon |  |
+| fd 10.3.0 | Edit a function | 433 ms | 99 ms | 4.4x | 427 ms to 613 ms | 98 ms to 137 ms | daemon | spliced |
+| fd 10.3.0 | Edit a widely used function | 403 ms | 86 ms | 4.7x | 397 ms to 405 ms | 84 ms to 89 ms | daemon | spliced |
+| fd 10.3.0 | Change a signature | 651 ms | 122 ms | 5.3x | 434 ms to 660 ms | 109 ms to 179 ms | daemon | spliced |
+| fd 10.3.0 | Nothing changed | 381 ms | 31 ms | 12x | 377 ms to 386 ms | 31 ms to 79 ms | daemon |  |
+| bat 0.26.0 | Edit a function | 428 ms | 60 ms | 7.1x | 421 ms to 432 ms | 58 ms to 245 ms | daemon | spliced |
+| bat 0.26.0 | Edit a widely used function | 667 ms | 54 ms | 12x | 665 ms to 1.30 s | 53 ms to 82 ms | daemon | spliced |
+| bat 0.26.0 | Change a signature | 951 ms | 67 ms | 14x | 621 ms to 967 ms | 57 ms to 85 ms | daemon | spliced |
+| bat 0.26.0 | Nothing changed | 58 ms | 26 ms | 2.2x | 57 ms to 59 ms | 25 ms to 162 ms | daemon |  |
+| hyperfine 1.19.0 | Edit a function | 315 ms | 92 ms | 3.4x | 312 ms to 317 ms | 91 ms to 98 ms | daemon | spliced |
+| hyperfine 1.19.0 | Edit a widely used function | 349 ms | 98 ms | 3.6x | 343 ms to 351 ms | 97 ms to 99 ms | daemon | spliced |
+| hyperfine 1.19.0 | Change a signature | 352 ms | 140 ms | 2.5x | 349 ms to 354 ms | 139 ms to 142 ms | daemon | spliced |
+| hyperfine 1.19.0 | Nothing changed | 298 ms | 30 ms | 9.9x | 297 ms to 301 ms | 30 ms to 54 ms | daemon |  |
+| just 1.43.0 | Edit a function | 656 ms | 48 ms | 14x | 650 ms to 669 ms | 47 ms to 88 ms | daemon | spliced |
+| just 1.43.0 | Edit a widely used function | 687 ms | 52 ms | 13x | 672 ms to 1.23 s | 51 ms to 73 ms | daemon | spliced |
+| just 1.43.0 | Change a signature | 664 ms | 76 ms | 8.7x | 653 ms to 670 ms | 74 ms to 80 ms | daemon | spliced |
+| just 1.43.0 | Nothing changed | 41 ms | 24 ms | 1.7x | 40 ms to 41 ms | 23 ms to 138 ms | daemon |  |
+| axum 0.8.6 | Edit a function | 350 ms | 57 ms | 6.1x | 346 ms to 351 ms | 55 ms to 63 ms | daemon | spliced |
+| axum 0.8.6 | Edit a widely used function | 798 ms | 52 ms | 15x | 791 ms to 803 ms | 51 ms to 53 ms | daemon | spliced |
+| axum 0.8.6 | Nothing changed | 71 ms | 26 ms | 2.7x | 70 ms to 72 ms | 26 ms to 97 ms | daemon |  |
+| nushell 0.108.0 | Edit a function | 1.44 s | 325 ms | 4.4x | 1.40 s to 1.45 s | 316 ms to 984 ms | daemon | spliced |
+| nushell 0.108.0 | Edit a widely used function | 4.75 s | 221 ms | 22x | 4.73 s to 4.84 s | 218 ms to 224 ms | daemon | spliced |
+| nushell 0.108.0 | Change a signature | 4.84 s | 288 ms | 17x | 4.78 s to 6.79 s | 271 ms to 380 ms | daemon | spliced |
+| nushell 0.108.0 | Edit a generic function | 6.48 s | 294 ms | 22x | 6.45 s to 6.54 s | 287 ms to 335 ms | daemon | spliced |
+| nushell 0.108.0 | Nothing changed | 179 ms | 43 ms | 4.2x | 174 ms to 182 ms | 38 ms to 10.04 s | daemon |  |
+
+#### Cold, Cranelift
+
+From an empty target directory and an empty store, crates already downloaded. One run.
+
+| Project | `cargo build` | `cargo ra-jit build` | Daemon ready after | Functions compiled | Daemon memory |
+|---|---:|---:|---:|---:|---:|
+| ripgrep 15.1.0 | 4.45 s | 4.50 s | 4.44 s | 17,103 | 2,487 MB |
+| fd 10.3.0 | 20.44 s | 20.36 s | 4.13 s | 8,157 | 2,112 MB |
+| bat 0.26.0 | 9.18 s | 9.13 s | 7.73 s | 11,353 | 2,728 MB |
+| hyperfine 1.19.0 | 4.38 s | 4.45 s | 5.50 s | 5,762 | 2,041 MB |
+| just 1.43.0 | 6.10 s | 6.13 s | 5.79 s | 21,033 | 2,796 MB |
+| axum 0.8.6 | 6.68 s | 6.76 s | 4.97 s | 5,515 | 2,415 MB |
+| nushell 0.108.0 | 28.02 s | 28.21 s | 28.33 s | 160,177 | 15,282 MB |
+
+#### How fast the program runs, Cranelift
+
+The same command run by the program ra-jit linked and by cargo's debug and release builds, in turn. Median, then fastest and slowest.
+
+| Project | Command | ra-jit | cargo debug | cargo release |
+|---|---|---:|---:|---:|
+| ripgrep 15.1.0 | `rg -uuu --sort path -c \w+_unchecked\(\|unsafe \{ <the toolchain's library source>` | 35 ms (35 ms to 41 ms) | 33 ms (33 ms to 35 ms) | 10 ms (10 ms to 10 ms) |
+
+#### Edits, LLVM
+
+Median, then the fastest and slowest run. Built: who built the edit (daemon, or cargo and why). Link: the change was spliced into the program, or it was linked again.
+
+| Project | Edit | cargo | ra-jit | | cargo runs | ra-jit runs | Built | Link |
+|---|---|---:|---:|---:|---|---|---|---|
+| ripgrep 15.1.0 | Edit a function | 449 ms | 94 ms | 4.8x | 446 ms to 455 ms | 93 ms to 117 ms | daemon | spliced |
+| ripgrep 15.1.0 | Edit a widely used function | 722 ms | 53 ms | 14x | 720 ms to 1.06 s | 50 ms to 69 ms | daemon | spliced |
+| ripgrep 15.1.0 | Change a signature | 553 ms | 107 ms | 5.2x | 550 ms to 559 ms | 105 ms to 111 ms | daemon | spliced |
+| ripgrep 15.1.0 | Edit a generic function | 698 ms | 63 ms | 11x | 685 ms to 1.13 s | 63 ms to 65 ms | daemon | spliced |
+| ripgrep 15.1.0 | Nothing changed | 382 ms | 28 ms | 14x | 380 ms to 385 ms | 28 ms to 73 ms | daemon |  |
+| fd 10.3.0 | Edit a function | 432 ms | 100 ms | 4.3x | 428 ms to 434 ms | 100 ms to 108 ms | daemon | spliced |
+| fd 10.3.0 | Edit a widely used function | 401 ms | 87 ms | 4.6x | 400 ms to 403 ms | 86 ms to 91 ms | daemon | spliced |
+| fd 10.3.0 | Change a signature | 644 ms | 135 ms | 4.8x | 439 ms to 751 ms | 110 ms to 155 ms | daemon | spliced |
+| fd 10.3.0 | Nothing changed | 379 ms | 31 ms | 12x | 378 ms to 381 ms | 30 ms to 79 ms | daemon |  |
+| bat 0.26.0 | Edit a function | 430 ms | 60 ms | 7.2x | 424 ms to 436 ms | 60 ms to 243 ms | daemon | spliced |
+| bat 0.26.0 | Edit a widely used function | 673 ms | 56 ms | 12x | 670 ms to 1.19 s | 54 ms to 106 ms | daemon | spliced |
+| bat 0.26.0 | Change a signature | 934 ms | 65 ms | 14x | 625 ms to 1.01 s | 57 ms to 104 ms | daemon | spliced |
+| bat 0.26.0 | Nothing changed | 57 ms | 26 ms | 2.2x | 56 ms to 57 ms | 25 ms to 162 ms | daemon |  |
+| hyperfine 1.19.0 | Edit a function | 317 ms | 99 ms | 3.2x | 316 ms to 320 ms | 99 ms to 104 ms | daemon | spliced |
+| hyperfine 1.19.0 | Edit a widely used function | 350 ms | 99 ms | 3.5x | 348 ms to 351 ms | 98 ms to 99 ms | daemon | spliced |
+| hyperfine 1.19.0 | Change a signature | 352 ms | 144 ms | 2.4x | 348 ms to 354 ms | 141 ms to 156 ms | daemon | spliced |
+| hyperfine 1.19.0 | Nothing changed | 300 ms | 30 ms | 10x | 297 ms to 307 ms | 30 ms to 53 ms | daemon |  |
+| just 1.43.0 | Edit a function | 652 ms | 48 ms | 14x | 649 ms to 668 ms | 47 ms to 87 ms | daemon | spliced |
+| just 1.43.0 | Edit a widely used function | 684 ms | 52 ms | 13x | 675 ms to 1.23 s | 51 ms to 66 ms | daemon | spliced |
+| just 1.43.0 | Change a signature | 660 ms | 100 ms | 6.6x | 659 ms to 666 ms | 98 ms to 108 ms | daemon | spliced |
+| just 1.43.0 | Nothing changed | 40 ms | 24 ms | 1.7x | 40 ms to 41 ms | 23 ms to 135 ms | daemon |  |
+| axum 0.8.6 | Edit a function | 347 ms | 60 ms | 5.8x | 345 ms to 352 ms | 58 ms to 61 ms | daemon | spliced |
+| axum 0.8.6 | Edit a widely used function | 796 ms | 53 ms | 15x | 794 ms to 803 ms | 51 ms to 53 ms | daemon | spliced |
+| axum 0.8.6 | Nothing changed | 71 ms | 26 ms | 2.7x | 69 ms to 74 ms | 25 ms to 57 ms | daemon |  |
+| nushell 0.108.0 | Edit a function | 1.44 s | 338 ms | 4.3x | 1.42 s to 1.63 s | 323 ms to 756 ms | daemon | spliced |
+| nushell 0.108.0 | Edit a widely used function | 4.79 s | 213 ms | 22x | 4.75 s to 4.82 s | 211 ms to 218 ms | daemon | spliced |
+| nushell 0.108.0 | Change a signature | 4.89 s | 279 ms | 18x | 4.83 s to 7.38 s | 269 ms to 429 ms | daemon | spliced |
+| nushell 0.108.0 | Edit a generic function | 6.50 s | 299 ms | 22x | 6.42 s to 6.77 s | 293 ms to 338 ms | daemon | spliced |
+| nushell 0.108.0 | Nothing changed | 177 ms | 39 ms | 4.5x | 175 ms to 182 ms | 35 ms to 4.24 s | daemon |  |
+
+#### Cold, LLVM
+
+From an empty target directory and an empty store, crates already downloaded. One run.
+
+| Project | `cargo build` | `cargo ra-jit build` | Daemon ready after | Functions compiled | Daemon memory |
+|---|---:|---:|---:|---:|---:|
+| ripgrep 15.1.0 | 4.44 s | 4.53 s | 5.93 s | 17,103 | 2,554 MB |
+| fd 10.3.0 | 20.59 s | 20.44 s | 4.44 s | 8,157 | 2,132 MB |
+| bat 0.26.0 | 9.13 s | 9.00 s | 8.88 s | 11,353 | 2,798 MB |
+| hyperfine 1.19.0 | 4.41 s | 4.45 s | 5.79 s | 5,762 | 2,084 MB |
+| just 1.43.0 | 6.14 s | 6.21 s | 7.28 s | 21,033 | 2,805 MB |
+| axum 0.8.6 | 6.66 s | 6.73 s | 5.28 s | 5,515 | 2,434 MB |
+| nushell 0.108.0 | 27.99 s | 28.17 s | 36.86 s | 160,177 | 15,240 MB |
+
+#### How fast the program runs, LLVM
+
+The same command run by the program ra-jit linked and by cargo's debug and release builds, in turn. Median, then fastest and slowest.
+
+| Project | Command | ra-jit | cargo debug | cargo release |
+|---|---|---:|---:|---:|
+| ripgrep 15.1.0 | `rg -uuu --sort path -c \w+_unchecked\(\|unsafe \{ <the toolchain's library source>` | 34 ms (34 ms to 41 ms) | 36 ms (36 ms to 37 ms) | 10 ms (10 ms to 10 ms) |
+
 <!-- bench:end -->

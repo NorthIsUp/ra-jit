@@ -496,6 +496,8 @@ def main():
     result = dict(toolchain=TOOLCHAIN, machine=platform.machine(), cores=os.cpu_count(), runs=runs,
                   commit=ra_jit_commit(), date=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), host=machine(),
                   backends={b: BACKENDS[b] for b in backends}, results={})
+    if os.environ.get("GITHUB_RUN_ID"):
+        result["run_url"] = f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
     for name in names:
         for backend in backends:
             print(f"{name} {backend} ({ra_jit_of(backend)}; work {work})", flush=True)
