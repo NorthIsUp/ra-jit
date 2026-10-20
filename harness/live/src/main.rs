@@ -8,6 +8,27 @@ fn answer() -> u64 {
     1
 }
 
+// What `live_latency.py replay` types over, called on every turn of the loop: a generic
+// function (one instance per type it is called with) and a plain one.
+#[inline(never)]
+fn weigh<T: Copy + Into<u64>>(items: &[T]) -> u64 {
+    let mut total = 0;
+    for item in items {
+        total += (*item).into();
+    }
+    total
+}
+
+#[inline(never)]
+fn scale(x: u64) -> u64 {
+    x * 2
+}
+
+/// State kept across edits: an edit of its fields asks for a restart.
+struct Tally {
+    turns: u64,
+}
+
 fn main() {
     let live = match ra_jit_live::Live::start() {
         Ok(live) => live,
@@ -25,8 +46,11 @@ fn main() {
     });
     println!("ready");
     let mut seen = 0;
+    let mut tally = Tally { turns: 0 };
     loop {
         let now = answer();
+        tally.turns += 1;
+        std::hint::black_box(weigh(&[1u8, 2, 3]) + weigh(&[4u32, 5]) + scale(tally.turns));
         if now != seen {
             let at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_micros();
             println!("answer {now} at_us={at}");
