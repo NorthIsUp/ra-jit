@@ -1519,6 +1519,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "ra-jit-wasm"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "cfg",
+ "core-macro",
+ "dioxus-rsx",
+ "hir",
+ "hir-def",
+ "hir-expand",
+ "hir-ty",
+ "ide-db",
+ "intern",
+ "load-cargo",
+ "object 0.37.3",
+ "proc-macro2",
+ "project-model",
+ "quote",
+ "rustc-demangle",
+ "rustc-hash 2.1.2",
+ "serde",
+ "serde_json",
+ "span",
+ "stdx",
+ "syn 2.0.117",
+ "syntax",
+ "syntax-bridge",
+ "triomphe",
+ "tt",
+ "vfs",
+ "wasm-encoder",
+ "wasmparser",
+]
+
+[[package]]
 name = "rayon"
 version = "1.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1613,41 +1648,6 @@ checksum = "486c2179b4796f65bfe2ee33679acf0927ac83ecf583ad6c91c3b4570911b9ad"
 dependencies = [
  "bitflags",
  "smallvec",
-]
-
-[[package]]
-name = "ra-jit-wasm"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "cfg",
- "core-macro",
- "dioxus-rsx",
- "hir",
- "hir-def",
- "hir-expand",
- "hir-ty",
- "ide-db",
- "intern",
- "load-cargo",
- "object 0.37.3",
- "proc-macro2",
- "project-model",
- "quote",
- "rustc-demangle",
- "rustc-hash 2.1.2",
- "serde",
- "serde_json",
- "span",
- "stdx",
- "syn 2.0.117",
- "syntax",
- "syntax-bridge",
- "triomphe",
- "tt",
- "vfs",
- "wasm-encoder",
- "wasmparser",
 ]
 
 [[package]]
