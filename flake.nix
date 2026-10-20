@@ -14,9 +14,15 @@
       url = "github:DioxusLabs/rustd/6b1940be0e68cb8004301d6c2dcbdf3f71257fca";
       flake = false;
     };
+
+    # vendor/rustc_abi, the same way (a submodule of indexable-inc/rustc_abi).
+    rustc-abi = {
+      url = "github:indexable-inc/rustc_abi/8f6db283fd604ef63978def1e13dfaaf7f3376db";
+      flake = false;
+    };
   };
 
-  outputs = { self, nixpkgs, rust-overlay, flake-utils, rust-analyzer }:
+  outputs = { self, nixpkgs, rust-overlay, flake-utils, rust-analyzer, rustc-abi }:
     flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ] (system:
       let
         pkgs = import nixpkgs {
@@ -35,8 +41,9 @@
         src = pkgs.runCommand "ra-jit-src" { } ''
           cp -r ${self} $out
           chmod -R u+w $out
-          rmdir $out/vendor/rust-analyzer 2>/dev/null || true
+          rmdir $out/vendor/rust-analyzer $out/vendor/rustc_abi 2>/dev/null || true
           cp -r ${rust-analyzer} $out/vendor/rust-analyzer
+          cp -r ${rustc-abi} $out/vendor/rustc_abi
         '';
         daemon = rustPlatform.buildRustPackage {
           pname = "ra-jit";
@@ -60,17 +67,76 @@
           export PATH=${daemon}/bin:${rust}/bin:$PATH
           exec ${daemon}/bin/cargo-ra-jit ra-jit "$@"
         '';
+
+        # eframe/winit dlopen these at run time.
+        guiLibs = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux (with pkgs; [
+          libGL
+          libxkbcommon
+          wayland
+          libx11
+          libxcursor
+          libxi
+          libxrandr
+          libxcb
+        ]);
+        libPath = pkgs.lib.makeLibraryPath guiLibs;
+
+        # One derivation per cargo unit (nix/units.nix, nix/units/*.json from nix/unit_graph.py):
+        # editing ra-jit's own source rebuilds only ra-jit, never the crates it depends on.
+        units = json: import ./nix/units.nix {
+          inherit pkgs rust guiLibs json;
+          repo = ./.;
+          rustAnalyzer = rust-analyzer;
+          rustcAbi = rustc-abi;
+        };
+        daemonUnits = units ./nix/units/daemon.json;
+        lifeUnits = units ./nix/units/life.json;
+        # ra-jit, cargo-ra-jit and ra-jit-rustc run each other from next to themselves; the
+        # toolchain comes along on PATH.
+        daemon-units = pkgs.runCommand "ra-jit-units" { nativeBuildInputs = [ pkgs.makeWrapper ]; } ''
+          mkdir -p $out/bin
+          for bin in ${daemonUnits.bins}/bin/*; do
+            makeWrapper $bin $out/bin/$(basename $bin) --prefix PATH : ${rust}/bin
+          done
+        '';
+        life-bin = pkgs.runCommand "ra-jit-life-bin" { nativeBuildInputs = [ pkgs.makeWrapper ]; } ''
+          mkdir -p $out/bin
+          makeWrapper ${builtins.head lifeUnits.roots}/bin/life $out/bin/life \
+            --prefix LD_LIBRARY_PATH : ${libPath}
+        '';
+
+        # The demo's own source (and the crate it links), copied to a writable directory at run
+        # time; its crates.io dependencies are vendored from Cargo.lock so that needs no network.
+        lifeSource = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions [ ./demo/life ./crates/ra-jit-live ];
+        };
+        lifeVendor = pkgs.rustPlatform.importCargoLock { lockFile = ./demo/life/Cargo.lock; };
+        # `nix run github:indexable-inc/ra-jit`: the Game of Life window. On macOS on AArch64 the
+        # daemon builds the copy and edits to it show up live; elsewhere the prebuilt window runs.
+        life = pkgs.writeShellScriptBin "ra-jit-life" ''
+          export RA_JIT_LIFE_SOURCE=${lifeSource} RA_JIT_LIFE_VENDOR=${lifeVendor}
+          export RA_JIT_LIFE_DAEMON_BINS=${daemon-units}/bin RA_JIT_LIFE_PREBUILT=${life-bin}/bin/life
+          export RA_JIT_LIFE_PATH=${rust}/bin${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ":${pkgs.stdenv.cc}/bin"}
+          export RA_JIT_LIFE_LIBS=${libPath}
+          exec ${pkgs.python3}/bin/python3 -I ${./nix/life_launch.py} "$@"
+        '';
       in {
         packages = {
-          default = run;
-          inherit daemon run;
+          default = life;
+          inherit daemon run life daemon-units life-bin;
         };
         apps.default = {
+          type = "app";
+          program = "${life}/bin/ra-jit-life";
+        };
+        apps.ra-jit = {
           type = "app";
           program = "${run}/bin/ra-jit";
         };
         devShells.default = pkgs.mkShell {
           packages = [ rust pkgs.python3 ];
+          # nix/unit_graph.py reads the pinned cargo; its `--unit-graph` needs RUSTC_BOOTSTRAP.
         };
       });
 }
