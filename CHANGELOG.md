@@ -42,6 +42,13 @@ All notable changes to ra-jit are written here. The format follows
 
 ### Fixed
 
+- On macOS, an edit of a program whose unwind table is larger than 1 MiB is spliced into
+  the executable instead of linked in full: every Apple link left 1 MiB of room in the header,
+  which the splice needs for the unwind table, so each edit of nushell's debug build was linked
+  again (560 to 820 ms). The daemon now links such a program once more with the room it needs,
+  and its edits after that are spliced: nushell's edit of `main` went from 878 ms to 276 ms on
+  an M5 Max, and a library edit from 693 ms to 166 ms. Signing a splice reuses the hash of
+  each appended page that is the same as the last splice's, 21 ms to 5 ms for nushell.
 - The code of a function grows in a straight line with the arms of a match that leave
   through `?`, as `#[derive(Serialize, Deserialize)]` writes for an enum: it grew with
   their square, 329 MB for one function of 285 arms, which an AArch64 branch cannot reach

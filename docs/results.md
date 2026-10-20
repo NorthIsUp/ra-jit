@@ -540,6 +540,66 @@ Commands, on the host. A loop waited for a quiet host and ran this for each proj
         --work ~/rajit-warm/work-<side>
     python3 harness/realbench.py --table ~/rajit-warm/work-<side>/realbench.json
 
+### Edits on macOS, where the time goes (2026-10-20)
+
+Measured on an M5 Max (18 cores, macOS 27), shared with other builds, so single runs spread
+widely; the tables are medians of runs 2 to 6 of `cargo ra-jit build` after realbench's
+edits, each step from the client's `RA_JIT_TRACE` breakdown. Before is 1dbad5b048, from
+before the merges of `fn-incremental` and `tiers-speed`. After is the header pad (d611d65b66)
+and then the signature hashes (f79b93069d) on that same code; the last column is from 12
+edits of each kind taken in turn with 12 of before.
+
+| nushell 0.108.0 | before | header pad | and signature hashes | where the time went, at the end (ms) |
+|---|---:|---:|---:|---|
+| edit: main | 878 ms | 276 ms | 265 ms (before: 897) | check 135 to 168, outside the client 32 to 35, link 21 to 31, apply 9, build-rest 6 |
+| edit: lib | 693 ms | 166 ms | 155 ms (before: 747) | link 38 to 42, outside the client 27 to 33, check 27 to 35, apply 12 to 15, refuse 5 to 7 |
+| nothing changed | 35 ms | 52 ms | | outside the client 42 (noise: there is no link either way) |
+
+Before, link was 686 and 576 ms of them: every splice was refused with "the header has no
+room for the unwind table" (nushell's `__unwind_info` is 3.2 MiB, every Apple link left
+1 MiB) and the program was linked in full. Spliced, a link is place 5 to 8 ms, copy 0.2,
+overwrite 1.5 (14 to 25 on the library edit, which redirects 189 functions), sign 20 to 23,
+append 4 and rename 1 to 3 (`splice-us`). Signing now reuses the hash of each page that the
+last splice appended the same: 4.5 to 6 ms. ripgrep's table fits in 1 MiB: its links were
+spliced before (8 ms).
+
+Inside check, nushell's edit of `main` (the detail spans of the trace): type inference of
+`main` 42 ms, its MIR 3.5, translation to Cranelift IR 14.5, Cranelift 7.3, one after
+another on one thread. Inside apply: the outline of the edited file, 5 to 13 ms (listing the
+crate's functions by file 2.5 to 3, lowering the file's bodies 2 to 6, the file's types 0.6
+for `src/main.rs` and 4.3 for `value/mod.rs`).
+
+ripgrep 15.1.0, before: edit of main 250 ms, of which "worker wait" is 143: the daemon runs
+the build scripts again through `cargo check --compile-time-deps`, since ripgrep's `build.rs`
+names no file to watch except on Windows, and cargo reruns such a script for any change to
+its package. The client has by then run the script itself and compared what it printed and
+wrote with cargo's last run.
+
+What is left, by the milliseconds of the Linux numbers above (nushell main 305 ms, ripgrep
+main 107 ms):
+
+1. Type inference of the edited function: about 100 ms of nushell's edit of `main` on Linux,
+   42 on macOS. The trait solver's cache starts empty in every revision; keeping it across
+   revisions is work in rust-analyzer. Lowering only the edited body (`fn-incremental`,
+   merged since these were measured) leaves inference of the edited function as it is.
+2. The daemon's second run of the build scripts on ripgrep-like projects: 38 ms of 107 on
+   Linux. The client already reran the scripts and found them the same as cargo's last run;
+   if it sends a digest of what cargo's last run printed and wrote, and the daemon compares
+   that with what it loaded, the daemon's run is needed only when they differ. Running the
+   daemon's check beside the build instead was tried and dropped: it hides only the build's
+   20 to 30 ms, and a script that writes generated code into `OUT_DIR` races the read of it.
+3. Translation and Cranelift of the edited function: 36 and 47 ms on Linux, 14.5 and 7.3 on
+   macOS. Cranelift is 6.4 times slower on the Linux host where inference is about 2.4 times:
+   worth a profile there.
+4. Outside the client, 27 ms: rustup's proxy (15 to 20 ms here) and cargo starting. Not
+   ra-jit's code; running the toolchain's cargo directly saves the proxy.
+5. The outline in apply, 5 to 13 ms: the functions of a crate by file are listed again on
+   every edit, which an edit to bodies alone cannot change (2.5 to 3 ms).
+6. refuse, 4 to 9 ms: the list of tests is read again from every function's attributes after
+   each build, which an edit to bodies alone cannot change.
+7. The macOS splice writes all 57 MB it appends though most is as the last splice wrote it
+   (append 4 ms), and placing the patch takes 5 to 8.
+
 ## Disagreements
 
 Where reports disagree, this file follows the later one.
