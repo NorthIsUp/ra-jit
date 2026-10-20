@@ -128,20 +128,102 @@ pub(crate) fn can_rerun(out_dir: &Path) -> bool {
     out_dir.parent().is_some_and(|it| it.join(RAN).exists())
 }
 
+/// The directory cargo ran the script that wrote `out_dir` in, which is its package's, when
+/// it was written down.
+pub(crate) fn ran_in(out_dir: &Path) -> Option<PathBuf> {
+    let ran = std::fs::read(out_dir.parent()?.join(RAN)).ok()?;
+    serde_json::from_slice::<Ran>(&ran).ok().map(|it| it.cwd)
+}
+
+/// Whether the script that wrote `out_dir` is as cargo would compile it now: no file rustc
+/// read for it (`.d` beside it, named from `workspace`, where cargo runs rustc) is newer than
+/// it, and it read no variable while compiled but cargo's own, as cargo set them to run it:
+/// cargo compiles it again when one changes.
+pub(crate) fn compiled_from_what_is_there(out_dir: &Path, workspace: &Path) -> bool {
+    let Some(run_dir) = out_dir.parent() else { return false };
+    let Ok(ran) = std::fs::read(run_dir.join(RAN)) else { return false };
+    let Ok(ran) = serde_json::from_slice::<Ran>(&ran) else { return false };
+    let Some(linked) = ran.real.to_str().and_then(|it| it.strip_suffix(".real")) else {
+        return false;
+    };
+    let compiled = std::fs::metadata(&ran.real).and_then(|it| it.modified());
+    let Ok(read) = std::fs::read_to_string(Path::new(linked).with_extension("d")) else {
+        return false;
+    };
+    let Ok(compiled) = compiled else { return false };
+    let mut sources = Vec::new();
+    for line in read.lines() {
+        if let Some(read) = line.strip_prefix("# env-dep:") {
+            // Cargo sets its own from the manifest, which a change of has the checkout loaded
+            // again; whoever runs cargo sets the others.
+            let (name, value) = read.split_once('=').map_or((read, None), |(n, v)| (n, Some(v)));
+            let set = ran.env.iter().find(|it| it.0 == name).map(|it| dep_info_escaped(&it.1));
+            if !name.starts_with("CARGO_") || set.as_deref() != value {
+                return false;
+            }
+            continue;
+        }
+        if let Some((_, deps)) = line.split_once(": ") {
+            sources.extend(dep_info_paths(deps).into_iter().map(|it| workspace.join(it)));
+        }
+    }
+    !sources.is_empty()
+        && sources.iter().all(|it| {
+            std::fs::metadata(it).and_then(|it| it.modified()).is_ok_and(|it| it <= compiled)
+        })
+}
+
+/// A value as rustc writes it into a `.d` file.
+fn dep_info_escaped(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('\n', "\\n").replace('\r', "\\r")
+}
+
+/// The paths of a rule of a `.d` file, which a backslash escapes spaces in.
+fn dep_info_paths(deps: &str) -> Vec<PathBuf> {
+    let (mut paths, mut path, mut escaped) = (Vec::new(), String::new(), false);
+    for c in deps.chars() {
+        match c {
+            '\\' if !escaped => escaped = true,
+            ' ' if !escaped => {
+                paths.extend((!path.is_empty()).then(|| PathBuf::from(std::mem::take(&mut path))))
+            }
+            c => {
+                if escaped && c != ' ' {
+                    path.push('\\');
+                }
+                path.push(c);
+                escaped = false;
+            }
+        }
+    }
+    paths.extend((!path.is_empty()).then(|| PathBuf::from(path)));
+    paths
+}
+
 /// Runs the script that wrote `out_dir` again, as cargo ran it but into a directory of its
 /// own: what cargo's holds is read by the compilers of a build under way, and cargo
 /// compiles the package again when a file there is newer than it was. `Ok` when the script
 /// printed and wrote what it did then; `Err` is what is different, which a script that
 /// writes the name of its directory into a file always is.
 pub(crate) fn rerun_is_same(out_dir: &Path) -> Result<(), String> {
+    rerun_matches(out_dir, out_dir)
+}
+
+/// Runs the script that wrote `out_dir` again as [`rerun_is_same`] does, and compares what
+/// it prints and writes with what a run of the same script left in `other`: another build of
+/// the package, which ran it with the same source and inputs.
+pub(crate) fn rerun_matches(out_dir: &Path, other: &Path) -> Result<(), String> {
     let run_dir = out_dir.parent().ok_or("a build script without a directory")?;
-    let read = |name: &str| std::fs::read(run_dir.join(name)).map_err(|it| format!("{name}: {it}"));
-    let ran: Ran = serde_json::from_slice(&read(RAN)?).map_err(|it| it.to_string())?;
-    let printed = read("output")?;
+    let other_dir = other.parent().ok_or("a build script without a directory")?;
+    let read = |dir: &Path, name: &str| {
+        std::fs::read(dir.join(name)).map_err(|it| format!("{name}: {it}"))
+    };
+    let ran: Ran = serde_json::from_slice(&read(run_dir, RAN)?).map_err(|it| it.to_string())?;
+    let printed = read(other_dir, "output")?;
     let again_dir = run_dir.join(format!("ra-jit-out-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&again_dir);
     std::fs::create_dir(&again_dir).map_err(|it| it.to_string())?;
-    let same = rerun_into(&ran, &again_dir, out_dir, &printed);
+    let same = rerun_into(&ran, &again_dir, other, &printed);
     let _ = std::fs::remove_dir_all(&again_dir);
     same
 }
@@ -228,6 +310,70 @@ mod tests {
         let left: Vec<_> =
             std::fs::read_dir(out_dir.parent().unwrap()).unwrap().flatten().collect();
         assert_eq!(left.len(), 4, "{left:?}");
+    }
+
+    #[test]
+    fn a_rerun_is_compared_with_what_the_other_run_left() {
+        let out_dir = ran("matches", "fn made() {}");
+        let other = ran("matches-other", "fn made() {}");
+        std::fs::write(other.join("made.rs"), "fn made() {}").unwrap();
+        assert_eq!(rerun_matches(&out_dir, &other), Ok(()));
+        std::fs::write(other.join("made.rs"), "fn made_for_the_load() {}").unwrap();
+        assert_eq!(rerun_matches(&out_dir, &other), Err("wrote something else".to_owned()));
+    }
+
+    /// Has the script of `out_dir` be one rustc compiled from `sources`, as `.d` says.
+    fn compiled(out_dir: &Path, sources: &str) {
+        let run_dir = out_dir.parent().unwrap();
+        let mut ran: Ran =
+            serde_json::from_slice(&std::fs::read(run_dir.join(RAN)).unwrap()).unwrap();
+        let linked = run_dir.join("build_script_build-0123");
+        if ran.real != linked.with_extension("real") {
+            std::fs::copy(&ran.real, linked.with_extension("real")).unwrap();
+        }
+        ran.real = linked.with_extension("real");
+        std::fs::write(run_dir.join(RAN), serde_json::to_vec(&ran).unwrap()).unwrap();
+        std::fs::write(linked.with_extension("d"), format!("{}: {sources}\n", linked.display()))
+            .unwrap();
+    }
+
+    #[test]
+    fn a_script_newer_than_its_source_is_as_cargo_would_compile_it() {
+        let out_dir = ran("fresh", "fn made() {}");
+        let source = out_dir.parent().unwrap().join("build source.rs");
+        std::fs::write(&source, "fn main() {}").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        compiled(&out_dir, "build\\ source.rs");
+        let workspace = out_dir.parent().unwrap();
+        assert!(compiled_from_what_is_there(&out_dir, workspace));
+        assert!(
+            !compiled_from_what_is_there(&out_dir, Path::new("/elsewhere")),
+            "a source that is not there"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&source, "fn main() { }").unwrap();
+        assert!(!compiled_from_what_is_there(&out_dir, workspace));
+    }
+
+    #[test]
+    fn a_script_that_read_a_variable_or_has_no_dep_info_is_cargos() {
+        let out_dir = ran("env", "fn made() {}");
+        let workspace = out_dir.parent().unwrap();
+        assert!(!compiled_from_what_is_there(&out_dir, workspace), "no .d");
+        let source = out_dir.parent().unwrap().join("build.rs");
+        std::fs::write(&source, "fn main() {}").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        compiled(&out_dir, "build.rs\n\n# env-dep:SOME_VARIABLE=1");
+        assert!(!compiled_from_what_is_there(&out_dir, workspace));
+        // One of cargo's own is as cargo set it to run the script, or not.
+        let at = workspace.join(RAN);
+        let mut ran: Ran = serde_json::from_slice(&std::fs::read(&at).unwrap()).unwrap();
+        ran.env.push(("CARGO_PKG_VERSION".to_owned(), "1.0.0".to_owned()));
+        std::fs::write(&at, serde_json::to_vec(&ran).unwrap()).unwrap();
+        compiled(&out_dir, "build.rs\n\n# env-dep:CARGO_PKG_VERSION=1.0.0");
+        assert!(compiled_from_what_is_there(&out_dir, workspace));
+        compiled(&out_dir, "build.rs\n\n# env-dep:CARGO_PKG_VERSION=2.0.0");
+        assert!(!compiled_from_what_is_there(&out_dir, workspace));
     }
 
     #[test]

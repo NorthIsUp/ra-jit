@@ -56,10 +56,67 @@ impl Watched {
 struct Scripts {
     workspace: ProjectWorkspace,
     config: CargoConfig,
-    /// What cargo runs a script again for a change of.
-    files: Vec<Watched>,
+    /// The scripts of the workspace's own packages, with what cargo runs each again for a
+    /// change of.
+    scripts: Vec<Script>,
     /// The variables it runs one again for a change of, as they were when they last ran.
     variables: Vec<(String, Option<String>)>,
+}
+
+/// The build script of one package of the workspace.
+struct Script {
+    /// Where cargo had it write for the daemon's load.
+    out_dir: PathBuf,
+    /// The directories cargo's own builds run it in: `<package>-<hash>` below these.
+    builds: Vec<PathBuf>,
+    package: String,
+    /// The package's directory, which cargo runs the script in.
+    root: PathBuf,
+    /// Where cargo ran rustc, which the files rustc read are named from.
+    workspace: PathBuf,
+    files: Vec<Watched>,
+}
+
+impl Script {
+    fn changed(&self) -> bool {
+        self.files.iter().any(Watched::changed)
+    }
+
+    /// Whether the script, run again as cargo ran it, prints and writes what it did for the
+    /// load: what cargo would find when it ran it, without asking cargo. Not when the script
+    /// itself is older than its source, or was compiled reading a variable cargo does not
+    /// set; cargo compiles it again.
+    fn reruns_the_same(&self) -> bool {
+        let Some(out_dir) = self.ran() else { return false };
+        crate::cargo::script::compiled_from_what_is_there(&out_dir, &self.workspace)
+            && crate::cargo::script::rerun_matches(&out_dir, &self.out_dir).is_ok()
+    }
+
+    /// Where a run of the script that can be run again wrote: the load's, or else the last
+    /// one of cargo's own builds of the package, which `cargo ra-jit` has write down how it
+    /// ran. The script and what it reads are the same for both.
+    fn ran(&self) -> Option<PathBuf> {
+        if crate::cargo::script::can_rerun(&self.out_dir) {
+            return Some(self.out_dir.clone());
+        }
+        let prefix = format!("{}-", self.package);
+        let runs = self.builds.iter().filter_map(|it| std::fs::read_dir(it).ok()).flatten();
+        let runs = runs
+            .flatten()
+            .filter(|it| it.file_name().to_str().is_some_and(|it| it.starts_with(&prefix)));
+        let runs = runs.map(|it| it.path().join("out"));
+        let runs =
+            runs.filter(|it| crate::cargo::script::ran_in(it).is_some_and(|it| it == self.root));
+        runs.max_by_key(|it| {
+            std::fs::metadata(it.with_file_name("output")).and_then(|it| it.modified()).ok()
+        })
+    }
+
+    fn stamp_again(&mut self) {
+        for file in &mut self.files {
+            file.stamp = stamp(&file.path, file.package);
+        }
+    }
 }
 
 /// The variable `name` as the commands of `config` are run with it.
@@ -137,7 +194,7 @@ impl Scripts {
         let ProjectWorkspaceKind::Cargo { cargo, build_scripts, .. } = &workspace.kind else {
             return None;
         };
-        let (mut files, mut variables) = (Vec::new(), Vec::new());
+        let (mut scripts, mut variables) = (Vec::new(), Vec::new());
         for package in cargo.packages() {
             let Some(out_dir) = build_scripts.out_dir(package) else { continue };
             let root: &Path = cargo[package].manifest.parent().as_ref();
@@ -151,30 +208,48 @@ impl Scripts {
             }
             let script = cargo[package].targets.iter().map(|&it| &cargo[it]);
             let script = script.filter(|it| it.kind == TargetKind::BuildScript);
-            files.extend(script.map(|it| Watched::new(PathBuf::from(it.root.as_str()), false)));
+            let mut files: Vec<Watched> =
+                script.map(|it| Watched::new(PathBuf::from(it.root.as_str()), false)).collect();
             match said.watches {
                 // A script that names nothing is run again when any file of its package changes.
                 false => files.push(Watched::new(root.to_owned(), true)),
                 true => files
                     .extend(said.files.into_iter().map(|it| Watched::new(root.join(it), false))),
             }
+            let out_dir: &Path = out_dir.as_ref();
+            let workspace: &Path = cargo.workspace_root().as_ref();
+            scripts.push(Script {
+                out_dir: out_dir.to_owned(),
+                builds: builds_of(cargo, config),
+                package: cargo[package].name.clone(),
+                root: root.to_owned(),
+                workspace: workspace.to_owned(),
+                files,
+            });
         }
         variables.sort();
         variables.dedup();
-        if files.is_empty() && variables.is_empty() {
+        if scripts.is_empty() && variables.is_empty() {
             return None;
         }
-        Some(Scripts { workspace: workspace.clone(), config: config.clone(), files, variables })
+        Some(Scripts { workspace: workspace.clone(), config: config.clone(), scripts, variables })
     }
 
     /// Runs the scripts again where cargo would for a process with `env`, or with `None`
     /// for one with the variables they last ran with: whether what they say is no longer
     /// what was loaded.
     fn changed(&mut self, env: Option<&Env>) -> anyhow::Result<bool> {
-        let files = self.files.iter().any(Watched::changed);
+        let changed: Vec<usize> =
+            (0..self.scripts.len()).filter(|&at| self.scripts[at].changed()).collect();
         let variables =
             env.is_some_and(|env| self.variables.iter().any(|(name, was)| env.get(name) != *was));
-        if !files && !variables {
+        if changed.is_empty() && !variables {
+            return Ok(false);
+        }
+        // Cargo would run only the scripts whose files changed: each is run again here as
+        // cargo ran it, which costs the script and not a cargo that resolves the workspace.
+        if !variables && changed.iter().all(|&at| self.scripts[at].reruns_the_same()) {
+            changed.into_iter().for_each(|at| self.scripts[at].stamp_again());
             return Ok(false);
         }
         let ProjectWorkspaceKind::Cargo { build_scripts: loaded, .. } = &self.workspace.kind else {
@@ -192,15 +267,32 @@ impl Scripts {
         if said != *loaded {
             return Ok(true);
         }
-        for file in &mut self.files {
-            file.stamp = stamp(&file.path, file.package);
-        }
+        self.scripts.iter_mut().for_each(Script::stamp_again);
         for (name, was) in &mut self.variables {
             *was = config.extra_env.get(name).cloned().flatten();
         }
         self.config = config;
         Ok(false)
     }
+}
+
+/// The directories cargo runs the build scripts of the build `config` asks for in:
+/// `build` of the profile's directory, for the target that is asked for or the host.
+fn builds_of(cargo: &project_model::CargoWorkspace, config: &CargoConfig) -> Vec<PathBuf> {
+    let profile = config.extra_args.iter().skip_while(|it| *it != "--profile").nth(1);
+    let profile = match profile.map(String::as_str) {
+        None | Some("dev" | "test") => "debug",
+        Some("bench") => "release",
+        Some(other) => other,
+    };
+    let target: &Path = cargo.target_directory().as_ref();
+    let mut dirs = vec![target.to_owned()];
+    dirs.extend(cargo.build_directory().map(|it| AsRef::<Path>::as_ref(it).to_owned()));
+    let triples = config.target.iter();
+    let under: Vec<PathBuf> =
+        dirs.iter().flat_map(|dir| triples.clone().map(move |it| dir.join(it))).collect();
+    dirs.extend(under);
+    dirs.into_iter().map(|it| it.join(profile).join("build")).collect()
 }
 
 /// What a build script asked cargo to watch.
