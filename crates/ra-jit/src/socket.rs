@@ -145,9 +145,9 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
-/// Makes `dir` if it is not there, for the user alone, and refuses one that is someone
-/// else's or that others can enter: whoever can enter it can put a socket of their own in
-/// the place of the daemon's.
+/// Makes `dir` if it is not there, for the user alone, closes one of the user's that others
+/// can enter, and refuses one that is someone else's: whoever can enter it can put a socket
+/// of their own in the place of the daemon's.
 ///
 /// The directories above it are checked too, as far as they can be: one that another
 /// user owns, or that everyone can write to without the sticky bit, lets someone else put
@@ -169,7 +169,10 @@ pub(crate) fn private_dir(dir: &Path) -> io::Result<()> {
         return refused("belongs to another user");
     }
     if is.mode() & 0o077 != 0 {
-        return refused("can be entered by other users (`chmod 700` it)");
+        // The user's own directory, left open by something that made it with the default
+        // mode: close it. It was checked not to be a link, and nobody else can swap it.
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
     }
     let whole = std::path::absolute(dir)?;
     whole.ancestors().skip(1).try_for_each(not_swapped_under)
@@ -387,8 +390,9 @@ mod tests {
         check_peer(&peer).unwrap();
 
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let refused = private_dir(&dir).unwrap_err();
-        assert_eq!(refused.kind(), io::ErrorKind::PermissionDenied);
+        // The user's own directory that others can enter is closed, not refused.
+        private_dir(&dir).unwrap();
+        assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
         let file = dir.join("file");
         std::fs::write(&file, "").unwrap();
         assert_eq!(private_dir(&file).unwrap_err().kind(), io::ErrorKind::AlreadyExists);
