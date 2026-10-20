@@ -71,6 +71,7 @@
         units = json: import ./nix/units.nix {
           inherit pkgs rust guiLibs json;
           repo = ./.;
+          gitSha = self.shortRev or self.dirtyShortRev or "";
         };
         daemonUnits = units ./nix/units/daemon.json;
         lifeUnits = units ./nix/units/life.json;
