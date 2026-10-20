@@ -45,4 +45,8 @@ Without nix: nightly-2026-07-15 with `rust-src`, then `cargo build --release && 
 
 Design notes and next steps: [`docs/plan.md`](docs/plan.md).
 
-Built at [ix](https://ix.dev). MIT or Apache-2.0.
+## About
+
+Built at [ix](https://ix.dev), where we run VMs with 100+ vCPUs for exactly this kind of build-heavy work. If that sounds interesting, get in touch at andrew@ix.dev.
+
+MIT or Apache-2.0.
