@@ -104,6 +104,8 @@ pub(crate) struct Baseline {
     left: Left,
     /// What the file was when we last left it: someone else may have written it since.
     stamp: Stamp,
+    /// What the last splice of a Mach-O executable appended, with the hashes of its pages.
+    appended: Option<macho::Appended>,
 }
 
 /// What a splice appended that the next may find where it is.
@@ -194,6 +196,7 @@ impl Baseline {
             originals: FxHashMap::default(),
             left: Left::default(),
             stamp,
+            appended: None,
         })
     }
 
@@ -209,6 +212,7 @@ impl Baseline {
             originals: self.originals.clone(),
             left: Left::default(),
             stamp: self.stamp.clone(),
+            appended: None,
         }
     }
 
@@ -247,8 +251,10 @@ impl Baseline {
                 return Ok(spliced);
             }
             Executable::MachO(image) => {
-                let Baseline { path, baked, undo, originals, stamp, .. } = self;
-                return macho::splice(image, path, baked, undo, originals, stamp, patch, give_up);
+                let Baseline { path, baked, undo, originals, stamp, appended, .. } = self;
+                return macho::splice(
+                    image, path, baked, undo, originals, stamp, appended, patch, give_up,
+                );
             }
         };
 
