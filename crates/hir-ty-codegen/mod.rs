@@ -978,8 +978,12 @@ impl Rejections {
         if let Some((root, _)) = base.compiled.iter().find(|(_, it)| it == symbol) {
             return Some(tier::Node(tier::Kind::Root(*root)));
         }
-        let (instance, known) = base.instances.iter().find(|(_, it)| it.symbol == symbol)?;
-        Some(tier::Node(tier::Kind::Instance(instance.clone(), known.env.clone())))
+        if let Some((instance, known)) = base.instances.iter().find(|(_, it)| it.symbol == symbol)
+        {
+            return Some(tier::Node(tier::Kind::Instance(instance.clone(), known.env.clone())));
+        }
+        let (instance, env) = base.found_instances.get(symbol)?;
+        Some(tier::Node(tier::Kind::Instance(instance.clone(), env.clone())))
     }
 
     /// The symbol `node` is defined under, as [`Rejections::tier_node`] takes it.
@@ -989,8 +993,11 @@ impl Rejections {
             tier::Kind::Root(root) => {
                 base.compiled.iter().find(|(it, _)| it == root).map(|it| it.1.clone())
             }
-            tier::Kind::Instance(instance, _) => {
-                base.instances.get(instance).map(|it| it.symbol.clone())
+            tier::Kind::Instance(instance, env) => {
+                base.instances.get(instance).map(|it| it.symbol.clone()).or_else(|| {
+                    let mut found = base.found_instances.iter();
+                    found.find(|(_, it)| it.0 == *instance && it.1 == *env).map(|it| it.0.clone())
+                })
             }
         }
     }
@@ -1250,6 +1257,8 @@ struct ObjectCodegen<'a, 'db> {
     misfit: bool,
     /// The functions of a patch that are at a level above 1, whose code it has at that level.
     tiers: Option<&'a tier::Tiers>,
+    /// What each function built from an entry of the store is an instance of.
+    found_instances: FxHashMap<FuncId, (Instance, StoredParamEnvAndCrate)>,
 }
 
 /// Why an entry with a file of its own under what stands for cargo's directory is not kept.
@@ -3724,6 +3733,7 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
             mixed,
             elf_relocs: Vec::new(),
             tiers: None,
+            found_instances: FxHashMap::default(),
         })
     }
 
@@ -5232,6 +5242,8 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
             let body = signature.is_some().then_some(sig);
             if let Some(id) = self.found_callee(name, body)? {
                 self.instances.insert(instance.clone(), id);
+                let home = self.homes.home(self.db, instance, env);
+                self.found_instances.insert(id, (instance.clone(), home));
                 return Ok(id);
             }
         }
