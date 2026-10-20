@@ -1102,8 +1102,14 @@ def plain(work):
 
     root = os.path.join(work, "plain-installed")
     _, installed = here.cargo("install", "--path", "app", "--root", root, "--bin", "app")
-    ran = subprocess.run([os.path.join(root, "bin/app"), "installed"], capture_output=True, text=True)
-    check("`cargo install` installs a program that runs", installed.returncode == 0 and ran.returncode == 0 and ran.stdout.splitlines()[0].endswith("hello installed"), ran.stdout.strip() or installed.stderr[-200:])
+    program = os.path.join(root, "bin/app")
+    if installed.returncode != 0 or not os.path.exists(program):
+        # A failed install is the verdict, not a crash of the harness.
+        check("`cargo install` installs a program that runs", False, f"cargo install: exit {installed.returncode}; {installed.stderr[-300:]}")
+    else:
+        ran = subprocess.run([program, "installed"], capture_output=True, text=True)
+        first = (ran.stdout.splitlines() or [""])[0]
+        check("`cargo install` installs a program that runs", ran.returncode == 0 and first.endswith("hello installed"), ran.stdout.strip() or f"exit {ran.returncode}; {ran.stderr[-200:]}")
 
     # What rust-analyzer does while the user builds: `cargo check` with JSON messages.
     wait_warm(here, ws)

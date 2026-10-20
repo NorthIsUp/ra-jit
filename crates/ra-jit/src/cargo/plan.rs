@@ -286,7 +286,8 @@ impl LinkLine {
             return Ok(());
         }
         for arg in &mut self.args {
-            if copies.iter().any(|it| it == Path::new(arg)) {
+            // rustc's object of names defines none.
+            if !is_symbols(arg) && copies.iter().any(|it| it == Path::new(arg)) {
                 *arg = weaken::copy_of(Path::new(arg))?.display().to_string();
             }
         }
@@ -452,7 +453,7 @@ fn is_rustc_file(arg: &str) -> bool {
 /// linker that reads each archive once, as GNU ld does, needs it to take the panic runtime,
 /// which comes before the standard library that calls it.
 pub(crate) fn is_symbols(arg: &str) -> bool {
-    Path::new(arg).file_name().is_some_and(|it| it == "symbols.o")
+    arg.ends_with("symbols.o")
 }
 
 #[cfg(test)]
