@@ -83,7 +83,9 @@ class Logs:
         self.skip()
 
     def files(self) -> list[Path]:
-        return sorted(daemon_home().glob("workers/*/log"))
+        # A worker that was a spare, started ahead of the checkout, keeps the spare's log.
+        home = daemon_home()
+        return sorted([*home.glob("workers/*/log"), *home.glob("spares/*/log")])
 
     def skip(self) -> None:
         for log in self.files():
