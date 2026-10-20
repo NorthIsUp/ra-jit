@@ -302,6 +302,9 @@ struct Resolver<'a> {
     named: Arc<std::sync::Mutex<FxHashMap<FunctionId, Option<String>>>>,
 }
 
+/// The [`SymbolTable::generation`] and the checkout that paths were found with.
+type SharedKey = (u64, PathBuf, Option<PathBuf>);
+
 type SharedPaths =
     Arc<std::sync::Mutex<FxHashMap<Crate, Arc<std::sync::OnceLock<FxHashSet<String>>>>>>;
 
@@ -439,20 +442,33 @@ impl Resolver<'_> {
         }
         let Some(path) = self.path(func) else { return false };
         let krate = module.krate(self.db);
-        let shared = {
-            let mut crates = self.shared_paths.lock().unwrap_or_else(|e| e.into_inner());
-            crates.entry(krate).or_default().clone()
+        let listed = lock(&self.listed.functions).get(&krate).cloned();
+        // Kept with the listing, which an edit to more than bodies forgets, for the builds
+        // after this one that read the same symbols.
+        let key = (self.table.generation(), self.root.clone(), self.base.clone());
+        let shared = match &listed {
+            Some(listed) if key.0 != 0 => {
+                let mut kept = lock(&listed.shared_paths);
+                match kept.iter().find(|it| it.0 == key) {
+                    Some(it) => it.1.clone(),
+                    None => {
+                        let shared = Arc::<std::sync::OnceLock<_>>::default();
+                        kept.push((key, shared.clone()));
+                        shared
+                    }
+                }
+            }
+            _ => lock(&self.shared_paths).entry(krate).or_default().clone(),
         };
-        shared.get_or_init(|| self.paths_shared_in(krate)).contains(&path)
+        shared.get_or_init(|| self.paths_shared_in(krate, listed.as_deref())).contains(&path)
     }
 
     /// The paths that more than one of the functions written in the bodies of a crate have.
-    fn paths_shared_in(&self, krate: Crate) -> FxHashSet<String> {
+    fn paths_shared_in(&self, krate: Crate, listed: Option<&ListedCrate>) -> FxHashSet<String> {
         let mut seen = FxHashSet::default();
         let mut shared = FxHashSet::default();
         // Asked for without listing the crate as one that is built.
-        let listed = self.listed.functions.lock().unwrap().get(&krate).cloned();
-        let functions = match &listed {
+        let functions = match listed {
             Some(listed) => listed.functions.clone(),
             None => declared_in(self.db, krate).functions,
         };
@@ -2350,6 +2366,8 @@ struct Listed {
 
 struct ListedCrate {
     functions: Vec<FunctionId>,
+    /// What [`Resolver::paths_shared_in`] found, by the symbols and the checkout it was for.
+    shared_paths: std::sync::Mutex<Vec<(SharedKey, Arc<std::sync::OnceLock<FxHashSet<String>>>)>>,
     /// The statics a linker or a runtime finds though no code names them.
     kept: Vec<StaticId>,
     /// For each, whether a runtime looks it up by name.
@@ -2382,7 +2400,7 @@ impl ListedCrate {
             .find(|&it| hir::Function::from(it).is_main(db))
             .filter(|_| !has_no_main(db, krate));
         let exported = exported(db, &functions);
-        ListedCrate { functions, kept, exported, main }
+        ListedCrate { functions, shared_paths: Default::default(), kept, exported, main }
     }
 }
 

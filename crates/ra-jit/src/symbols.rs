@@ -35,6 +35,8 @@ pub(crate) struct SymbolTable {
     built_from: Vec<(PathBuf, Vec<Source>)>,
     /// When the files started to be read.
     read: Option<SystemTime>,
+    /// Which table read from files this is, counting from 1: 0 for one that is not.
+    generation: u64,
     /// The copies crates made of one instance, by the symbol without the crate that made it.
     copies: FxHashMap<String, Vec<String>>,
     /// The crates that made a copy of an instance of a function, by the function's name
@@ -190,7 +192,10 @@ fn names_of_object(data: &[u8], names: &mut Vec<Named>) {
 impl SymbolTable {
     /// `root` is what the paths in cargo's dep-info files are relative to.
     pub(crate) fn load(files: &[PathBuf], root: &Path) -> anyhow::Result<SymbolTable> {
-        let mut table = SymbolTable { read: Some(SystemTime::now()), ..SymbolTable::default() };
+        static READ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let generation = READ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut table =
+            SymbolTable { read: Some(SystemTime::now()), generation, ..SymbolTable::default() };
         let mut symbols = Vec::new();
         let mut owners = Vec::new();
         for (file, names) in files.iter().zip(names_of(files)) {
@@ -224,6 +229,12 @@ impl SymbolTable {
         table.place(unplaced);
         table.index(symbols);
         Ok(table)
+    }
+
+    /// Tells tables apart for what is kept from one build to the next: two that were read
+    /// from files at different times differ, and 0 is the table of no files.
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// The table of the symbols named, for a link that is not read from files.

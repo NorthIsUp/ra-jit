@@ -36,11 +36,24 @@ use crate::{
     mir::is_by_move_coroutine,
     mir::type_name::rustc_debug_name,
     next_solver::{
-        DbInterner, GenericArgs, Ty, TyKind, TypingMode,
+        DbInterner, GenericArgs, StoredTy, Ty, TyKind, TypingMode,
         infer::{DbInternerInferExt, InferCtxt, traits::ObligationCause},
         obligation_ctxt::ObligationCtxt,
     },
+    traits::StoredParamEnvAndCrate,
 };
+
+/// [`Types::describe`] of one type, kept by the database: every build after an edit asks it
+/// again of the variables of each function it compiles, and what it is found from (layouts,
+/// names, captures, discriminants) mostly stays as it was.
+#[salsa::tracked(returns(clone))]
+pub(crate) fn described(
+    db: &dyn HirDatabase,
+    env: StoredParamEnvAndCrate,
+    ty: StoredTy,
+) -> Option<TypeSet> {
+    Types::new(db, env.as_ref(db)).describe(ty.as_ref())
+}
 
 /// `DW_ATE_*`: how the bytes of a [`DebugType::Base`] are read.
 mod encoding {

@@ -16,7 +16,7 @@ mod split;
 mod types;
 
 use codeview::CodeView;
-pub(super) use types::Types;
+pub(super) use types::described;
 
 use cranelift_codegen::{
     binemit::CodeOffset,

@@ -649,7 +649,7 @@ impl CodegenUnit {
                     } else if let (Ok(compiled), Some(told)) =
                         (compiled_root(db, ours[at]).as_ref(), told)
                     {
-                        told.ahead(db, &mut FxHashMap::default(), compiled);
+                        told.ahead(db, compiled);
                     }
                 });
                 cg.phases.compile += start.elapsed();
@@ -978,8 +978,7 @@ impl Rejections {
         if let Some((root, _)) = base.compiled.iter().find(|(_, it)| it == symbol) {
             return Some(tier::Node(tier::Kind::Root(*root)));
         }
-        if let Some((instance, known)) = base.instances.iter().find(|(_, it)| it.symbol == symbol)
-        {
+        if let Some((instance, known)) = base.instances.iter().find(|(_, it)| it.symbol == symbol) {
             return Some(tier::Node(tier::Kind::Instance(instance.clone(), known.env.clone())));
         }
         let (instance, env) = base.found_instances.get(symbol)?;
@@ -1181,8 +1180,6 @@ struct ObjectCodegen<'a, 'db> {
     unwind: UnwindContext,
     /// What a debugger is told about the functions, when the build tells one anything.
     debug: Option<debuginfo::Describer>,
-    /// The types of the variables a debugger is told of, by the environment they are in.
-    types: OwnTypes<'db>,
     /// What those types are told as, and the ones the threads that compile told of.
     told: ToldTypes,
     /// Writes what is kept to the store, once there is something to keep.
@@ -1375,7 +1372,7 @@ fn target() -> Result<&'static isa::OwnedTargetIsa> {
         .map_err(|e| CodegenError::Backend(e.clone()))
 }
 
-/// The register allocator of a function that is not [`LARGE`]: `RA_JIT_REGALLOC` names one of
+/// The register allocator of a function that is not over [`SINGLE_PASS`]: `RA_JIT_REGALLOC` names one of
 /// Cranelift's, `backtracking` (the default) or `single_pass`. The second allocates in one
 /// walk over the code: it took a fifth off Cranelift's time on cold builds of ripgrep and of
 /// just, and none off their wall time, and its code was twice the size and up to 1.8 times
@@ -1390,9 +1387,9 @@ fn regalloc() -> &'static str {
     *REGALLOC
 }
 
-/// The same target for a function of more than [`LARGE`] instructions. The usual register
-/// allocator takes more than linear time: ten seconds for one of 150 000 instructions, which
-/// a whole build then waits for.
+/// The same target for a function of more than [`SINGLE_PASS`] instructions. The usual
+/// register allocator takes more than linear time: ten seconds for one of 150 000
+/// instructions, which a whole build then waits for.
 fn target_for_large() -> Result<&'static isa::OwnedTargetIsa> {
     static TARGET: std::sync::OnceLock<std::result::Result<isa::OwnedTargetIsa, String>> =
         std::sync::OnceLock::new();
@@ -1414,7 +1411,16 @@ fn target_with_frame_pointer() -> Result<&'static isa::OwnedTargetIsa> {
         .map_err(|e| CodegenError::Backend(e.clone()))
 }
 
+/// The most instructions a function has that LLVM optimizes.
 const LARGE: usize = 50_000;
+
+/// The most instructions a function has that Cranelift gives its usual register allocator,
+/// which spends 1 to 2 µs an instruction on one this large and more on larger ones. On
+/// dev-aws-6 nushell's `main`, of 35 780 instructions, took 75 ms of Cranelift with it and
+/// 47 ms with the single-pass one, on every edit to it; the largest functions of a cold build
+/// of nushell took 80 to 220 ms each. The single-pass allocator's code is larger and slower,
+/// which a function this large, a `main` or a big `match` run once, rarely pays for.
+const SINGLE_PASS: usize = 20_000;
 
 /// A relocation of a function that Cranelift has no kind for, which the object is given
 /// once Cranelift has written it: see [`Code::elf_types`].
@@ -1532,7 +1538,6 @@ impl Unnamed {
 /// may have built the one called.
 pub fn compile_unnamed(db: &dyn HirDatabase, unnamed: &Unnamed, done: &dyn Fn() -> bool) {
     let mut homes = home::Homes::default();
-    let mut types = OwnTypes::default();
     loop {
         let job = {
             let mut state = unnamed.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -1565,7 +1570,7 @@ pub fn compile_unnamed(db: &dyn HirDatabase, unnamed: &Unnamed, done: &dyn Fn() 
         }));
         let mut found = Vec::new();
         if let Ok(Some(compiled)) = compiled {
-            unnamed.told.ahead(db, &mut types, compiled);
+            unnamed.told.ahead(db, compiled);
         }
         for request in compiled.iter().flatten().flat_map(|it| &it.requests.funcs) {
             let FuncTarget::Instance(callee, asked) = &request.target else { continue };
@@ -2554,14 +2559,10 @@ struct ToldTypes(
     >,
 );
 
-/// The types a thread tells of itself, by the environment they are in.
-type OwnTypes<'db> = FxHashMap<StoredParamEnvAndCrate, debuginfo::Types<'db>>;
-
 impl ToldTypes {
-    fn told<'db>(
+    fn told(
         &self,
-        db: &'db dyn HirDatabase,
-        own: &mut OwnTypes<'db>,
+        db: &dyn HirDatabase,
         env: &StoredParamEnvAndCrate,
         ty: &StoredTy,
     ) -> Option<debuginfo::TypeSet> {
@@ -2569,22 +2570,15 @@ impl ToldTypes {
         if let Some(told) = self.0.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
             return told.clone();
         }
-        let types =
-            own.entry(env.clone()).or_insert_with(|| debuginfo::Types::new(db, env.as_ref(db)));
-        let told = types.describe(ty.as_ref());
+        let told = debuginfo::described(db, env.clone(), ty.clone());
         // Another thread may have told of it meanwhile, and the functions share one set.
         self.0.lock().unwrap_or_else(|e| e.into_inner()).entry(key).or_insert(told).clone()
     }
 
     /// Tells of the types of the variables of `compiled`, for [`describe_variables`] to find.
-    fn ahead<'db>(
-        &self,
-        db: &'db dyn HirDatabase,
-        own: &mut OwnTypes<'db>,
-        compiled: &CompiledFunction,
-    ) {
+    fn ahead(&self, db: &dyn HirDatabase, compiled: &CompiledFunction) {
         if let (Some(_), Some((env, variables))) = (&compiled.source, &compiled.variables) {
-            variables.iter().for_each(|it| _ = self.told(db, own, env, &it.ty));
+            variables.iter().for_each(|it| _ = self.told(db, env, &it.ty));
         }
     }
 }
@@ -2595,7 +2589,7 @@ impl ToldTypes {
 fn describe_variables<'db>(
     db: &'db dyn HirDatabase,
     owner: DefWithBodyId,
-    (told, own, env): (&ToldTypes, &mut OwnTypes<'db>, &StoredParamEnvAndCrate),
+    (told, env): (&ToldTypes, &StoredParamEnvAndCrate),
     variables: &[Variable],
     places: &SlotPlaces,
     scopes: &FxHashMap<BindingId, u32>,
@@ -2619,7 +2613,7 @@ fn describe_variables<'db>(
         let ty = match firsts.get(&ty) {
             Some(&first) => first,
             None => {
-                let Some(described) = told.told(db, own, env, &variable.ty) else { continue };
+                let Some(described) = told.told(db, env, &variable.ty) else { continue };
                 let first = debug.types.len() as u32;
                 debug.types.push(described);
                 firsts.insert(ty, first);
@@ -3506,7 +3500,7 @@ fn emit(ctx: &mut cranelift_codegen::Context) -> Result<Code> {
     if Target::current().is_wasm() {
         return emit_wasm(&ctx.func, Target::current().calls());
     }
-    let large = ctx.func.dfg.num_insts() > LARGE;
+    let large = ctx.func.dfg.num_insts() > SINGLE_PASS;
     let mut isa = &**if large { target_for_large()? } else { target()? };
     let func = &ctx.func;
     if !isa.flags().preserve_frame_pointers()
@@ -3520,7 +3514,9 @@ fn emit(ctx: &mut cranelift_codegen::Context) -> Result<Code> {
     }
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         match store::Store::global() {
-            Some(store) => ctx.compile_with_cache(isa, &mut store::Lookup(store), &mut Default::default()).map(drop),
+            Some(store) => ctx
+                .compile_with_cache(isa, &mut store::Lookup(store), &mut Default::default())
+                .map(drop),
             None => ctx.compile(isa, &mut Default::default()).map(drop),
         }
         .map_err(|e| format!("{:?}", e.inner))?;
@@ -3667,7 +3663,6 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
             module,
             unwind,
             debug,
-            types: FxHashMap::default(),
             told: TOLD_UNNAMED.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap_or_default(),
             writer: None,
             imports: FxHashMap::default(),
@@ -3894,7 +3889,7 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
                         let (instance, env, _) = &wave[at];
                         let compiled = compiled_instance(db, instance.clone(), env.clone());
                         if let (Ok(compiled), Some(told)) = (compiled.as_ref(), told) {
-                            told.ahead(db, &mut FxHashMap::default(), compiled);
+                            told.ahead(db, compiled);
                             instance_rows(db, instance.clone(), env.clone());
                         }
                     });
@@ -3977,7 +3972,6 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
         let told = told.as_ref();
         let on_demand = self.on_demand;
         let work = |db: &dyn HirDatabase, symbols: &dyn SymbolResolver, _: usize| {
-            let mut types = OwnTypes::default();
             let names = stable::StableNames::new(db, symbols, owned.clone(), hydrate);
             // What the store has is not compiled, nor looked into for what it calls.
             let in_store = |callee: &Instance| {
@@ -4022,7 +4016,7 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
                         let compiled = compiled_instance(db, instance.clone(), env.clone());
                         let compiled = compiled.as_ref().ok();
                         if let (Some(compiled), Some(told)) = (compiled, told) {
-                            told.ahead(db, &mut types, compiled);
+                            told.ahead(db, compiled);
                             instance_rows(db, instance.clone(), env.clone());
                         }
                         compiled
@@ -4237,8 +4231,15 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
             };
             rows.sort_by_key(|row| row.0);
             let scopes = describe_scopes(db, *owner, variables, &rows, len, &mut debug);
-            let types = (&self.told, &mut self.types, env);
-            describe_variables(db, *owner, types, variables, places, &scopes, &mut debug);
+            describe_variables(
+                db,
+                *owner,
+                (&self.told, env),
+                variables,
+                places,
+                &scopes,
+                &mut debug,
+            );
         }
         let len = compiled.code.bytes.len() as u32;
         self.debug.as_ref()?.add_function(id, len, debug.clone());
@@ -6299,8 +6300,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         if target.arch != Arch::X86_64 || target.call_conv != isa::CallConv::SystemV {
             return Ok(());
         }
-        while let Some((at, stack)) =
-            lone_register_i128(&self.signature(&abi.args, abi.ret).params)
+        while let Some((at, stack)) = lone_register_i128(&self.signature(&abi.args, abi.ret).params)
         {
             // The argument the parameter is of, and which of the argument's parameters it is.
             let mut first = usize::from(matches!(abi.ret, PassMode::Indirect));
