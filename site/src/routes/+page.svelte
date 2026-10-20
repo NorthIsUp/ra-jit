@@ -70,9 +70,15 @@ loop {
 
 	<h2>Credits</h2>
 	<p class="dim">
-		ra-jit includes code from <a href="https://github.com/DioxusLabs/rustd">rustd</a> (DioxusLabs),
-		thanks to its authors. Built on
-		<a href="https://github.com/rust-lang/rust-analyzer">rust-analyzer</a>. Not endorsed by either project.
+		ra-jit stands on the shoulders of giants. Thank you to the people who built
+		<a href="https://github.com/rust-lang/rust-analyzer">rust-analyzer</a>,
+		<a href="https://cranelift.dev">Cranelift</a>,
+		<a href="https://llvm.org">LLVM</a> and <a href="https://github.com/TheDan64/inkwell">inkwell</a>,
+		<a href="https://github.com/salsa-rs/salsa">salsa</a>,
+		<a href="https://github.com/gimli-rs/object">object</a>,
+		<a href="https://github.com/rust-lang/rust">Rust</a>, and
+		<a href="https://github.com/DioxusLabs/rustd">rustd</a> (DioxusLabs), whose code ra-jit includes.
+		None of these projects endorses ra-jit.
 		Made at <a href="https://ix.dev">ix</a> for den's native app. MIT or Apache-2.0.
 	</p>
 </main>
