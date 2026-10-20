@@ -67,7 +67,8 @@ const ROLL_AFTER: u64 = 16;
 /// Records wait in memory until there are this many bytes of them, or the build ends.
 const WRITE_AT: usize = 64 << 10;
 /// What the packs of a store may take when `RA_JIT_CACHE_MAX` does not say.
-const DEFAULT_LIMIT: u64 = 8 << 30;
+/// Generous: the packs are what make an edit fast, and a dev machine has the disk.
+const DEFAULT_LIMIT: u64 = 32 << 30;
 /// More sealed packs than this that are smaller than [`SEAL_AT`] are made one: every daemon
 /// that ends leaves one behind.
 const SMALL_PACKS: usize = 16;

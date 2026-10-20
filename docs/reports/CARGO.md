@@ -281,7 +281,7 @@ store is on by default, at `$XDG_CACHE_HOME/ra-jit/store`, or `~/.cache/ra-jit/s
 without `XDG_CACHE_HOME`. It is deliberately not in the runtime directory, which goes away
 when you log out.
 
-The store is kept under 8 GiB: when it grows past that, packs are removed until it
+The store is kept under 32 GiB: when it grows past that, packs are removed until it
 fits. `RA_JIT_CACHE_MAX=<size>` (`2G`, `500M`) sets another limit and `off` none.
 
 `RA_JIT_CACHE=<directory>` puts it elsewhere. `RA_JIT_CACHE=off` (or `0`, or empty) turns it
@@ -296,7 +296,7 @@ directory; `RA_JIT.md` describes them and the remote store.
 | `RA_JIT_HOME` | The directory of the daemon's socket, logs and state. Must be yours alone (mode 0700). |
 | `RA_JIT_IDLE_SECS` | Seconds without a request after which the daemon exits. 1800 by default, 0 is never. |
 | `RA_JIT_CACHE` | The store's directory; `off`, `0` or empty for none. |
-| `RA_JIT_CACHE_MAX` | The most the store may take on disk. 8 GiB by default; `off` for no limit. |
+| `RA_JIT_CACHE_MAX` | The most the store may take on disk. 32 GiB by default; `off` for no limit. |
 | `RA_JIT_BACKEND` | `cranelift` (the default) or `llvm`. |
 | `RA_JIT_OPT`, `RA_JIT_EMIT` | With the LLVM backend: the optimisation level, and `fast` emission. |
 | `RUSTC_WORKSPACE_WRAPPER` | Cargo's own. Set to something else, it takes the build away from ra-jit. |
