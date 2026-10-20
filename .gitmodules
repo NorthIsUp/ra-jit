@@ -1,7 +1,0 @@
-[submodule "vendor/rust-analyzer"]
-	path = vendor/rust-analyzer
-	url = https://github.com/indexable-inc/rust-analyzer.git
-	branch = ra-jit
-[submodule "vendor/rustc_abi"]
-	path = vendor/rustc_abi
-	url = https://github.com/indexable-inc/rustc_abi.git
