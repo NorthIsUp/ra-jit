@@ -1,19 +1,23 @@
-// Conway's Game of Life under ra-jit. Edit this file while it runs: the daemon recompiles only
-// the function you touched and the next frame uses it, with the grid intact.
+// Conway's Game of Life under ra-jit. Edit this file while it
+// runs: the daemon recompiles only the function you touched,
+// and the next frame uses it, with the grid intact.
 //
-// Try:  next_age(): change `n == 3` to `n == 3 || n == 6` (HighLife)
-//       color():    change the numbers to repaint every cell
+// Try:  next_age(): `n == 3` to `n == 3 || n == 6` (HighLife)
+//       color():    change the numbers to repaint the cells
 //       step_ms():  make it faster or slower
 //
-// Live edits are macOS on AArch64 only; elsewhere the window runs and edits need a restart.
-use std::time::{Duration, Instant};
+// Live edits are macOS on Apple silicon only; elsewhere the
+// window runs and edits need a restart. The window and this
+// editor are the other files in src/.
+mod editor;
+mod highlight;
+mod theme;
+mod window;
 
-use eframe::egui;
+use std::time::Instant;
 
 const W: usize = 64;
 const H: usize = 48;
-
-// ---- The part to edit. -------------------------------------------------------------------
 
 /// Milliseconds between generations.
 #[inline(never)]
@@ -48,7 +52,7 @@ fn color(age: u32) -> u32 {
     }
 }
 
-// ---- The host: state that lives across edits. --------------------------------------------
+// ---- State that lives across edits. --------------------------------------------------------
 
 struct Life {
     age: Vec<u32>,
@@ -106,62 +110,6 @@ impl Life {
     }
 }
 
-struct App {
-    life: Life,
-    live: Option<ra_jit_live::Live>,
-    status: String,
-}
-
-impl eframe::App for App {
-    // Runs before each frame is drawn, between two frames: nothing of ours is half done.
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if let Some(outcome) = self.live.as_mut().and_then(|it| it.poll()) {
-            self.status = outcome.to_string();
-            eprintln!("life: {}", self.status);
-        }
-        if Instant::now() >= self.life.next_step {
-            self.life.step();
-            self.life.next_step = Instant::now() + Duration::from_millis(step_ms());
-        }
-        ctx.request_repaint_after(Duration::from_millis(16));
-    }
-
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        egui::CentralPanel::default().show_inside(ui, |ui| {
-            let side = (ui.available_width() / W as f32).min((ui.available_height() - 24.0) / H as f32);
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(side * W as f32, side * H as f32), egui::Sense::hover());
-            let painter = ui.painter_at(rect);
-            for y in 0..H {
-                for x in 0..W {
-                    let age = self.life.age[y * W + x];
-                    let rgb = if age > 0 { color(age) } else { 0x101018 };
-                    let [_, r, g, b] = rgb.to_be_bytes();
-                    let min = rect.min + egui::vec2(x as f32, y as f32) * side;
-                    painter.rect_filled(
-                        egui::Rect::from_min_size(min, egui::vec2(side - 1.0, side - 1.0)),
-                        0.0,
-                        egui::Color32::from_rgb(r, g, b),
-                    );
-                }
-            }
-            ui.label(format!("generation {}   {}", self.life.generation, self.status));
-        });
-    }
-}
-
 fn main() -> eframe::Result {
-    let (live, status) = match ra_jit_live::Live::start() {
-        Ok(live) => (Some(live), "live edits on".to_owned()),
-        Err(why) => (None, format!("live edits off: {why}")),
-    };
-    eprintln!("life: {status}");
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([768.0, 600.0]).with_title("ra-jit: Game of Life"),
-        ..Default::default()
-    };
-    eframe::run_native(
-        "ra-jit life",
-        options,
-        Box::new(move |_| Ok(Box::new(App { life: Life::new(), live, status }))),
-    )
+    window::run(Life::new())
 }
