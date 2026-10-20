@@ -4097,6 +4097,8 @@ fn requested(stream: UnixStream) -> Option<Event> {
 fn end_with_input() {
     let mut held = [0u8; 64];
     while std::io::Read::read(&mut std::io::stdin(), &mut held).is_ok_and(|read| read > 0) {}
+    // The executables on disk get the last edits before the worker goes.
+    splicer::flush();
     std::process::exit(0);
 }
 
