@@ -3850,7 +3850,7 @@ fn compile_tiered(
         for (symbol, mut asked) in asked {
             let level = asked.level;
             let room = ra_jit_live::format::COUNTERS as u32;
-            if level == Level::Llvm && counters < room {
+            if level == Level::Llvm && tier::highest() == Level::Pgo && counters < room {
                 asked.counters = Some(counters);
             }
             let compile = |asked: &codegen_tier::Asked| {
