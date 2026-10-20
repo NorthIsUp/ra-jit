@@ -7032,6 +7032,15 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                 continue;
             }
             let layout = self.layout(data.ty.as_ref())?;
+            // A capture an `async` body uses in place is the future's field.
+            if let Some((_, frame_layout, frame_addr, ..)) = &frame
+                && let Some(&(_, field)) = body.upvars_in_place.iter().find(|it| it.0 == local)
+            {
+                let offset = frame_layout.fields.offset(field as usize).bytes();
+                let addr = self.builder.ins().iadd_imm(*frame_addr, offset as i64);
+                self.locals.insert(local, LocalSlot { addr, borrowed: false });
+                continue;
+            }
             if let Some((_, frame_layout, frame_addr, _, held)) = &frame
                 && let Some(at) = held_at(local)
             {
