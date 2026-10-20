@@ -56,8 +56,6 @@ jobs:
       NAME: ra-jit-v${{ needs.notes.outputs.version }}-${{ matrix.target }}
     steps:
       - uses: actions/checkout@v6
-        with:
-          submodules: true
       - run: rustup toolchain install 1.99.0 --profile minimal && rustup default 1.99.0
       # `ra-jit --version` names the commit, as the flake's build does.
       - run: echo "RA_JIT_GIT_SHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
@@ -91,8 +89,6 @@ jobs:
     timeout-minutes: 340
     steps:
       - uses: actions/checkout@v6
-        with:
-          submodules: true
       - run: rustup toolchain install 1.99.0 --profile minimal && rustup default 1.99.0
       - run: python3 -I .github/scripts/publish_crates.py --publish --max-hours 5
         env:

@@ -10,9 +10,14 @@
 #
 # Native builds only: host units (platform null in the graph) and target units are the same machine,
 # so build scripts and proc-macros are ordinary host units.
-{ pkgs, rust, guiLibs, json, repo, rustAnalyzer, rustcAbi }:
+{ pkgs, rust, guiLibs, json, repo }:
 let
   inherit (pkgs) lib;
+  # Each vendored tree copied to a store path of its own, named by its contents alone, so that
+  # editing the rest of the repo does not change it.
+  vendored = name: builtins.path { path = repo + "/vendor/${name}"; name = "${name}-src"; };
+  rustAnalyzer = vendored "rust-analyzer";
+  rustcAbi = vendored "rustc_abi";
   system = pkgs.stdenv.hostPlatform.system;
   all = builtins.fromJSON (builtins.readFile json);
   data = all // (all.systems.${system} or (throw "${json} has no unit graph for ${system}: add its triple to TARGETS in nix/unit_graph.py and rerun it"));
@@ -24,8 +29,8 @@ let
     else data;
 
   # The manifest directory of a workspace-local package, cut down to what the crate reads so that
-  # editing anything else in the repo does not change the unit. Vendored submodules come from the
-  # flake inputs (a github: flake does not fetch submodules) as whole store paths of their own.
+  # editing anything else in the repo does not change the unit. The vendored trees are whole
+  # store paths of their own.
   # crates/ra-jit include_str!s harness/toolchain.
   pathSource = p:
     let d = p.source.dir; in

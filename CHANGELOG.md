@@ -6,6 +6,12 @@ All notable changes to ra-jit are written here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- `vendor/rust-analyzer` and `vendor/rustc_abi` are git subtrees instead of submodules: a
+  plain `git clone` builds, and the flake builds from its own tree with no second pin of the
+  forks.
+
 ## [0.1.0] - 2026-10-20
 
 The first release.

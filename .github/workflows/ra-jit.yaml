@@ -35,11 +35,9 @@ jobs:
             suffix: " (aarch64)"
     steps:
       - uses: actions/checkout@v6
-        with:
-          submodules: true
       - run: rustup toolchain install 1.99.0 --profile minimal -c rustfmt -c rust-src && rustup default 1.99.0
       - uses: Swatinem/rust-cache@v2
-      # The code that is ra-jit's own: vendor/rust-analyzer is a checkout of another repository.
+      # The code that is ra-jit's own: vendor/ is the forks' code, formatted by their rules.
       - run: cargo fmt -p ra-jit -p ra-jit-live -- --check
       - run: cargo test --release -p hir-ty -p hir-def -p parser -p syntax -p ra-jit
 
@@ -65,8 +63,6 @@ jobs:
       PART: ${{ matrix.part }}
     steps:
       - uses: actions/checkout@v6
-        with:
-          submodules: true
       - run: rustup toolchain install 1.99.0 --profile minimal -c rust-src && rustup default 1.99.0
       # What `buildmodel.py` builds for besides the host.
       - run: rustup target add aarch64-unknown-linux-gnu x86_64-unknown-linux-musl
@@ -168,8 +164,6 @@ jobs:
       RA_JIT_EMIT: fast
     steps:
       - uses: actions/checkout@v6
-        with:
-          submodules: true
       - run: rustup toolchain install 1.99.0 --profile minimal -c rust-src && rustup default 1.99.0
       - name: LLVM 20
         run: |
@@ -197,8 +191,6 @@ jobs:
     steps:
       - run: git config --global core.autocrlf false
       - uses: actions/checkout@v6
-        with:
-          submodules: true
       - run: rustup toolchain install 1.99.0 --profile minimal -c rustfmt -c rust-src && rustup default 1.99.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt -p ra-jit -p ra-jit-live -- --check
@@ -226,8 +218,6 @@ jobs:
     steps:
       - run: git config --global core.autocrlf false
       - uses: actions/checkout@v6
-        with:
-          submodules: true
       # The harnesses run the linker themselves, with the environment the compiler has. In
       # this shell the `link` of coreutils comes before the linker, so it goes.
       - uses: ilammy/msvc-dev-cmd@v1
@@ -308,8 +298,6 @@ jobs:
       PART: ${{ matrix.part }}
     steps:
       - uses: actions/checkout@v6
-        with:
-          submodules: true
       - run: rustup toolchain install 1.99.0 --profile minimal -c rustfmt -c rust-src && rustup default 1.99.0
       - name: LLVM 20
         run: |
@@ -378,8 +366,6 @@ jobs:
       RA_JIT_EMIT: fast
     steps:
       - uses: actions/checkout@v6
-        with:
-          submodules: true
       - run: rustup toolchain install 1.99.0 --profile minimal -c rust-src && rustup default 1.99.0
       - name: LLVM 20
         run: |
@@ -411,8 +397,6 @@ jobs:
       RA_JIT_EMIT: fast
     steps:
       - uses: actions/checkout@v6
-        with:
-          submodules: true
       - run: rustup toolchain install 1.99.0 --profile minimal -c rust-src && rustup default 1.99.0
       - name: LLVM 20
         run: |
@@ -434,8 +418,6 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v6
-        with:
-          submodules: true
       - run: rustup toolchain install 1.99.0 --profile minimal -c rust-src && rustup default 1.99.0
       - name: LLVM 20
         run: |
