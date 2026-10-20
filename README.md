@@ -1,10 +1,28 @@
 # ra-jit
 
+Hot-reload Rust in milliseconds, using rust-analyzer as the compiler front end.
+
+```
+nix run github:indexable-inc/ra-jit -- build
+```
+
+![Editing the running Game of Life: rule, colours and speed change live](docs/demo.webp)
+
+[mp4](docs/demo.mp4)
+
+Edit the source and the running program changes on the next frame, with its state intact. (The
+video is the first ra-jit prototype, a Game of Life; it stays at the tag
+[`prototype`](https://github.com/indexable-inc/ra-jit/tree/prototype).)
+
 ra-jit is a newer version of [rustd](https://github.com/DioxusLabs/rustd), made specifically
-for Indexable's use cases, starting with den's native app. It is no longer an experiment. It
-keeps rustd's compiler daemon and its code generator over rust-analyzer, and adds what those
-programs need: edits that go into the program while it runs, executables that keep their
-entitlements, and fixes for large workspaces.
+for Indexable's use cases, starting with den's native app. It keeps rustd's compiler daemon and
+its code generator over rust-analyzer, and adds what those programs need: edits that go into the
+program while it runs, executables that keep their entitlements, and fixes for large workspaces.
+
+> [!NOTE]
+> **Upstream:** [rustd](https://github.com/DioxusLabs/rustd) is where this started and is the
+> general-purpose version: a drop-in `cargo rustd build/run/test` for real crates. Use it if you
+> don't need what is below.
 
 ## What ra-jit adds to rustd
 
