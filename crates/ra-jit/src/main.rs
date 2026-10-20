@@ -2988,6 +2988,9 @@ fn link(
             live::publish(baseline, patch);
         }
         let superseded = old.filter(|_| !rewritten).and_then(Baseline::uuid);
+        if std::env::var_os("RA_JIT_STATS").is_some() {
+            eprintln!("link-us: read={}", start.elapsed().as_micros());
+        }
         let spliced = match known {
             _ if rewritten => Err(anyhow::anyhow!("the whole object was written again")),
             _ if running => Err(anyhow::anyhow!("the executable is running")),
@@ -3012,6 +3015,9 @@ fn link(
             Some(Err(why)) => Err(why),
             None => Err(anyhow::anyhow!("no executable to add to")),
         };
+        if std::env::var_os("RA_JIT_STATS").is_some() {
+            eprintln!("link-us: spliced={}", start.elapsed().as_micros());
+        }
         match spliced {
             Ok((baseline, Spliced { redirected, appended, copied })) => {
                 if redirected != 0 && baseline.leaves_debug_info() {
@@ -6574,11 +6580,24 @@ impl Program {
         report_stats(&known.stats);
         let reported = start.elapsed();
         let out_of_date = hir::attach_db(db, || known.out_of_date(db));
+        let dated = start.elapsed();
         let mut failed = unnamed
             .or_else(|| refusal(db, &edited, paths, broken, out_of_date))
             .or_else(|| warm.unset.clone());
+        let refused = start.elapsed();
         failed = failed.or_else(|| stale_copies(db, table, args));
+        let copies = start.elapsed();
         let now = hir::attach_db(db, || Tests::of(db, listed, args, tests_now));
+        if std::env::var_os("RA_JIT_STATS").is_some() {
+            let us = |it: Duration| it.as_micros();
+            eprintln!(
+                "refuse-us: out_of_date={} refusal={} copies={} tests={}",
+                us(dated - reported),
+                us(refused - dated),
+                us(copies - refused),
+                us(start.elapsed() - copies)
+            );
+        }
         match tests {
             Some(first) => failed = failed.or_else(|| first.changed(&now)),
             // The first build of the program is of the source rustc built it from.

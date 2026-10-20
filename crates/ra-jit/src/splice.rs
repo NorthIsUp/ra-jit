@@ -244,6 +244,7 @@ impl Baseline {
     /// and what is known of it as they were.
     pub(crate) fn splice(&mut self, patch: &[u8], give_up: &AtomicBool) -> anyhow::Result<Spliced> {
         self.read_again_if_signed()?;
+        let start = std::time::Instant::now();
         let (addition, len) = match &*self.image {
             Executable::Elf(image) => {
                 let patch = Patch::read(patch, image)?;
@@ -268,6 +269,7 @@ impl Baseline {
                 );
             }
         };
+        let placed = start.elapsed();
 
         let file = OpenOptions::new().read(true).write(true).open(&self.path)?;
         ensure!(Stamp::of(&file)? == self.stamp, "the executable was written by someone else");
@@ -278,6 +280,7 @@ impl Baseline {
         let left = std::mem::take(&mut self.left);
         left.append(&file, addition.offset, &addition.appended)?;
         write_all_at(&file, &addition.headers, addition.headers_offset)?;
+        let appended_at = start.elapsed();
         let mut end = (addition.offset + addition.appended.len() as u64)
             .max(addition.headers_offset + addition.headers.len() as u64);
         // A run the last splice copied stays where it is while nothing else is written there,
@@ -293,6 +296,7 @@ impl Baseline {
                 moved.push(run);
             }
         }
+        let copied_at = start.elapsed();
         for (offset, bytes) in &addition.described.written {
             write_all_at(&file, bytes, *offset)?;
             let written = *offset + bytes.len() as u64;
@@ -301,6 +305,7 @@ impl Baseline {
         }
         end = moved.iter().map(|it| it.to + it.len).fold(end, u64::max);
         file.set_len(end.max(len))?;
+        let written_at = start.elapsed();
         for (offset, bytes) in &addition.overwritten {
             let mut old = vec![0; bytes.len()];
             read_exact_at(&file, &mut old, *offset)?;
@@ -308,6 +313,20 @@ impl Baseline {
             write_all_at(&file, bytes, *offset)?;
         }
         self.stamp = Stamp::of(&file)?;
+        let redirected_at = start.elapsed();
+        drop(file);
+        if std::env::var_os("RA_JIT_STATS").is_some() {
+            let us = |it: std::time::Duration| it.as_micros();
+            eprintln!(
+                "splice-us: place={} append={} copy={} write={} redirect={} close={}",
+                us(placed),
+                us(appended_at - placed),
+                us(copied_at - appended_at),
+                us(written_at - copied_at),
+                us(redirected_at - written_at),
+                us(start.elapsed() - redirected_at)
+            );
+        }
         let appended = addition.appended.len();
         self.left = Left { appended: Some((addition.offset, addition.appended)), moved };
         Ok(Spliced { redirected: addition.redirected, appended, copied })
