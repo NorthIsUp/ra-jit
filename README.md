@@ -60,7 +60,7 @@ From then on plain `cargo build`, `run`, `test` and `check` in any project go th
 Add the crate and poll once per frame:
 
 ```toml
-ra-jit-live = { git = "https://github.com/indexable-inc/ra-jit" }
+ra-jit-live = "0.1"
 ```
 
 ```rust
