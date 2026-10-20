@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       limit:
-        description: tests/ui programs to run (empty: all)
+        description: "tests/ui programs to run (empty means all)"
         required: false
 
 concurrency:
