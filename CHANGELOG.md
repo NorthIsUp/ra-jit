@@ -25,6 +25,10 @@ All notable changes to ra-jit are written here. The format follows
   [docs/benchmarks.md](docs/benchmarks.md) from the result; the `bench-readme` workflow runs
   them on a dedicated Linux x86-64 machine after pushes to main and nightly, and commits the
   numbers to main when they moved beyond noise.
+- [ra-jit.ix.dev/bench](https://ra-jit.ix.dev/bench): the benchmark history over commits, from
+  `docs/benchmarks/history`: the latest run's table per project, and charts of each edit,
+  the cold build, the daemon's peak memory, the store size and live edit-to-running latency
+  ([#10](https://github.com/indexable-inc/ra-jit/issues/10)).
 - LLVM is given what rustc gives it: reference parameters marked `noalias`, `readonly`,
   `dereferenceable`, `align`, `nonnull` and `noundef` as rustc marks them, addresses as
   pointers rather than integers, branches threaded before `-O3`, and, at a level above 1, the
