@@ -4,7 +4,7 @@
 use std::process::{Command, ExitCode};
 
 fn main() -> ExitCode {
-    let ra-jit = match std::env::current_exe() {
+    let exe = match std::env::current_exe() {
         Ok(this) => this.with_file_name(format!("ra-jit{}", std::env::consts::EXE_SUFFIX)),
         Err(error) => {
             eprintln!("error: cargo-ra-jit does not know where it is installed: {error}");
@@ -13,10 +13,10 @@ fn main() -> ExitCode {
     };
     // Cargo names the subcommand first.
     let args = std::env::args_os().skip(1).skip_while(|it| it == "ra-jit");
-    match Command::new(&ra-jit).arg("cargo").args(args).status() {
+    match Command::new(&exe).arg("cargo").args(args).status() {
         Ok(status) => ExitCode::from(status.code().unwrap_or(1) as u8),
         Err(error) => {
-            eprintln!("error: cargo-ra-jit could not run {}: {error}", ra-jit.display());
+            eprintln!("error: cargo-ra-jit could not run {}: {error}", exe.display());
             ExitCode::FAILURE
         }
     }

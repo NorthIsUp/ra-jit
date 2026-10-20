@@ -38,7 +38,7 @@ pub(crate) fn stand_in_front(linked: &Path) -> anyhow::Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
     let real = real_of(linked);
     std::fs::rename(linked, &real)?;
-    let ra-jit = std::env::current_exe()?;
+    let exe = std::env::current_exe()?;
     let quoted = |path: &Path| -> anyhow::Result<String> {
         let path = path.to_str().context("a path that is not text")?;
         Ok(shlex::try_quote(path)?.into_owned())
@@ -46,7 +46,7 @@ pub(crate) fn stand_in_front(linked: &Path) -> anyhow::Result<()> {
     let lines = format!(
         "#!/bin/sh\n{REAL}={} exec {} build-script \"$@\"\n",
         quoted(&real)?,
-        quoted(&ra-jit)?
+        quoted(&exe)?
     );
     std::fs::write(linked, lines)?;
     Ok(std::fs::set_permissions(linked, std::fs::Permissions::from_mode(0o755))?)
