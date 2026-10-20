@@ -45,10 +45,13 @@
           cp -r ${rust-analyzer} $out/vendor/rust-analyzer
           cp -r ${rustc-abi} $out/vendor/rustc_abi
         '';
+        # The one version, from the workspace's Cargo.toml.
+        version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.package.version;
         daemon = rustPlatform.buildRustPackage {
           pname = "ra-jit";
-          version = "0.0.0";
-          inherit src;
+          inherit version src;
+          # `ra-jit --version` names the commit (a dirty tree has none of its own).
+          RA_JIT_GIT_SHA = self.shortRev or self.dirtyShortRev or "";
           cargoLock.lockFile = ./Cargo.lock;
           cargoBuildFlags = [ "-p" "ra-jit" ];
           nativeBuildInputs = [ pkgs.makeWrapper ];

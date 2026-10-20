@@ -41,6 +41,10 @@ Edit one function, then build (200-crate workspace, median of three):
 nix run github:indexable-inc/ra-jit#ra-jit -- build
 ```
 
+No nix? Put the binaries from a [release](https://github.com/indexable-inc/ra-jit/releases)
+on your PATH and use Rust 1.99.0 with its source:
+`rustup toolchain install 1.99.0 -c rust-src && rustup override set 1.99.0`.
+
 ### Use it as your normal `cargo build`
 
 ```

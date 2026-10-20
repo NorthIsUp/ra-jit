@@ -6,11 +6,15 @@ exclude = ["crates/ra-jit-wasm", "demo", "harness"]
 resolver = "2"
 
 [workspace.package]
+version = "0.1.0"
 rust-version = "1.98"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 authors = ["ra-jit contributors"]
-repository = "https://github.com/DioxusLabs/rustd"
+repository = "https://github.com/indexable-inc/ra-jit"
+homepage = "https://ra-jit.ix.dev"
+keywords = ["compiler", "jit", "hot-reload", "rust-analyzer", "cargo"]
+categories = ["development-tools", "development-tools::build-utils"]
 
 [profile.dev]
 debug = 1
