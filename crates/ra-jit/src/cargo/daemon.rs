@@ -720,6 +720,12 @@ impl Daemon {
     /// Reads the one request of a connection and answers it.
     fn answer(&self, stream: UnixStream) -> anyhow::Result<()> {
         let line = read_request(&stream)?;
+        // An editor's text, on a line of its own that is not JSON: it is long and comes
+        // with every key typed. The worker answers as to `cargo ra-jit build`.
+        if line.starts_with("edit\t") {
+            let reply = self.edit(&line).unwrap_or_else(|why| format!("error: {why:#}"));
+            return Ok((&stream).write_all(format!("{}\n", reply.replace('\n', " ")).as_bytes())?);
+        }
         let envelope = serde_json::from_str::<Envelope>(&line);
         // A request that can't be read is one of another version too, and of a client
         // that waits for an answer it can read: it gets none, and the daemon stays.
@@ -735,6 +741,36 @@ impl Daemon {
             self.end();
         }
         Ok(sent?)
+    }
+
+    /// Hands `line`, an `edit` of a source file, to the worker that has the checkout of the
+    /// file loaded, and gives back its answer.
+    fn edit(&self, line: &str) -> anyhow::Result<String> {
+        *lock(&self.asked) = Instant::now();
+        let escaped = line["edit\t".len()..].split('\t').next().unwrap_or_default();
+        let path = PathBuf::from(ra_jit_live::format::unescape(escaped));
+        let path = dunce::canonicalize(&path).unwrap_or(path);
+        let worker = lock(&self.workers).values().find_map(|worker| {
+            let checkouts = lock(&worker.checkouts);
+            let has = checkouts.values().any(|it| {
+                matches!(it.warmth, Warmth::Ready)
+                    && dunce::canonicalize(&it.root).is_ok_and(|root| path.starts_with(root))
+            });
+            has.then(|| worker.clone())
+        });
+        let worker = worker.with_context(|| {
+            format!("the daemon has no workspace loaded that has {}", path.display())
+        })?;
+        *lock(&worker.asked) = Instant::now();
+        let mut stream = socket::connect(&worker.socket)?;
+        // The worker builds it for the process its last build was for.
+        stream.write_all(format!("{line}\n\n").as_bytes())?;
+        let mut reply = String::new();
+        BufReader::new(stream).read_line(&mut reply)?;
+        match reply.trim_end() {
+            "" => anyhow::bail!("the worker hung up; its log is {}", worker.log.display()),
+            reply => Ok(reply.to_owned()),
+        }
     }
 
     fn handle(&self, request: Request) -> Reply {

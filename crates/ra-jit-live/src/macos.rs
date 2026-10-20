@@ -71,6 +71,8 @@ const LC_UUID: u32 = 0x1b;
 const ROOM: u64 = 256 << 20;
 /// What `adrp` reaches, which is how the code of a patch reaches the program's.
 const REACH: u64 = 4 << 30;
+/// How often the patch and the executable are looked at without a word from the daemon.
+const LOOK_EVERY: Duration = Duration::from_millis(30);
 
 pub(crate) struct Live {
     dir: PathBuf,
@@ -105,7 +107,7 @@ impl Live {
         let started = started.map_or(0, |it| it.as_millis() as u64);
         let process = Process { pid: std::process::id(), uuid: image.uuid, started, next, end };
         let live = Live {
-            patches: watch(dir.join("patch"), image.uuid),
+            patches: watch(&dir, image.uuid),
             dir,
             uuid: image.uuid,
             slide,
@@ -126,7 +128,32 @@ impl Live {
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
             }
         }
-        let (patch, arrived) = newest.filter(|(it, _)| it.sequence > self.sequence)?;
+        let (patch, arrived) = newest?;
+        self.take(patch, arrived)
+    }
+
+    /// Applies each patch on a thread of its own as soon as it comes, and tells `told`.
+    pub(crate) fn apply_as_they_come(mut self, mut told: impl FnMut(Outcome) + Send + 'static) {
+        let applying = move || {
+            while let Ok(mut newest) = self.patches.recv() {
+                while let Ok(next) = self.patches.try_recv() {
+                    newest = next;
+                }
+                if let Some(outcome) = self.take(newest.0, newest.1) {
+                    told(outcome);
+                }
+            }
+        };
+        std::thread::Builder::new()
+            .name("ra-jit-live-apply".to_owned())
+            .spawn(applying)
+            .expect("spawning the thread that applies edits");
+    }
+
+    fn take(&mut self, patch: Patch, arrived: Instant) -> Option<Outcome> {
+        if patch.sequence <= self.sequence {
+            return None;
+        }
         self.sequence = patch.sequence;
         if patch.uuid != self.uuid {
             return Some(Outcome::Restart("the program was linked again".to_owned()));
@@ -328,12 +355,18 @@ fn forget_exited() {
     }
 }
 
-/// Reads the patch at `path` on a thread of its own each time it is written. A link that
-/// writes another executable where the program's was, which no patch says of when nothing
-/// that links it knew the program (`cargo build`, or a daemon started since), is told as
-/// a patch of that executable.
-fn watch(path: PathBuf, uuid: [u8; 16]) -> Receiver<(Patch, Instant)> {
+/// Reads the patch in `dir` on a thread of its own each time it is written: at once when the
+/// daemon says so on the `wake` socket, else when its time changes. A link that writes
+/// another executable where the program's was, which no patch says of when nothing that
+/// links it knew the program (`cargo build`, or a daemon started since), is told as a patch
+/// of that executable.
+fn watch(dir: &std::path::Path, uuid: [u8; 16]) -> Receiver<(Patch, Instant)> {
     let (send, receive) = std::sync::mpsc::channel();
+    let path = dir.join("patch");
+    let wake = dir.join(format::WAKE);
+    _ = std::fs::remove_file(&wake);
+    let wake = std::os::unix::net::UnixDatagram::bind(&wake).ok();
+    let wake = wake.filter(|it| it.set_read_timeout(Some(LOOK_EVERY)).is_ok());
     let stamp = |path: &PathBuf| {
         let meta = std::fs::metadata(path).ok()?;
         Some((meta.modified().ok()?, meta.len()))
@@ -346,7 +379,13 @@ fn watch(path: PathBuf, uuid: [u8; 16]) -> Receiver<(Patch, Instant)> {
         .name("ra-jit-live".to_owned())
         .spawn(move || {
             loop {
-                std::thread::sleep(Duration::from_millis(30));
+                let woke = match &wake {
+                    Some(wake) => wake.recv(&mut [0; 16]).is_ok(),
+                    None => {
+                        std::thread::sleep(LOOK_EVERY);
+                        false
+                    }
+                };
                 if let Some(executable) = &executable {
                     let now = stamp(executable);
                     if now.is_some() && now != linked {
@@ -366,7 +405,7 @@ fn watch(path: PathBuf, uuid: [u8; 16]) -> Receiver<(Patch, Instant)> {
                     }
                 }
                 let now = stamp(&path);
-                if now.is_none() || now == seen {
+                if now.is_none() || (now == seen && !woke) {
                     continue;
                 }
                 seen = now;

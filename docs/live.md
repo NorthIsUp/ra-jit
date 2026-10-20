@@ -13,13 +13,30 @@ the save and the new code running, and what is refused.
 - **The program** (`crates/ra-jit-live`). `Live::start` reads the executable's `LC_UUID`,
   sets aside 512 MB right behind the image (within `adrp`'s 4 GB, so new code reaches all of
   the old), says so in a file, and watches for patches on a thread. `Live::poll`, called
-  between frames, applies the newest one.
+  between frames, applies the newest one; `Live::apply_as_they_come` applies each on that
+  thread the moment it arrives instead.
 
 They meet in `~/.cache/ra-jit/live/<uuid>/`: `process` (written by the program: pid, uuid,
-when it started, the next free address and the end of its room) and `patch` (written by the
-daemon, `RAJITLV1` followed by the encoding in `crates/ra-jit-live/src/format.rs`). The
-directory is keyed by the UUID because the daemon's path for the executable and the program's
-(cargo's hard link in `target/debug`) differ.
+when it started, the next free address and the end of its room), `patch` (written by the
+daemon, `RAJITLV1` followed by the encoding in `crates/ra-jit-live/src/format.rs`) and `wake`,
+a datagram socket the program listens on, which the daemon sends a byte once it renamed a new
+`patch` into place (the program also looks at `patch` every 30 ms, for a daemon that could not
+wake it). The directory is keyed by the UUID because the daemon's path for the executable and
+the program's (cargo's hard link in `target/debug`) differ.
+
+## Edits from an editor
+
+An editor need not save for the daemon to build. `ra_jit_live::edit(path, text)` sends the
+daemon (`daemon.sock`) one line, `edit\t<path>\t<text>` with backslash, newline, tab and
+carriage return escaped, the way an editor tells a language server `didChange`. The daemon
+hands it to the worker that has the file's checkout loaded; the worker sets the text into
+rust-analyzer's database, builds the programs that have the file from it, publishes the patch
+and answers as it answers `cargo ra-jit build` (`ok patch=... ms=N`, `ok unchanged`, `error:
+...`). An edit that comes while the last one of the file is being built waits, and one typed
+over before it was built is answered `ok superseded`. The editor writes the file afterwards;
+the worker sees the same text it built and builds nothing for the write. `cargo ra-jit build`
+is still the first build and link, and works as before. The Game of Life demo
+(`demo/life`) does this on every key, and `harness/live_latency.py socket` times it.
 
 ## Applying a patch
 

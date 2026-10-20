@@ -1,49 +1,52 @@
 //! The window: a readout at the top, the running Game of Life on the left and the editor on
-//! the right, in the Islands Dark theme. Each frame first applies whatever patch ra-jit-live
-//! has received, then steps the simulation with the (possibly new) rules from main.rs.
+//! the right, in the Islands Dark theme. ra-jit-live applies each patch on a thread of its own
+//! the moment it arrives; the next step of the simulation runs the new rules from main.rs.
 
 use std::path::PathBuf;
-use std::time::{Duration, Instant, SystemTime};
+use std::sync::mpsc::{Receiver, channel};
+use std::time::{Duration, Instant};
 
 use eframe::egui;
 use ra_jit_live::{Live, Outcome};
 
-use crate::editor::Editor;
+use crate::editor::{self, Editor};
 use crate::theme::{self, Theme};
 use crate::{H, Life, W};
 
-/// The launcher writes how the last build went here (`RA_JIT_LIFE_STATUS`): "ok" or "error" on
-/// the first line, then what the build said.
+/// How the daemon's last answer went: whether it built, and what it said.
+#[derive(Default)]
 struct BuildStatus {
-    path: Option<PathBuf>,
-    seen: Option<SystemTime>,
     ok: bool,
     text: String,
 }
 
 impl BuildStatus {
-    fn refresh(&mut self) {
-        let Some(path) = &self.path else { return };
-        let Ok(modified) = std::fs::metadata(path).and_then(|m| m.modified()) else { return };
-        if self.seen == Some(modified) {
-            return;
+    fn of(answer: Option<&Result<String, String>>) -> BuildStatus {
+        match answer {
+            None => BuildStatus { ok: true, text: String::new() },
+            Some(Ok(said)) => BuildStatus { ok: true, text: said.clone() },
+            Some(Err(why)) => BuildStatus { ok: false, text: why.clone() },
         }
-        self.seen = Some(modified);
-        let body = std::fs::read_to_string(path).unwrap_or_default();
-        let (head, rest) = body.split_once('\n').unwrap_or((&body, ""));
-        self.ok = head.trim() == "ok";
-        self.text = rest.trim().to_owned();
+    }
+
+    /// How long the daemon took to build, as its answer says (`ms=N`).
+    fn ms(&self) -> Option<&str> {
+        self.text.split(' ').find_map(|it| it.strip_prefix("ms="))
     }
 }
 
 struct App {
     life: Life,
-    live: Option<Live>,
+    /// What the thread that applies patches says, and the time from the keystroke to the
+    /// new code in place for an applied one.
+    applied: Receiver<(Outcome, Option<Duration>)>,
     /// Whether live edits are on, or why not.
     live_note: String,
     /// The last patch outcome, and keystroke-to-running time for an applied one.
     outcome: Option<(String, bool)>,
     edit_to_running: Option<Duration>,
+    /// What applying the last patch took, and how long it waited to be applied.
+    apply: Option<(Duration, Duration)>,
     patches: u64,
     editor: Editor,
     build: BuildStatus,
@@ -87,11 +90,22 @@ impl App {
                 (Some((_, true)), Some(took)) => {
                     ui.heading(
                         egui::RichText::new(format!(
-                            "edit to running: {:.0} ms",
+                            "edit to running: {:.1} ms",
                             took.as_secs_f64() * 1e3
                         ))
                         .color(t.function),
                     );
+                    // Where the time went: the daemon's build, then the program's write.
+                    let mut parts = Vec::new();
+                    if let Some(ms) = self.build.ms() {
+                        parts.push(format!("build {ms} ms"));
+                    }
+                    if let Some((took, waited)) = self.apply {
+                        let ms = |it: Duration| it.as_secs_f64() * 1e3;
+                        parts.push(format!("apply {:.2} ms", ms(took)));
+                        parts.push(format!("queued {:.2} ms", ms(waited)));
+                    }
+                    ui.colored_label(t.comment, format!("({})", parts.join(", ")));
                 }
                 (Some((_, true)), None) => {
                     ui.heading(egui::RichText::new("edit applied").color(t.function));
@@ -119,15 +133,19 @@ impl App {
         ui.colored_label(
             t.number,
             format!(
-                "{:.0} fps   |   generation {}   |   {} saves, {} patches applied{build}",
-                self.fps, self.life.generation, self.editor.writes, self.patches
+                "{:.0} fps   |   generation {}   |   {} edits sent, {} patches applied{build}",
+                self.fps,
+                self.life.generation,
+                editor::lock(&self.editor.shared).sent,
+                self.patches
             ),
         );
     }
 
     fn footer(&self, ui: &mut egui::Ui) {
         let t = self.theme;
-        if let Some(why) = &self.editor.write_error {
+        let write_error = editor::lock(&self.editor.shared).write_error.clone();
+        if let Some(why) = write_error {
             ui.colored_label(t.error, why);
         } else if self.editor.file.is_none() {
             ui.colored_label(
@@ -137,9 +155,9 @@ impl App {
         } else if self.build.ok || self.build.text.is_empty() {
             let file =
                 self.editor.file.as_ref().map(|f| f.display().to_string()).unwrap_or_default();
-            ui.colored_label(t.comment, format!("no errors   ·   saved as you type to {file}"));
+            ui.colored_label(t.comment, format!("no errors   ·   built as you type, saved to {file}"));
         } else {
-            ui.colored_label(t.error, "the build failed; the window keeps the old code:");
+            ui.colored_label(t.error, "the edit was not built; the window keeps the old code:");
             egui::ScrollArea::vertical().id_salt("errs").show(ui, |ui| {
                 ui.monospace(&self.build.text);
             });
@@ -175,24 +193,24 @@ impl App {
 }
 
 impl eframe::App for App {
-    // Runs before each frame is drawn, between two frames: nothing of ours is half done.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if let Some(outcome) = self.live.as_mut().and_then(Live::poll) {
+        while let Ok((outcome, took)) = self.applied.try_recv() {
             let applied = matches!(outcome, Outcome::Applied { .. });
-            if applied {
+            if let Outcome::Applied { took, waited, .. } = outcome {
                 self.patches += 1;
-                self.edit_to_running = self.editor.wrote_at.take().map(|at| at.elapsed());
+                self.apply = Some((took, waited));
             }
-            let what = outcome.to_string();
-            eprintln!("life: {what}");
-            self.outcome = Some((what, applied));
+            if applied {
+                self.edit_to_running = took;
+            }
+            self.outcome = Some((outcome.to_string(), applied));
         }
         if Instant::now() >= self.life.next_step {
             self.life.step();
             self.life.next_step = Instant::now() + Duration::from_millis(crate::step_ms());
         }
         self.editor.reload();
-        self.build.refresh();
+        self.build = BuildStatus::of(editor::lock(&self.editor.shared).answer.as_ref());
         self.frames += 1;
         if self.fps_at.elapsed() > Duration::from_millis(500) {
             self.fps = (self.frames - self.fps_frames) as f64 / self.fps_at.elapsed().as_secs_f64();
@@ -264,21 +282,18 @@ pub fn run(life: Life) -> eframe::Result {
         source_file(),
         "// src/main.rs was not found next to this window, or where it was built.\n",
     );
-    let build = BuildStatus {
-        path: std::env::var_os("RA_JIT_LIFE_STATUS").map(PathBuf::from),
-        seen: None,
-        ok: true,
-        text: String::new(),
-    };
+    let (tell, applied) = channel();
+    let shared = editor.shared.clone();
     let app = App {
         life,
-        live,
+        applied,
         live_note,
         outcome: None,
         edit_to_running: None,
+        apply: None,
         patches: 0,
         editor,
-        build,
+        build: BuildStatus::default(),
         theme: &theme::ISLANDS_DARK,
         fps_at: Instant::now(),
         fps_frames: 0,
@@ -291,5 +306,31 @@ pub fn run(life: Life) -> eframe::Result {
             .with_title("ra-jit: Game of Life, live"),
         ..Default::default()
     };
-    eframe::run_native("ra-jit life", options, Box::new(move |_| Ok(Box::new(app))))
+    eframe::run_native(
+        "ra-jit life",
+        options,
+        Box::new(move |creation| {
+            let ctx = creation.egui_ctx.clone();
+            if let Some(live) = live {
+                // A step of the simulation that is under way when the rules change finishes
+                // with some cells by the old ones, as an edit that lands mid-call does.
+                live.apply_as_they_come(move |outcome| {
+                    // Timed here, the moment the new code is in place, as the readout says.
+                    let took = match outcome {
+                        Outcome::Applied { .. } => {
+                            editor::lock(&shared).in_flight.take().map(|at| at.elapsed())
+                        }
+                        _ => None,
+                    };
+                    match took {
+                        Some(took) => eprintln!("life: {outcome}; edit to running {took:.2?}"),
+                        None => eprintln!("life: {outcome}"),
+                    }
+                    let _ = tell.send((outcome, took));
+                    ctx.request_repaint();
+                });
+            }
+            Ok(Box::new(app))
+        }),
+    )
 }

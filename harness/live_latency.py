@@ -4,8 +4,9 @@
 usage: live_latency.py [cargo|socket ...]   (RA_JIT_BIN names the ra-jit built; cargo-ra-jit
                                              and ra-jit-rustc are found next to it)
 
-harness/live (a program that polls ra-jit-live every millisecond) is built and started as
-live_e2e.py does, then takes LATENCY_EDITS edits (default 10) in each mode named:
+harness/live (a program that applies each patch as it arrives, as the demo's window does) is
+built and started as live_e2e.py does, then takes LATENCY_EDITS edits (default 10) in each mode
+named:
 
   cargo   the file is written and `cargo ra-jit build` asks the daemon for the build, as the
           demo's launcher did on each save (its 200 ms mtime poll, 100 ms on average, comes
@@ -20,9 +21,11 @@ the program (`outcome: ... at_us=`) print:
   to-worker   t0 to the worker reading the request (cargo and the daemon's hop)
   worker      the request to the patch left for the program (`timeline-us:` splits it)
   delivery    the patch file written to the program's thread reading it
-  wait        read to applied: the program's next poll (1 ms here, a frame in the demo)
+  wait        read to applied: the program's thread taking it up
   apply       mapping the patch and writing the jumps
-  total       t0 to applied, what the demo shows as "edit to running"
+  total       t0 to applied, what the demo shows as "edit to running" (the old in-process
+              prototype timed the same span: from just before the edit left the editor to
+              the new code in place, with no frame in between)
   reply       t0 to the client's answer (after the on-disk splice)
 
 The medians go to stdout and, as a table, to $GITHUB_STEP_SUMMARY when it is set; every edit's

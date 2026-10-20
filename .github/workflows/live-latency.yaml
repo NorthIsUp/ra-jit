@@ -40,7 +40,7 @@ jobs:
           LATENCY_EDITS: ${{ inputs.edits || '10' }}
           LATENCY_JSON: ${{ runner.temp }}/latency.json
           RA_JIT_IDLE_SECS: "0"
-        run: RA_JIT_BIN="$GITHUB_WORKSPACE/target/release/ra-jit" python3 harness/live_latency.py ${{ inputs.modes || 'cargo' }}
+        run: RA_JIT_BIN="$GITHUB_WORKSPACE/target/release/ra-jit" python3 harness/live_latency.py ${{ inputs.modes || 'cargo socket' }}
       - name: what the workers said
         if: always()
         run: |

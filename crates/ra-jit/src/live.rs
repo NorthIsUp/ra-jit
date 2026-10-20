@@ -168,5 +168,19 @@ fn write(uuid: &[u8; 16], patch: &Patch) -> anyhow::Result<()> {
     let partial = dir.join(format!("patch.{}", std::process::id()));
     std::fs::write(&partial, patch.encode())?;
     std::fs::rename(&partial, dir.join("patch"))?;
+    wake(&dir);
     Ok(())
 }
+
+/// Tells the program that a patch is there, for it to read it at once: one that does not
+/// listen, as one of an older `ra-jit-live`, finds it when it next looks.
+#[cfg(unix)]
+fn wake(dir: &std::path::Path) {
+    let Ok(socket) = std::os::unix::net::UnixDatagram::unbound() else { return };
+    if socket.set_nonblocking(true).is_ok() {
+        _ = socket.send_to(&[1], dir.join(format::WAKE));
+    }
+}
+
+#[cfg(not(unix))]
+fn wake(_: &std::path::Path) {}
