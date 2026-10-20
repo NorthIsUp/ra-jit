@@ -1406,7 +1406,8 @@ fn linked_from_libraries(db: &RootDatabase, args: &Args) -> anyhow::Result<()> {
     let used: FxHashSet<Crate> =
         built.iter().flat_map(|it| it.dependencies(db)).map(|it| it.krate).collect();
     // A proc macro is a library of the compiler's, not of the program.
-    let is_proc_macro = |krate: &Crate| ide_db::base_db::Crate::from(*krate).data(db).target_kind.is_proc_macro();
+    let is_proc_macro =
+        |krate: &Crate| ide_db::base_db::Crate::from(*krate).data(db).target_kind.is_proc_macro();
     let libraries: Vec<String> = built
         .iter()
         .filter(|it| used.contains(it) && !is_proc_macro(it))
