@@ -760,6 +760,24 @@ def frames_agree(ours, ends, bare, lined):
     return verdict, f"{len(ours)} functions, {without} without an entry, {beyond} that end before theirs, {filled} filled past theirs, {len(bare) - without} of assembly alone"
 
 
+def libdw_shift(binary):
+    """How far from a frame's address perf's libdw unwinder looks up that frame's CFI in `binary`.
+    perf (tools/perf/util/unwind-libdw.c, __report_module, up to 6.17 at least) reports the module at
+    the start of the mapping of the frame's address less that mapping's file offset. That is where the
+    file is loaded only where the executable segment's address and file offset are on the same page,
+    and lld lays the segment out a page above its offset. Then every lookup lands that far from the
+    frame, in whatever code is there, and an unwinding stops where that code's rules differ."""
+    with open(binary, "rb") as f:
+        data = f.read(1 << 16)
+    phoff, = struct.unpack_from("<Q", data, 0x20)
+    phentsize, phnum = struct.unpack_from("<HH", data, 0x36)
+    headers = [struct.unpack_from("<IIQQQQQQ", data, phoff + i * phentsize) for i in range(phnum)]
+    loads = [(flags, offset, vaddr) for kind, flags, offset, vaddr, *_ in headers if kind == 1]
+    page = os.sysconf("SC_PAGE_SIZE")
+    first = min(vaddr for _, _, vaddr in loads) & -page
+    return next(((vaddr & -page) - (offset & -page) - first for flags, offset, vaddr in loads if flags & 1), 0)
+
+
 def profiler(tally, what, binary, cwd, crates):
     """Whether perf, unwinding by `.eh_frame`, names the functions of `crates` and their lines."""
     if WINDOWS:
@@ -780,10 +798,20 @@ def profiler(tally, what, binary, cwd, crates):
     lost = [name for name, line in mine if not re.search(r"\.rs:\d+$|-cgu\.\d+:0$", line)]
     stacks = [stack for stack in script.split("\n\n") if stack.strip()]
     through = sum(bool(re.search(r"4main\b|::main\b", stack)) for stack in stacks)
-    verdict = "NO SAMPLES" if not mine else "NO LINE" if lost else "NOT UNWOUND" if not through else "named"
+    shift = libdw_shift(binary)
+    # Where perf looks a frame's CFI up somewhere else, how far its stacks get says nothing of the CFI:
+    # some reach main where the code it lands in has the same rules, and some stop.
+    verdict = ("NO SAMPLES" if not mine else "NO LINE" if lost else "named" if through
+               else "not unwound by perf" if shift else "NOT UNWOUND")
     tally.say(f"{what}: perf, unwinding by .eh_frame", verdict,
               f"{len(mine)} frames of ra-jit's functions in {len(stacks)} samples, {len(lost)} without a line, {through} samples back to main"
-              + (f": {lost[0][:60]}" if lost else ""))
+              + (f": {lost[0][:60]}" if lost else "")
+              + (f"; perf's libdw unwinder looks CFI up {shift:#x} from each frame in this layout" if shift and not through else ""))
+    if mine and not through and not shift:
+        # Where the stacks with the crate's functions in them end tells what the unwinding stopped at.
+        ours = [stack for stack in stacks if any(f"{len(c)}{c}" in stack or f"{c}::" in stack for c in crates)]
+        for stack in ours[:3]:
+            print("\n".join("    perf: " + it.strip()[:160] for it in stack.strip().splitlines()[-12:]) + "\n    perf: --")
 
 
 def unit_of(binary, address):
