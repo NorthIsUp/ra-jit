@@ -38,7 +38,6 @@ use object::{
     SectionIndex, SymbolIndex, SymbolKind, macho,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
-use sha2::{Digest, Sha256};
 
 use super::{Spliced, Stamp};
 
@@ -271,13 +270,16 @@ impl Signature {
             .collect();
         for index in pages {
             super::read_exact_at(&file, &mut page, (index * page_len) as u64)?;
-            hashes[index * Self::HASH..][..Self::HASH].copy_from_slice(&Sha256::digest(&page));
+            hashes[index * Self::HASH..][..Self::HASH]
+                .copy_from_slice(&super::sha256::digest(&page));
         }
-        // Every page appended, tens of megabytes for a large debug build: the hash without the
-        // processor's SHA instructions (sha2 0.10 has them only with its `asm` feature) is
-        // about 250 MB/s, so the pages are hashed on several threads.
+        // Every page appended, tens of megabytes for a large debug build: without the
+        // processor's SHA-256 instructions the pages are hashed on several threads.
         let pages: Vec<&[u8]> = added.chunks(page_len).collect();
-        let threads = std::thread::available_parallelism().map_or(1, |it| it.get()).min(8);
+        let threads = match super::sha256::fast() {
+            true => 1,
+            false => std::thread::available_parallelism().map_or(1, |it| it.get()).min(8),
+        };
         let part = pages.len().div_ceil(threads).max(1);
         let parts: Vec<Result<Vec<u8>, super::GaveUp>> = std::thread::scope(|scope| {
             let parts: Vec<_> = (pages.chunks(part))
@@ -288,7 +290,7 @@ impl Signature {
                             if index % 256 == 0 {
                                 super::go_on(give_up)?;
                             }
-                            hashes.extend_from_slice(&Sha256::digest(page));
+                            hashes.extend_from_slice(&super::sha256::digest(page));
                         }
                         Ok(hashes)
                     })
@@ -665,7 +667,7 @@ impl Image {
             }
             let hash =
                 new.hashes.get_mut(index * Signature::HASH..).context("a short signature")?;
-            hash[..Signature::HASH].copy_from_slice(&Sha256::digest(&content));
+            hash[..Signature::HASH].copy_from_slice(&super::sha256::digest(&content));
         }
         self.signature = new;
         Ok(())

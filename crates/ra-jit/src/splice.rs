@@ -38,7 +38,7 @@ use std::{
     fs::{File, OpenOptions},
     mem::offset_of,
     path::{Path, PathBuf},
-    sync::atomic::AtomicBool,
+    sync::{Arc, atomic::AtomicBool},
     thread::JoinHandle,
     time::SystemTime,
 };
@@ -54,6 +54,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 mod debug;
 mod macho;
 mod pe;
+mod sha256;
 
 /// The executable of the last full link, which is read on a thread of its own while the
 /// daemon waits for the next edit.
@@ -75,7 +76,8 @@ impl Linked {
 /// An executable as the linker wrote it, and what the last splice changed of it.
 pub(crate) struct Baseline {
     path: PathBuf,
-    image: Executable,
+    /// Shared with the [`Baseline::view`]s an edit is published with while a splice runs.
+    image: Arc<Executable>,
     /// The functions of the patch the executable was linked with. A patch without one of
     /// them means the function is as it first was again, which the executable no longer has.
     baked: Vec<Box<[u8]>>,
@@ -174,13 +176,28 @@ impl Baseline {
         };
         Ok(Baseline {
             path,
-            image,
+            image: Arc::new(image),
             baked,
             undo: Vec::new(),
             originals: FxHashMap::default(),
             left: Left::default(),
             stamp,
         })
+    }
+
+    /// What an edit is published with ([`Baseline::live`]) while a splice of the executable
+    /// runs on the baseline itself: the program that runs was started before the splice, so
+    /// what the splice changes is nothing to it. Not one to splice with.
+    pub(crate) fn view(&self) -> Baseline {
+        Baseline {
+            path: self.path.clone(),
+            image: Arc::clone(&self.image),
+            baked: self.baked.clone(),
+            undo: Vec::new(),
+            originals: self.originals.clone(),
+            left: Left::default(),
+            stamp: self.stamp.clone(),
+        }
     }
 
     pub(crate) fn is_of(&self, binary: &Path) -> bool {
@@ -191,7 +208,7 @@ impl Baseline {
     /// it knows nothing of the code added. A PDB is a file of its own that only the linker
     /// writes.
     pub(crate) fn leaves_debug_info(&self) -> bool {
-        matches!(self.image, Executable::Pe(_))
+        matches!(*self.image, Executable::Pe(_))
     }
 
     /// Brings the executable from what the linker wrote to that with `patch` in place of the
@@ -200,7 +217,7 @@ impl Baseline {
     /// and what is known of it as they were.
     pub(crate) fn splice(&mut self, patch: &[u8], give_up: &AtomicBool) -> anyhow::Result<Spliced> {
         self.read_again_if_signed()?;
-        let (addition, len) = match &self.image {
+        let (addition, len) = match &*self.image {
             Executable::Elf(image) => {
                 let patch = Patch::read(patch, image)?;
                 self.has_baked(patch.replaced.iter().map(|it| it.name))?;
@@ -272,7 +289,7 @@ impl Baseline {
         patch: &[u8],
         base: u64,
     ) -> anyhow::Result<([u8; 16], ra_jit_live::format::Code)> {
-        let Executable::MachO(image) = &self.image else {
+        let Executable::MachO(image) = &*self.image else {
             bail!("edits are applied to a running program on macOS only")
         };
         let uuid = macho::uuid(image).context("the executable has no UUID")?;
@@ -281,7 +298,7 @@ impl Baseline {
 
     /// The `LC_UUID` of the executable, when it is one that has it.
     pub(crate) fn uuid(&self) -> Option<[u8; 16]> {
-        match &self.image {
+        match &*self.image {
             Executable::MachO(image) => macho::uuid(image),
             _ => None,
         }
@@ -289,13 +306,17 @@ impl Baseline {
 
     /// Takes the signature of a Mach-O executable that was signed again since we last wrote
     /// it, as `codesign` does to give it entitlements, for the splices after.
-    fn read_again_if_signed(&mut self) -> anyhow::Result<()> {
-        let Executable::MachO(image) = &mut self.image else { return Ok(()) };
+    /// A view taken before reads the executable as it was signed then.
+    pub(crate) fn read_again_if_signed(&mut self) -> anyhow::Result<()> {
+        let Executable::MachO(_) = &*self.image else { return Ok(()) };
         let file = File::open(&self.path)?;
         let stamp = Stamp::of(&file)?;
         if stamp == self.stamp {
             return Ok(());
         }
+        let Some(Executable::MachO(image)) = Arc::get_mut(&mut self.image) else {
+            bail!("the executable was signed again while an edit was published with it")
+        };
         // SAFETY: as in `read`; whoever signed it is through.
         let bytes = unsafe { memmap2::Mmap::map(&file)? };
         image.signed_again(&bytes, &self.undo)?;
@@ -384,7 +405,7 @@ fn copy_within(file: &File, moved: &debug::Moved) -> std::io::Result<()> {
     Ok(())
 }
 
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq)]
 struct Stamp {
     len: u64,
     modified: SystemTime,
