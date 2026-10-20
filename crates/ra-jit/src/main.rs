@@ -662,9 +662,24 @@ impl Resolver<'_> {
 
 /// The commit of the toolchain installed at `toolchain`, which rustc puts in the names of the
 /// standard library's files: as rustup's manifest has it, or else as the built library does.
+///
+/// Kept while the manifest and the directory are as they were: rustup's manifest is a file of
+/// most of a megabyte, read on every build otherwise, a patch's too, and an update of the
+/// toolchain rewrites it in place.
 fn rustc_commit(toolchain: &str) -> Option<String> {
+    type Seen = (Option<std::time::SystemTime>, Option<std::time::SystemTime>);
+    static KNOWN: Mutex<Option<FxHashMap<String, (Seen, Option<String>)>>> = Mutex::new(None);
     let rustlib = format!("{toolchain}lib/rustlib");
-    commit_in_manifest(&rustlib).or_else(|| commit_in_library(Path::new(&rustlib)))
+    let modified = |path: &str| std::fs::metadata(path).and_then(|it| it.modified()).ok();
+    let seen = (modified(&format!("{rustlib}/multirust-channel-manifest.toml")), modified(&rustlib));
+    if let Some((was, commit)) = lock(&KNOWN).get_or_insert_default().get(toolchain)
+        && *was == seen
+    {
+        return commit.clone();
+    }
+    let commit = commit_in_manifest(&rustlib).or_else(|| commit_in_library(Path::new(&rustlib)));
+    lock(&KNOWN).get_or_insert_default().insert(toolchain.to_owned(), (seen, commit.clone()));
+    commit
 }
 
 fn commit_in_manifest(rustlib: &str) -> Option<String> {
