@@ -937,7 +937,9 @@ def stranger(home, check):
             sudo("userdel", name)
 
 
-WRAPPER = '#!/bin/sh\necho "$1" >> "{log}"\nexec "$@"\n'
+# Each call is logged with the build that made it, so the calls of one build can be told from
+# those of a daemon's or a settle's cargo still running in the background.
+WRAPPER = '#!/bin/sh\nprintf "%s\\t%s\\n" "$1" "${{RA_JIT_HARNESS_BUILD:-}}" >> "{log}"\nexec "$@"\n'
 DOCTEST = '/// ```\n/// assert_eq!(util::doubled(2), 4);\n/// ```\npub fn doubled(n: u32) -> u32 {\n    n * 2\n}\n'
 
 
@@ -1187,8 +1189,13 @@ def plain(work):
     check("after `ra-jit disable` the configuration is the user's again, byte for byte", back == before)
     touch("off")
     n = len(calls("outer"))
-    mine, how, wrong = same("run", "off")
-    check("and plain cargo is cargo alone again, through the user's wrappers", mine.returncode == 0 and not wrong and not re.search(r"^ra-jit:|\[ra-jit\]", mine.stderr, re.M) and not any("ra-jit-rustc" in c for c in calls("outer")[n:]) and len(calls("outer")) > n, f"exit {mine.returncode}, {wrong or 'same as cargo'}, {len(calls('outer')) - n} calls of the wrapper, by ra-jit's {[c[:200] for c in calls('outer')[n:] if 'ra-jit-rustc' in c][:2]}; {mine.stderr.strip()[-300:]}")
+    mine, how, wrong = same("run", "off", more={"RA_JIT_HARNESS_BUILD": "off"})
+    # Only this build's calls: the other build's daemon is still up and its cargo commands
+    # (a settle, a plan, a project load) go through the same wrapper whenever they run.
+    later = calls("outer")[n:]
+    ours = [c for c in later if c.endswith("\toff")]
+    by_ra_jit = [c[:200] for c in ours if "ra-jit-rustc" in c]
+    check("and plain cargo is cargo alone again, through the user's wrappers", mine.returncode == 0 and not wrong and not re.search(r"^ra-jit:|\[ra-jit\]", mine.stderr, re.M) and not by_ra_jit and ours, f"exit {mine.returncode}, {wrong or 'same as cargo'}, {len(ours)} calls of the wrapper by this build ({len(later) - len(ours)} by others in the background), by ra-jit's {by_ra_jit[:2]}; {mine.stderr.strip()[-300:]}")
     subprocess.run([RA_JIT, "stop"], env=env, capture_output=True)
     subprocess.run([os.path.join(other, "ra-jit"), "stop"], env=env, capture_output=True)
     return checks
