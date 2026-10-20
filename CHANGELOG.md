@@ -25,6 +25,26 @@ All notable changes to ra-jit are written here. The format follows
   [docs/benchmarks.md](docs/benchmarks.md) from the result; the `bench-readme` workflow runs
   them on a dedicated Linux x86-64 machine after pushes to main and nightly, and commits the
   numbers to main when they moved beyond noise.
+- `harness/bench.py` measures what [#7](https://github.com/indexable-inc/ra-jit/issues/7)
+  asks of real projects: helix and a bevy example join the seven, every project gets two more
+  edits (a new function, a struct field set wherever the struct is built), the cold build is
+  run `--cold-runs` times against fresh cargo, each with an empty store, and as many times
+  in a second checkout with the store the first filled, the store's size is kept, and `--tests`
+  runs each project's test suite under `cargo ra-jit test` and `cargo test` and fails on any
+  test that ends differently.
+- `bench.py --setups` builds every step again with the fastest ways to build Rust there
+  already are ([#8](https://github.com/indexable-inc/ra-jit/issues/8)): mold, wild,
+  `-Zthreads=8`, rustc_codegen_cranelift on a pinned nightly, all three at once, and
+  `cargo check`, each into its own target directory; `harness/hotpatch.py` times an edit of
+  a running program under Dioxus's subsecond (`dx serve --hotpatch`) against `cargo ra-jit
+  build` and `cargo build` with a restart. The bench shell has mold, wild, `dx` and the
+  nightly.
+- Benchmark history and regression alerts
+  ([#10](https://github.com/indexable-inc/ra-jit/issues/10)): `harness/benchhistory.py`
+  appends each run's medians to `docs/benchmarks/history/*.jsonl` and checks the last against
+  the runs before it on the same machine; the `bench-readme` workflow commits the history on
+  every run, starts the site's deploy, and on a regression past the noise band opens (or
+  comments on) an issue labelled `bench-regression` and fails.
 - LLVM is given what rustc gives it: reference parameters marked `noalias`, `readonly`,
   `dereferenceable`, `align`, `nonnull` and `noundef` as rustc marks them, addresses as
   pointers rather than integers, branches threaded before `-O3`, and, at a level above 1, the

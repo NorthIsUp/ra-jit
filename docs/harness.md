@@ -142,7 +142,13 @@ against the same functions in many small files ([reports/INCREMENTAL.md](reports
 `cargo ra-jit build` against `cargo build` on ripgrep, just and nushell (cold, no-op and
 three kinds of edit); the numbers are in [results.md](results.md#11-real-projects). Their docstrings say how to run them.
 `bench.py` on real projects, with `benchreport.py`, is also what writes the README's build table:
-[benchmarks.md](benchmarks.md).
+[benchmarks.md](benchmarks.md). Besides the edits it times repeated cold builds against fresh
+cargo with an empty and with a warm store (`--cold-runs`), the same steps under the fastest
+cargo setups (`--setups`: mold, wild, `-Zthreads=8`, cg_clif and `cargo check`) and the test
+suites under both (`--tests`). `hotpatch.py` times an edit of a running program under Dioxus's
+subsecond against `cargo ra-jit build` and `cargo build` with a restart; its program is
+`harness/hotpatch`. `benchhistory.py` appends a run to `docs/benchmarks/history/` (what the
+site's /bench page charts) and, with `check`, fails when a median moved past its noise band.
 
 ## The fuzzer
 

@@ -14,11 +14,15 @@ state.
 | Phase | What happens | ra-jit | cargo |
 |---|---|---|---|
 | Cold | build from an empty target directory and an empty ra-jit store; crates are already downloaded | the build returns (cargo builds the first time) and then the daemon loads the workspace in the background; both are reported | `cargo build` |
+| Cold, warm store | after everything else, `--cold-runs` times: a second copy of the project with an empty target directory and a daemon of its own, but the store the measured copy filled with its cold build and edits (as a second checkout of the same project, or a teammate's store, would have) | build and daemon ready, as cold | |
 | Nothing changed | build again with no edit | | |
 | Edit a function | one statement is added to a function in the main crate | | incremental |
 | Edit a widely used function | one statement in a function many places call: in a library crate of the workspace when there is one (ripgrep's `grep-matcher`, axum's `axum-core`, nushell's `nu-path`, bat's library), otherwise in a module the rest of the crate uses (fd, hyperfine, just) | | incremental |
 | Change a signature | a method gets another parameter and every caller passes it | | incremental |
 | Edit a generic function | a statement in a generic function used at many types (ripgrep and nushell) | | incremental |
+| Add a function | a new function in the main crate, called from the function of "Edit a function" | | incremental |
+| Add a struct field | a struct gets one more field (`_bench_edit: ()`) and every place that builds it sets it; in a library crate where there is one (nushell's `nu-protocol::Alias`, built in `nu-parser`) | | incremental |
+| Tests | (`--tests`) the project's test suite, or the crates of it named in `PROJECTS`, after the edits: `cargo ra-jit test` and `cargo test`, run twice each, the second timed; every test has to end the same way under both | | |
 | Runtime | (ripgrep) the program ra-jit linked, cargo's debug build and cargo's release build run the same search over the toolchain's own library source | | |
 
 The edits do not change what the program does. After the first edit of each kind the program
@@ -31,7 +35,8 @@ edits; this page also shows the fastest and slowest run of each side, and the ra
 every sample, the time of taking each edit back, who built each step (the daemon, or cargo and
 why), whether the daemon spliced the change into the program or linked it again, how many
 functions it compiled, the daemon's peak memory and the daemon's own timeline of each build.
-Cold is one run of each.
+Cold is `--cold-runs` runs of each (5 in CI), each with a new target directory, home and store;
+the store size after it is kept too.
 
 An edit the daemon hands to cargo (a fallback: ra-jit always builds what cargo would) is measured
 once, marked `(c)` in the README, and shows about cargo's time.
@@ -50,6 +55,8 @@ or the run stops.
 | just | 1.43.0 | `b7e7c46495b3` | `just --list --unsorted` |
 | axum | axum-v0.8.6 | `c1bb9c3e9062` | built (`-p example-hello-world`), not run: it is a server |
 | nushell | 0.108.0 | `da141be11b3a` | `nu -n -c "[3 1 2] \| sort \| str join ','"` |
+| helix | 25.07.1 | `a05c151bb6e8` | `hx --version` (grammars are not built: `HELIX_DISABLE_AUTO_GRAMMAR_BUILD=1`) |
+| bevy | v0.20.0 | `b3bdd75becaf` | built (`--example breakout`), not run: it opens a window |
 
 `cargo` 0.92.0 is in `PROJECTS` too but not in the CI run (it doubles the run's length).
 
@@ -62,7 +69,8 @@ or the run stops.
 - Same linker: the toolchain's default (`cc`, which runs GNU ld on the benchmark machine). No mold,
   no lld, no sccache or other `RUSTC_WRAPPER` on either side (bench.py removes it).
 - Crates are downloaded before the cold build on both sides; downloading is not timed.
-- ra-jit's store starts empty for each project and backend; no warm store from another checkout.
+- ra-jit's store starts empty for each project and backend and for every cold run. "Cold, warm
+  store" is the one phase that starts with a store, and it is reported apart.
 - The machine runs nothing else: it is a dedicated instance used only by this workflow.
 
 ## Tiers
@@ -71,6 +79,38 @@ Each project is measured with each code producer ra-jit has: Cranelift (the defa
 README) and LLVM (`RA_JIT_BACKEND=llvm RA_JIT_OPT=2 RA_JIT_EMIT=fast`). The binary is built once
 with `--features llvm` and the backend is chosen by environment, so a new tier is one more entry
 in `BACKENDS` in `harness/bench.py`; the report makes a table for every backend in the result.
+
+## The fastest setups
+
+With `--setups` (all of them in the nightly run, `--setups-on ripgrep,nushell`), every step plain
+cargo builds is built again by each of the fastest ways to build Rust there already are, each
+into a target directory of its own, right after plain cargo, on the same source:
+
+| Setup | What it is |
+|---|---|
+| mold | cargo with mold 3.0 as the linker (`-C link-arg=-fuse-ld=mold`) |
+| wild | cargo with wild 0.10 as the linker (`-C link-arg=-fuse-ld=wild`) |
+| `-Zthreads=8` | rustc's parallel front end, on the same 1.99.0 (`RUSTC_BOOTSTRAP=1`) |
+| nightly | plain cargo on the nightly below, to tell the nightly's own difference from Cranelift's |
+| cg_clif | rustc_codegen_cranelift (`-Zcodegen-backend=cranelift`), on the nightly: it ships with nightlies only |
+| cg_clif + wild + `-Zthreads=8` | all three at once, the fastest cargo build there is |
+| `cargo check` | builds no code, so there is nothing to run after it: the floor of what rustc does |
+
+The flags go in through `--config target.'cfg(all())'.rustflags`, which cargo adds to each
+project's own (helix sets `--cfg tokio_unstable` there; `RUSTFLAGS` would replace it).
+`-Zshare-generics` is not a column: it is already on in every debug build. The nightly is
+`rust-bin.nightly."2026-10-09"` with `rustc-codegen-cranelift-preview`, from the flake
+(`RA_JIT_NIGHTLY`). A setup that cannot build a project is reported as failed and not timed
+after that.
+
+Hot-patching a running program is compared on its own (`harness/hotpatch.py`): a small program
+that calls one function every millisecond through `subsecond::call`, edited 30 times by each of
+Dioxus's `dx serve --hotpatch` (subsecond, which patches the running program on Linux),
+`cargo ra-jit build` and incremental `cargo build`, the last two followed by starting the program
+again (ra-jit patches a running program on macOS only). Each edit is timed from writing the file
+to the program running the new code. It is a small program on purpose: subsecond needs the
+program to call through `subsecond::call` and to keep running, which a command-line tool like
+ripgrep does not.
 
 ## The machine
 
@@ -115,6 +155,23 @@ The workflow then commits those three files to main as `github-actions[bot]` wit
 in the message (so the commit starts no other workflow), rebasing onto main if main moved during
 the run. It uses the job's `GITHUB_TOKEN` with `contents: write`; main has no branch protection.
 
+## History and regressions
+
+Every run of the workflow appends one line to `docs/benchmarks/history/linux-x86_64.jsonl`
+(`harness/benchhistory.py build`), whether or not the README changed: the medians, spreads, who
+built each step, memory and store size of each project and phase, the machine and the run's
+link. The site's [/bench](https://ra-jit.ix.dev/bench) page charts that file, and the workflow
+starts the site's deploy after it commits.
+
+`benchhistory.py check` then compares the new line with the median of the last seven from the
+same machine with the same cores. A number regressed when it is above that median by more than
+its noise band and by more than a floor: the band is 10% or three times the spread the history
+shows (1.4826 times the median absolute deviation), whichever is larger, and the floors are
+50 ms for times, 100 MB for memory and 50 MB for the store. A step the daemon built that cargo
+builds now is a regression whatever its time. On a regression the workflow opens an issue
+labelled `bench-regression` with a table of what moved (or comments on the one already open),
+writes the table to the run's summary and fails.
+
 ## Run it yourself
 
 On Linux x86-64 with Nix (or with Rust 1.99.0, rust-src, LLVM 20 and Python 3 installed):
@@ -126,7 +183,10 @@ python3 harness/bench.py ripgrep fd --runs 5 --out /tmp/bench.json   # any of th
 python3 harness/benchreport.py /tmp/bench.json --check               # what would change
 ```
 
-`--backend cranelift` measures one tier. Projects are cloned once into `RA_JIT_PROJECTS`
+`--backend cranelift` measures one tier. `--cold-runs 5` repeats the cold builds, `--setups
+all --setups-on ripgrep,nushell` adds the setups above, `--tests` the test suites, and
+`--reference DIR` puts cargo's target directories outside the work directory.
+`python3 harness/hotpatch.py --edits 30` times hot-patching (needs `dx`: the bench shell has it). Projects are cloned once into `RA_JIT_PROJECTS`
 (default `~/ra-jit-projects`). The whole CI set (seven projects, both tiers, five runs) took 38
 minutes on 16 Zen 5 cores, plus the build of ra-jit. It needs about 20 GB of memory (nushell)
 and 30 GB of disk.
@@ -137,7 +197,10 @@ and 30 GB of disk.
 - Live edits (the patch applied to a running program) are not measured here: they work on macOS
   on Apple silicon only. `harness/live_latency.py` measures them there.
 - One machine, one OS. The numbers on a laptop will differ; the ratios are what carries over.
-- Cold is one run, so it is the least precise number here.
+- Cold is the least precise number here: five runs at most, each minutes long on the large
+  projects.
+- The setups compared are measured on ripgrep and nushell only (`--setups-on`): seven more
+  builds of every step on every project would make the nightly run too long for one machine.
 - An edit is a small, fixed change. A larger change (many functions, a new type) costs more;
   `harness/agents.py` makes random edits of the kinds coding agents make.
 - axum's output is not checked (it is a server); its build is.
