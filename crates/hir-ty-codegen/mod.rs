@@ -12106,9 +12106,10 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                 let value = self.builder.inst_results(call)[0];
                 self.builder.ins().store(MEM, value, dst, 0);
             }
-            ("x86.sse2.pause", []) => {
+            ("x86.sse2.pause", []) | ("aarch64.isb", [_]) => {
+                let text = if name == "aarch64.isb" { asm::isb() } else { asm::pause() };
                 let sig = self.cg.make_signature();
-                let callee = self.cg.assembly(asm::pause(), &sig);
+                let callee = self.cg.assembly(text, &sig);
                 let callee = self.cg.declare_func_in_func(callee, self.builder.func);
                 self.builder.ins().call(callee, &[]);
             }
