@@ -271,7 +271,49 @@ fn source_file() -> Option<PathBuf> {
     .map(|p| std::path::absolute(&p).unwrap_or(p))
 }
 
+/// `RA_JIT_LIFE_HEADLESS=1`: the same program without a window, for harness/live_latency.py to
+/// time edits of the demo by (its executable is the window's, eframe and all). Each patch is
+/// applied as it lands, as in the window; what `step_ms()` returns is printed whenever it
+/// changes, with the time it was seen.
+fn headless(mut life: Life) -> eframe::Result {
+    use std::io::Write as _;
+    let at_us = || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |it| it.as_micros())
+    };
+    let live = match Live::start() {
+        Ok(live) => live,
+        Err(why) => {
+            println!("no live edits: {why}");
+            std::process::exit(2);
+        }
+    };
+    live.apply_as_they_come(move |outcome| {
+        println!("outcome: {outcome} at_us={}", at_us());
+        let _ = std::io::stdout().flush();
+    });
+    println!("ready");
+    let mut seen = None;
+    loop {
+        let now = crate::step_ms();
+        if seen != Some(now) {
+            println!("answer {now} at_us={}", at_us());
+            let _ = std::io::stdout().flush();
+            seen = Some(now);
+        }
+        if Instant::now() >= life.next_step {
+            life.step();
+            life.next_step = Instant::now() + Duration::from_millis(now.min(1000));
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 pub fn run(life: Life) -> eframe::Result {
+    if std::env::var_os("RA_JIT_LIFE_HEADLESS").is_some() {
+        return headless(life);
+    }
     let (live, live_note) = match Live::start() {
         Ok(live) => (Some(live), "live edits on".to_owned()),
         Err(why) => (None, format!("live edits off: {why}")),

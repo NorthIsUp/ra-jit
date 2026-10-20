@@ -1767,6 +1767,13 @@ pub(super) fn splice(
     stamp: &mut Stamp,
     patch: &[u8],
 ) -> anyhow::Result<Spliced> {
+    let start = std::time::Instant::now();
+    let mut steps = Vec::new();
+    let mut step = |name: &'static str, from: &mut std::time::Instant| {
+        steps.push((name, from.elapsed()));
+        *from = std::time::Instant::now();
+    };
+    let mut from = start;
     let patch = Patch::read(patch, image)?;
     let defined: FxHashSet<&[u8]> = patch.replaced.iter().map(|it| it.name).collect();
     ensure!(
@@ -1774,12 +1781,14 @@ pub(super) fn splice(
         "a function the executable was linked with a patch of is as it first was"
     );
     let addition = patch.place(image)?;
+    step("place", &mut from);
 
     ensure!(Stamp::of(&File::open(path)?)? == *stamp, "the executable was written by someone else");
     let mut copy = path.as_os_str().to_owned();
     copy.push(".spliced");
     _ = std::fs::remove_file(&copy);
     std::fs::copy(path, &copy)?;
+    step("copy", &mut from);
     let written = (|| -> anyhow::Result<Stamp> {
         let file = OpenOptions::new().read(true).write(true).open(&copy)?;
         for (offset, bytes) in undo.drain(..).rev() {
@@ -1803,12 +1812,21 @@ pub(super) fn splice(
             undo.push((*offset, old));
             super::write_all_at(&file, bytes, *offset)?;
         }
+        step("overwrite", &mut from);
         let signature = image.signature.of(&file, addition.offset, &dirty, &addition.appended)?;
+        step("sign", &mut from);
         super::write_all_at(&file, &addition.appended, addition.offset)?;
         super::write_all_at(&file, &signature, addition.offset + addition.appended.len() as u64)?;
+        step("append", &mut from);
         std::fs::rename(&copy, path)?;
+        step("rename", &mut from);
         Stamp::of(&file)
     })();
+    if std::env::var_os("RA_JIT_STATS").is_some() {
+        let shown: Vec<String> =
+            steps.iter().map(|(name, took)| format!("{name}={}", took.as_micros())).collect();
+        eprintln!("splice-us: {} bytes={}", shown.join(" "), addition.appended.len());
+    }
     if written.is_err() {
         _ = std::fs::remove_file(&copy);
     }
