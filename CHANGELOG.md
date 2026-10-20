@@ -12,6 +12,14 @@ All notable changes to ra-jit are written here. The format follows
   plain `git clone` builds, and the flake builds from its own tree with no second pin of the
   forks.
 
+### Fixed
+
+- The code of a function grows in a straight line with the arms of a match that leave
+  through `?`, as `#[derive(Serialize, Deserialize)]` writes for an enum: it grew with
+  their square, 329 MB for one function of 285 arms, which an AArch64 branch cannot reach
+  across ([#5](https://github.com/indexable-inc/ra-jit/issues/5)). `harness/growth.py`
+  checks it.
+
 ## [0.1.0] - 2026-10-20
 
 The first release.

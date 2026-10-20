@@ -36,6 +36,7 @@ done until all of it exits 0 under both backends.
     python3 stress.py
     python3 breakers.py
     python3 unwinds.py
+    python3 growth.py
     python3 splices.py
     python3 asmedits.py
     python3 includes.py
@@ -88,6 +89,7 @@ with reasons. The daemon's log says `backend: llvm -O2 fast emit` when LLVM is i
 | `harness/corpus/` | The workspace `difftest.py corpus` runs: a library with one module per area of the code generator and a runner that calls every function and prints the result |
 | `breakers.py` | Every reduction under `harness/breakers/`, each run on its own so a crash in one does not hide the others. These are minimal cases of bugs found in real crates, rustc's tests and the fuzzer |
 | `unwinds.py` | Edits to functions a panic unwinds through |
+| `growth.py` | That the code of one function grows in a straight line with the arms of its match: the `serialize` `#[derive(Serialize)]` gives an internally tagged enum, a `?` in every arm, at 160 and 320 arms (issue #5) |
 | `asmedits.py` | Edits to `asm!` blocks and the code around them |
 | `fuzz/fuzz.py` | Generated programs, see below |
 | `uitest.py <rust checkout>` | rustc's own `tests/ui` run-pass tests. Every file is either run or left out with a counted reason |
