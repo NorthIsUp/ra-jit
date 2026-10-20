@@ -51,6 +51,16 @@ pub(crate) fn enabled() -> bool {
     cfg!(feature = "llvm") && std::env::var("RA_JIT_TIER").as_deref() != Ok("off")
 }
 
+/// The highest level a function is compiled at: 3, or 2 with `RA_JIT_TIER=2`, where level 2
+/// counts nothing, as there is no level 3 to count for.
+pub(crate) fn highest() -> Level {
+    static HIGHEST: LazyLock<Level> = LazyLock::new(|| match std::env::var("RA_JIT_TIER") {
+        Ok(level) if level == "2" => Level::Llvm,
+        _ => Level::Pgo,
+    });
+    *HIGHEST
+}
+
 /// What the watcher asks the worker for one program.
 pub(crate) struct Ask {
     /// The executable the program runs, as the worker splices it.
@@ -148,6 +158,10 @@ impl Symbols {
             .filter(|it| it.kind() == object::SymbolKind::Text && it.is_definition())
             .filter(|it| (text.0..text.1).contains(&it.address()))
             .filter_map(|it| Some((it.address(), it.name().ok()?.to_owned())))
+            // The assembler's labels, which name no function.
+            .filter(|(_, name)| {
+                !(name.is_empty() || name.starts_with("ltmp") || name.starts_with("l_"))
+            })
             .collect();
         starts.sort_unstable();
         starts.dedup_by_key(|it| it.0);
@@ -247,9 +261,14 @@ fn uuid_of(binary: &Path) -> Option<[u8; 16]> {
 fn round() -> Vec<Ask> {
     let mut state = lock(&STATE);
     let mut asks = Vec::new();
-    let owned = owned(&mut state);
-    let alive: FxHashSet<[u8; 16]> = owned.iter().map(|it| it.0).collect();
-    state.programs.retain(|uuid, _| alive.contains(uuid));
+    let mut owned = owned(&mut state);
+    // A splice writes the executable again, and a look while it does reads no UUID: what is
+    // known of a program stays for as long as it runs.
+    for (uuid, program) in &state.programs {
+        if !owned.iter().any(|it| it.0 == *uuid) {
+            owned.push((*uuid, program.binary.clone()));
+        }
+    }
     for (uuid, binary) in owned {
         let Some(process) = crate::live::running(&uuid) else {
             state.programs.remove(&uuid);
@@ -261,6 +280,9 @@ fn round() -> Vec<Ask> {
             *program = Watched::new(program.binary.clone(), program.dir.clone());
             program.pid = process.pid;
             program.started = process.started;
+        }
+        if program.symbols.starts.is_empty() {
+            program.symbols = Symbols::read(&program.binary);
         }
         program.ask_to_sample();
         program.read();
@@ -403,6 +425,12 @@ impl Watched {
             }
             let Some(symbol) = self.symbols.name(start).map(str::to_owned) else { continue };
             let function = self.functions.entry(start).or_default();
+            // What hands out the counters is called by the code that counts, and is
+            // ra-jit-live's.
+            if symbol.ends_with(hir_ty::mir::codegen::tier::COUNTERS) {
+                function.theirs = true;
+                function.stuck = Some("ra-jit-live's, which counts for level 2".to_owned());
+            }
             if function.stuck.is_some() || function.theirs || function.compiling.is_some() {
                 continue;
             }
@@ -419,7 +447,7 @@ impl Watched {
         // Code that counts goes to level 3 once it has counted for long enough, hot or not.
         let counted = &self.counted;
         for (&start, function) in &mut self.functions {
-            if wants.len() == AT_ONCE {
+            if wants.len() == AT_ONCE || highest() < Level::Pgo {
                 break;
             }
             let (Some(Level::Llvm), None, Some((first, _)), Some(since)) =
@@ -612,6 +640,12 @@ pub(crate) fn declined(binary: &Path, why: &str) {
 pub(crate) fn placed(uuid: [u8; 16], pid: u32, mut moved: Vec<(u64, u64)>, end: u64) {
     let mut state = lock(&STATE);
     let Some(program) = state.programs.get_mut(&uuid).filter(|it| it.pid == pid) else { return };
+    if std::env::var_os("RA_JIT_DUMP_TIER").is_some() {
+        for (new, old) in &moved {
+            let name = program.symbols.name(*old).unwrap_or("?");
+            eprintln!("tier: placed {new:#x} for {old:#x} {name}");
+        }
+    }
     program.placed.append(&mut moved);
     program.placed.sort_unstable();
     program.placed_end = program.placed_end.max(end);
