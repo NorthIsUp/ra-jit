@@ -51,7 +51,7 @@ place.
 
 A consequence, not new: packs are only useful to a machine with a byte-identical `ra-jit`
 and the same toolchain, which is also true of `ra-jit cache push|pull`. Records of builds
-that no longer exist stay until they are evicted as the least recently used.
+that no longer exist stay until their packs reach the end of the queue and are evicted.
 
 ## 2. Crash safety
 
@@ -105,10 +105,13 @@ size at which an open pack is sealed at the end of a build; it exists for the ha
 A collection runs when a daemon opens the store and after it seals a pack, and on
 `ra-jit cache gc [--max SIZE]`. It seals open packs left by daemons that are gone, removes
 old temporaries, merges sealed packs under 4M into one when there are more than 16 of
-them (the new pack is in place before the old ones go), and then unlinks the least
-recently used packs until the rest fit. "Used" is the modification time of the pack,
-which a daemon sets at the end of a build in which it read a value from that pack. The
-unit of eviction is the pack, not the record.
+them (the new pack is in place before the old ones go), and then unlinks the packs sealed
+the longest ago until the rest fit. The seal time is the modification time of the pack,
+which is never set again; a merged pack takes the newest of its inputs'. The unit of
+eviction is the pack, not the record, but a record read from a pack in the oldest quarter
+of the limit is appended to the reader's own `.refreshing` pack (sealed as `.refresh`,
+never pushed to a remote), and the newest copy of a key is the one read: what is used
+moves to the front of the queue before its pack goes (Buildbarn's copy on read).
 
 Eviction is safe for readers because a daemon keeps the packs it has indexed open: an
 unlinked pack stays readable to it until it exits. A daemon that starts later does not
@@ -201,7 +204,7 @@ Two more Cranelift runs passed: 310 collections, 75 evictions, 8306 verification
 collections, 66 evictions, 8074 verifications.
 
 Unit tests: 19 in `store.rs` (format, identity, a bit flipped at six places in a
-pack, a pack cut at five lengths, damage after indexing, LRU order, the limit, merging,
+pack, a pack cut at five lengths, damage after indexing, eviction order, the limit, merging,
 shared directories, whole writes, ENOSPC on `/dev/full`).
 `cargo test --release -p hir-ty -p hir-def -p parser -p syntax -p ra-jit`: 928 passed,
 0 failed, 1 ignored. `cargo fmt --all -- --check`: clean. Clippy on `hir-ty` and
@@ -261,10 +264,11 @@ harness including the four for the store, under both backends.
 - No power-loss testing. SIGKILL does not lose page cache, so the syncs before renames
   are by construction, not by measurement.
 - Advisory locks over NFS, as said above.
-- Eviction is by pack. One recently used record keeps its whole pack (up to 64M); a
-  limit smaller than a few packs evicts nearly everything.
+- Eviction is by pack, oldest seal first. A record that is read while its pack is in the
+  danger zone is copied forward; one that is not read then goes with its pack. A limit
+  smaller than a few packs (up to 64M each) evicts nearly everything.
 - Records of builds of ra-jit that no longer exist cannot be told from live ones and
-  leave only by LRU.
+  leave only when their packs reach the end of the queue.
 - A newer-format store is refused, not shared: an old and a new ra-jit pointed at one
   directory means the old one runs without a store.
 - The S3 remote path was not exercised (no bucket); only the directory remote was.

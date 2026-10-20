@@ -18,12 +18,26 @@
 //! - `<pid>-<nanos>.open` is the pack one daemon appends to, which it holds locked. An open
 //!   pack nobody holds was left by a daemon that ended, and whoever finds it seals the
 //!   records of it that are whole.
+//! - `<sha256>.refresh` and `<pid>-<nanos>.refreshing` are the same, for records copied
+//!   forward out of old packs (see below). They are never sent to a remote: what is in them
+//!   was in a `.pack` first, and that is what a remote has.
 //! - `*.tmp` is a file on its way to another name, locked while it is written.
 //! - `lock` is held by whoever empties the directory or collects garbage in it.
 //!
 //! A record is the key, the length of the value, a checksum of all three and the value. The
 //! key on disk is not the caller's: it is hashed together with [`Identity`], so that a value
 //! is only ever found by the build of ra-jit that wrote it, for the toolchain it wrote it for.
+//!
+//! # What is kept
+//!
+//! The packs are a queue by the time they were sealed, which is their time of last change
+//! on disk and is never set again (a merged pack takes the newest of its inputs'). When they
+//! take more than the limit, the oldest pack goes, whole. A value read from one of the
+//! packs that are in the oldest [`DANGER`]th of the limit is copied into the reader's
+//! `.refreshing` pack, so that what is still used moves to the front of the queue before
+//! its pack goes, as in Buildbarn's local blob store. The pack of copies is sealed at the
+//! end of every build that made any, before the oldest packs are collected. When a key is
+//! in more than one pack, the newest one is read.
 //!
 //! # Why daemons that share a directory do not corrupt it
 //!
@@ -32,9 +46,16 @@
 //! holds its lock; and a file is taken out of the directory by unlinking it, which leaves it
 //! whole for those that have it open. The `lock` file only keeps two collections, or a
 //! collection and a change of format, from running at once.
+//!
+//! A copy forward is a record appended to a daemon's own `.refreshing` pack, like any other:
+//! a daemon that ends before it is sealed leaves it to be sealed by the next, and one that
+//! ends in the middle of a record loses that record and no more. Until the copy is sealed
+//! the old pack still has the value. Two daemons that copy the same record make two copies,
+//! which only cost the bytes.
 
 use std::{
     borrow::Cow,
+    collections::hash_map::Entry,
     fs::{File, OpenOptions},
     io::{self, Write},
     ops::Range,
@@ -71,6 +92,9 @@ const DEFAULT_LIMIT: u64 = 8 << 30;
 /// More sealed packs than this that are smaller than [`SEAL_AT`] are made one: every daemon
 /// that ends leaves one behind.
 const SMALL_PACKS: usize = 16;
+/// A value read from a pack among the oldest `1 / DANGER` of the limit's bytes is copied to
+/// a new pack, so that it outlives its pack.
+const DANGER: u64 = 4;
 /// A temporary file nobody holds is only removed when it is older than this: its writer
 /// creates it before it locks it.
 const TEMPORARY_FOR: Duration = Duration::from_secs(60);
@@ -210,10 +234,58 @@ pub fn pack_format(start: &[u8]) -> Option<u32> {
     (name == &MAGIC[..MAGIC.len() - 1]).then_some(u32::from(*format))
 }
 
-/// Whether `name` is what a sealed pack is called, and so safe to use as a file name.
+/// Whether `name` is what a sealed pack of what was built is called, and so safe to use as a
+/// file name. Packs of copies forward are not: they are not sent anywhere.
 pub fn is_pack(name: &str) -> bool {
-    name.strip_suffix(".pack")
-        .is_some_and(|hash| hash.len() == 64 && hash.bytes().all(|it| it.is_ascii_hexdigit()))
+    Made::of_sealed(name) == Some(Made::Built)
+}
+
+/// What the records of a pack are: built here, or copied forward from an older pack.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Made {
+    Built,
+    Copied,
+}
+
+impl Made {
+    /// What the name of a sealed pack of these ends in.
+    fn sealed(self) -> &'static str {
+        match self {
+            Made::Built => ".pack",
+            Made::Copied => ".refresh",
+        }
+    }
+
+    /// What the name of an open pack of these ends in.
+    fn open(self) -> &'static str {
+        match self {
+            Made::Built => ".open",
+            Made::Copied => ".refreshing",
+        }
+    }
+
+    /// Of a sealed pack: `<sha256><end>`.
+    fn of_sealed(name: &str) -> Option<Made> {
+        [Made::Built, Made::Copied].into_iter().find(|made| {
+            name.strip_suffix(made.sealed()).is_some_and(|hash| {
+                hash.len() == 64 && hash.bytes().all(|it| it.is_ascii_hexdigit())
+            })
+        })
+    }
+
+    /// Of an open pack: `<pid>-<nanos><end>`.
+    fn of_open(name: &str) -> Option<Made> {
+        let numbers = |it: &str| {
+            it.split_once('-').is_some_and(|(pid, at)| {
+                !pid.is_empty()
+                    && !at.is_empty()
+                    && pid.bytes().chain(at.bytes()).all(|it| it.is_ascii_digit())
+            })
+        };
+        [Made::Built, Made::Copied]
+            .into_iter()
+            .find(|made| name.strip_suffix(made.open()).is_some_and(numbers))
+    }
 }
 
 /// What a file in the directory of a store is, by its name. A file with any other name is
@@ -229,18 +301,11 @@ enum Kind {
 
 impl Kind {
     fn of(name: &str) -> Option<Kind> {
-        let numbers = |it: &str| {
-            it.split_once('-').is_some_and(|(pid, at)| {
-                !pid.is_empty()
-                    && !at.is_empty()
-                    && pid.bytes().chain(at.bytes()).all(|it| it.is_ascii_digit())
-            })
-        };
-        if is_pack(name) {
+        if Made::of_sealed(name).is_some() {
             Some(Kind::Pack)
         } else if name == VERSION_FILE {
             Some(Kind::Version)
-        } else if name.strip_suffix(".open").is_some_and(numbers) {
+        } else if Made::of_open(name).is_some() {
             Some(Kind::Open)
         } else {
             // The first format called these `.partial`.
@@ -251,19 +316,25 @@ impl Kind {
             // A pack on its way from a remote, as it is or compressed, is taken up by the
             // next process to fetch it; one compressed to be sent is made again.
             let fetched = matches!(writer, "fetch" | "zst" | "send") && is_pack(to);
-            let of_the_store = numbered && (is_pack(to) || to == VERSION_FILE);
+            let of_the_store =
+                numbered && (Made::of_sealed(to).is_some() || to == VERSION_FILE);
             (of_the_store || fetched).then_some(Kind::Temporary)
         }
     }
 }
 
+/// The name of a sealed pack of what was built, with this hash.
 fn named(hash: &[u8]) -> String {
+    named_as(hash, Made::Built)
+}
+
+fn named_as(hash: &[u8], made: Made) -> String {
     use std::fmt::Write;
-    let mut name = hash.iter().fold(String::with_capacity(hash.len() * 2 + 5), |mut out, byte| {
+    let mut name = hash.iter().fold(String::with_capacity(hash.len() * 2 + 8), |mut out, byte| {
         _ = write!(out, "{byte:02x}");
         out
     });
-    name.push_str(".pack");
+    name.push_str(made.sealed());
     name
 }
 
@@ -352,28 +423,6 @@ fn nanos() -> u128 {
     SystemTime::UNIX_EPOCH.elapsed().map_or(0, |it| it.as_nanos())
 }
 
-/// Opens a sealed pack to read it and to say when it was last used. It can still be renamed
-/// and removed by others while it is open, on Windows too: std shares a file for all three.
-fn open_pack(path: &Path) -> io::Result<File> {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        const GENERIC_READ: u32 = 0x8000_0000;
-        const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
-        // The right to read does not bring the right to set a time there, and without it
-        // a pack that is read from looks unused to a collection. Another user's pack may
-        // not grant it: that one stays as old as it was.
-        OpenOptions::new()
-            .access_mode(GENERIC_READ | FILE_WRITE_ATTRIBUTES)
-            .open(path)
-            .or_else(|_| File::open(path))
-    }
-    #[cfg(not(windows))]
-    {
-        File::open(path)
-    }
-}
-
 fn read_at(file: &File, buffer: &mut [u8], at: u64) -> io::Result<()> {
     #[cfg(unix)]
     {
@@ -418,8 +467,11 @@ pub struct Stats {
     pub open_bytes: u64,
     pub temporary: usize,
     pub temporary_bytes: u64,
-    /// When the pack that has gone unused the longest was last used, and the one used last.
-    pub used: Option<(SystemTime, SystemTime)>,
+    /// When the oldest pack and the newest were sealed: the oldest is the next to go.
+    pub sealed: Option<(SystemTime, SystemTime)>,
+    /// Of the packs, those of copies forward, which are not sent to a remote.
+    pub copied_packs: usize,
+    pub copied_bytes: u64,
 }
 
 /// What [`StoreDir::collect`] did.
@@ -586,9 +638,14 @@ impl StoreDir {
         Ok(names)
     }
 
-    /// The names of the sealed packs.
+    /// The names of the sealed packs of what was built: those a remote is sent.
     pub fn packs(&self) -> io::Result<Vec<String>> {
         Ok(self.names()?.into_iter().filter(|it| is_pack(it)).collect())
+    }
+
+    /// The names of all the sealed packs, those of copies forward too.
+    fn all_packs(&self) -> io::Result<Vec<String>> {
+        Ok(self.names()?.into_iter().filter(|it| Made::of_sealed(it).is_some()).collect())
     }
 
     /// The keys, as they are on disk, that the sealed packs say they hold. A collection
@@ -599,7 +656,7 @@ impl StoreDir {
     /// damaged pack may be said to hold a key that a build will not get from it.
     pub fn keys(&self) -> io::Result<FxHashSet<[u8; KEY]>> {
         let mut keys = FxHashSet::default();
-        for name in self.packs()? {
+        for name in self.all_packs()? {
             // Evicted since it was listed.
             let Ok(file) = File::open(self.dir.join(name)) else { continue };
             // SAFETY: a sealed pack is never written again; one that is removed stays
@@ -646,7 +703,9 @@ impl StoreDir {
             file.set_len(whole as u64)?;
         }
         file.sync_all()?;
-        std::fs::rename(path, self.dir.join(named(&Sha256::digest(&pack[..whole]))))
+        let name = path.file_name().and_then(|it| it.to_str()).unwrap_or_default();
+        let made = Made::of_open(name).unwrap_or(Made::Built);
+        std::fs::rename(path, self.dir.join(named_as(&Sha256::digest(&pack[..whole]), made)))
     }
 
     /// Counts what is in the directory without reading any of it.
@@ -658,8 +717,12 @@ impl StoreDir {
             let (count, bytes) = match Kind::of(&name) {
                 Some(Kind::Pack) => {
                     if let Ok(at) = meta.modified() {
-                        let (first, last) = stats.used.unwrap_or((at, at));
-                        stats.used = Some((first.min(at), last.max(at)));
+                        let (first, last) = stats.sealed.unwrap_or((at, at));
+                        stats.sealed = Some((first.min(at), last.max(at)));
+                    }
+                    if Made::of_sealed(&name) == Some(Made::Copied) {
+                        stats.copied_packs += 1;
+                        stats.copied_bytes += meta.len();
                     }
                     (&mut stats.packs, &mut stats.pack_bytes)
                 }
@@ -684,7 +747,7 @@ impl StoreDir {
                 verified.torn_bytes += (pack.len() - records(&pack).1) as u64;
                 continue;
             }
-            if !is_pack(&name) {
+            if Kind::of(&name) != Some(Kind::Pack) {
                 continue;
             }
             let pack = match self.read(&name) {
@@ -709,8 +772,8 @@ impl StoreDir {
     }
 
     /// Collects garbage: seals what ended daemons left open, removes what never got its
-    /// name, makes one pack of the many small ones, and removes the packs that have gone
-    /// unused the longest until the rest take no more than `limit` bytes.
+    /// name, makes one pack of the many small ones, and removes the packs sealed the longest
+    /// ago until the rest take no more than `limit` bytes.
     ///
     /// A daemon that has a removed pack open goes on reading it; one that starts later
     /// compiles what was in it.
@@ -721,20 +784,12 @@ impl StoreDir {
         }
         let mut collected = Collected { adopted: self.adopt(), ..Collected::default() };
         collected.abandoned = self.remove_abandoned()?;
-        collected.merged = self.merge_small()?;
-        let mut packs = self.by_last_use()?;
-        let mut total: u64 = packs.iter().map(|it| it.len).sum();
-        let evicted = match limit {
-            Some(limit) => {
-                let mut keep_from = 0;
-                while total > limit && keep_from < packs.len() {
-                    total -= packs[keep_from].len;
-                    keep_from += 1;
-                }
-                packs.drain(..keep_from).collect()
-            }
-            None => Vec::new(),
-        };
+        collected.merged = self.merge_small(Made::Built)? + self.merge_small(Made::Copied)?;
+        let mut packs = self.by_seal_time()?;
+        let lens: Vec<u64> = packs.iter().map(|it| it.len).collect();
+        let evict = to_evict(&lens, limit);
+        let evicted: Vec<Listed> = packs.drain(..evict).collect();
+        let total: u64 = packs.iter().map(|it| it.len).sum();
         for pack in &evicted {
             if std::fs::remove_file(self.dir.join(&pack.name)).is_ok() {
                 collected.evicted += 1;
@@ -748,15 +803,15 @@ impl StoreDir {
         Ok(collected)
     }
 
-    /// The sealed packs, the one that has gone unused the longest first.
-    fn by_last_use(&self) -> io::Result<Vec<Listed>> {
+    /// The sealed packs, the one sealed the longest ago first.
+    fn by_seal_time(&self) -> io::Result<Vec<Listed>> {
         let mut packs = Vec::new();
-        for name in self.packs()? {
+        for name in self.all_packs()? {
             let Ok(meta) = std::fs::metadata(self.dir.join(&name)) else { continue };
-            let used = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-            packs.push(Listed { name, len: meta.len(), used });
+            let sealed = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+            packs.push(Listed { name, len: meta.len(), sealed });
         }
-        packs.sort_unstable_by(|a, b| (a.used, &a.name).cmp(&(b.used, &b.name)));
+        packs.sort_unstable_by(|a, b| (a.sealed, &a.name).cmp(&(b.sealed, &b.name)));
         Ok(packs)
     }
 
@@ -780,12 +835,16 @@ impl StoreDir {
         Ok(abandoned)
     }
 
-    /// Makes one pack of the sealed packs smaller than [`SEAL_AT`] when there are many, and
-    /// returns how many it took in. The new pack is there before the old ones go, so a key
-    /// is in the directory throughout.
-    fn merge_small(&self) -> io::Result<usize> {
-        let small: Vec<Listed> =
-            self.by_last_use()?.into_iter().filter(|it| it.len < SEAL_AT).collect();
+    /// Makes one pack of the sealed packs of `made` smaller than [`SEAL_AT`] when there are
+    /// many, and returns how many it took in. The new pack is there before the old ones go,
+    /// so a key is in the directory throughout. Copies are kept apart from what was built,
+    /// so that a remote is not sent what it has.
+    fn merge_small(&self, made: Made) -> io::Result<usize> {
+        let small: Vec<Listed> = self
+            .by_seal_time()?
+            .into_iter()
+            .filter(|it| it.len < SEAL_AT && Made::of_sealed(&it.name) == Some(made))
+            .collect();
         if small.len() <= SMALL_PACKS {
             return Ok(0);
         }
@@ -807,11 +866,12 @@ impl StoreDir {
             taken.push(listed);
         }
         let (Some(last), true) = (taken.last(), taken.len() > 1) else { return Ok(0) };
-        let name = named(&Sha256::digest(&merged));
+        let name = named_as(&Sha256::digest(&merged), made);
         self.write_whole(&name, &merged)?;
-        // As lately used as the last of what it was made of.
+        // Sealed when the newest of what it was made of was: its place in the queue. One
+        // whose time cannot be set is newer than that, which only keeps it longer.
         if let Ok(file) = File::options().write(true).open(self.dir.join(&name)) {
-            _ = file.set_modified(last.used);
+            _ = file.set_modified(last.sealed);
         }
         for listed in &taken {
             if listed.name != name {
@@ -826,7 +886,36 @@ impl StoreDir {
 struct Listed {
     name: String,
     len: u64,
-    used: SystemTime,
+    sealed: SystemTime,
+}
+
+/// Of packs that take `lens` bytes each, oldest first, how many go, from the oldest, for the
+/// rest to take no more than `limit`.
+fn to_evict(lens: &[u64], limit: Option<u64>) -> usize {
+    let Some(limit) = limit else { return 0 };
+    let mut total: u64 = lens.iter().sum();
+    let mut evict = 0;
+    while total > limit && evict < lens.len() {
+        total -= lens[evict];
+        evict += 1;
+    }
+    evict
+}
+
+/// Of packs that take `lens` bytes each, oldest first, how many, from the oldest, are in the
+/// danger zone: past the newest `limit - limit / DANGER` bytes, so among the next to go. A
+/// value read from one of them is copied forward.
+fn endangered(lens: &[u64], limit: Option<u64>) -> usize {
+    let Some(limit) = limit else { return 0 };
+    let safe = limit - limit / DANGER;
+    let mut newer = 0u64;
+    for (at, len) in lens.iter().enumerate().rev() {
+        newer += len;
+        if newer > safe {
+            return at + 1;
+        }
+    }
+    0
 }
 
 fn write_whole(to: &Path, bytes: &[u8], private: bool) -> io::Result<()> {
@@ -873,6 +962,8 @@ pub(super) struct Store {
     writer: Mutex<Writer>,
     hits: AtomicUsize,
     misses: AtomicUsize,
+    /// Values copied forward out of packs in the danger zone.
+    copies: AtomicUsize,
     /// Sealed packs that were not what their names say, and values that were not what
     /// their checksums say, since the last report.
     corrupt: AtomicUsize,
@@ -912,8 +1003,11 @@ struct Sealed {
 struct Pack {
     name: String,
     file: File,
-    /// Whether a value of it was read since its time of last use was last set.
-    used: AtomicBool,
+    len: u64,
+    /// When it was sealed, which is its place in the queue that packs are evicted in.
+    sealed: SystemTime,
+    /// Whether it is among the next to go, so that a value read from it is copied forward.
+    danger: AtomicBool,
     /// Whether it was found to have changed since it was first read.
     changed: AtomicBool,
 }
@@ -933,7 +1027,8 @@ impl Pack {
         if !bytes.starts_with(MAGIC) {
             return Err("is not a pack of this format");
         }
-        if named(&Sha256::digest(bytes)) != name {
+        let made = Made::of_sealed(name).unwrap_or(Made::Built);
+        if named_as(&Sha256::digest(bytes), made) != name {
             return Err("is not what was sealed under that name");
         }
         let (records, whole) = records(bytes);
@@ -941,6 +1036,11 @@ impl Pack {
             return Err("has a record that is not what was written");
         }
         Ok(records)
+    }
+
+    /// Whether this pack is ahead of `other` in the queue: of a key in both, its is read.
+    fn newer_than(&self, other: &Pack) -> bool {
+        (self.sealed, &self.name) > (other.sealed, &other.name)
     }
 }
 
@@ -951,6 +1051,13 @@ struct Writer {
     open: Option<New>,
     /// The keys added that are not in a sealed pack this process has read.
     keys: FxHashSet<[u8; KEY]>,
+    /// The pack it copies values forward to, apart from `open` so that it is not sent to a
+    /// remote.
+    copies: Option<New>,
+    /// The keys copied to `copies`, and those copied to packs of copies that were sealed
+    /// since the sealed packs were last read: they are not copied again.
+    copying: FxHashSet<[u8; KEY]>,
+    copied: FxHashSet<[u8; KEY]>,
     /// Whether a pack was sealed in the middle of the build.
     rolled: bool,
     /// Why nothing is added for the rest of this build, if nothing is.
@@ -960,6 +1067,7 @@ struct Writer {
 }
 
 struct New {
+    made: Made,
     path: PathBuf,
     /// Locked for as long as it is ours.
     file: File,
@@ -1000,6 +1108,7 @@ impl Store {
             writer: Mutex::default(),
             hits: AtomicUsize::new(0),
             misses: AtomicUsize::new(0),
+            copies: AtomicUsize::new(0),
             corrupt: AtomicUsize::new(0),
             settling: Mutex::default(),
         };
@@ -1040,7 +1149,7 @@ impl Store {
     /// Reads the sealed packs that were added to the directory since the last call, by this
     /// daemon or any other, and forgets the ones that were taken out of it.
     pub(super) fn refresh(&self) {
-        let Ok(names) = self.dir.packs() else { return };
+        let Ok(names) = self.dir.all_packs() else { return };
         let known: FxHashSet<String> = self.sealed().packs.keys().cloned().collect();
         let names: FxHashSet<String> = names.into_iter().collect();
         let added: Vec<&String> = names.difference(&known).collect();
@@ -1063,9 +1172,26 @@ impl Store {
                     len: record.value.len() as u32,
                     checksum: record.checksum,
                 };
-                sealed.index.entry(record.key).or_insert(place);
+                // The newest copy of a key is read: the older ones go first.
+                match sealed.index.entry(record.key) {
+                    Entry::Occupied(mut it) => {
+                        if pack.newer_than(&it.get().pack) {
+                            it.insert(place);
+                        }
+                    }
+                    Entry::Vacant(it) => {
+                        it.insert(place);
+                    }
+                }
             }
             sealed.packs.insert(pack.name.clone(), pack);
+        }
+        let mut queue: Vec<&Arc<Pack>> = sealed.packs.values().collect();
+        queue.sort_unstable_by(|a, b| (a.sealed, &a.name).cmp(&(b.sealed, &b.name)));
+        let lens: Vec<u64> = queue.iter().map(|it| it.len).collect();
+        let endangered = endangered(&lens, self.tuning.limit);
+        for (at, pack) in queue.iter().enumerate() {
+            pack.danger.store(at < endangered, Ordering::Relaxed);
         }
     }
 
@@ -1092,10 +1218,7 @@ impl Store {
 
     /// The pack and its records, if it is what its name says. One that is not is removed.
     fn read_pack(&self, name: &str) -> Option<(Arc<Pack>, Vec<Record>)> {
-        // To write as well where that is allowed, which is what Windows asks of whoever
-        // sets a file's time of last use.
-        let opened = self.dir.open(name, true).or_else(|_| self.dir.open(name, false));
-        let mut file = match opened {
+        let mut file = match self.dir.open(name, false) {
             Ok(file) => file,
             Err(e) if not_the_users(&e) => {
                 self.discard(name, &e.to_string());
@@ -1106,10 +1229,18 @@ impl Store {
         };
         let mut bytes = Vec::new();
         io::Read::read_to_end(&mut file, &mut bytes).ok()?;
+        let sealed = file.metadata().and_then(|it| it.modified()).ok()?;
         match Pack::check(name, &bytes) {
             Ok(records) => {
-                let (used, changed) = (AtomicBool::new(false), AtomicBool::new(false));
-                Some((Arc::new(Pack { name: name.to_owned(), file, used, changed }), records))
+                let pack = Pack {
+                    name: name.to_owned(),
+                    file,
+                    len: bytes.len() as u64,
+                    sealed,
+                    danger: AtomicBool::new(false),
+                    changed: AtomicBool::new(false),
+                };
+                Some((Arc::new(pack), records))
             }
             Err(why) => {
                 self.discard(name, why);
@@ -1158,30 +1289,20 @@ impl Store {
     /// As [`Self::flush`], sealing the open pack if it has `seal_at` bytes.
     fn settle(&self, seal_at: u64) {
         let sealed = self.writer().settle(&self.dir, seal_at);
-        self.mark_used();
         if sealed {
             self.collect();
         }
         self.refresh();
         let sealed = self.sealed();
-        self.writer().keys.retain(|key| !sealed.index.contains_key(key));
+        let mut writer = self.writer();
+        writer.keys.retain(|key| !sealed.index.contains_key(key));
+        // What was copied to a pack that is sealed is read from there now, out of danger.
+        writer.copied.clear();
+        drop(writer);
         drop(sealed);
         let corrupt = self.corrupt.swap(0, Ordering::Relaxed);
         if corrupt != 0 {
             eprintln!("store: {corrupt} packs or values were not what was written, and are gone");
-        }
-    }
-
-    /// Sets the time of last use of the packs that were read from, which is what a
-    /// collection goes by.
-    fn mark_used(&self) {
-        let sealed = self.sealed();
-        let now = SystemTime::now();
-        for pack in sealed.packs.values() {
-            if pack.used.swap(false, Ordering::Relaxed) {
-                // Another user's pack: it stays as old as it was.
-                _ = pack.file.set_modified(now);
-            }
         }
     }
 
@@ -1214,8 +1335,26 @@ impl Store {
             self.forget(&place.pack);
             return None;
         }
-        place.pack.used.store(true, Ordering::Relaxed);
+        if place.pack.danger.load(Ordering::Relaxed) {
+            self.copy_forward(&key, &value);
+        }
         Some(value)
+    }
+
+    /// Appends a value read from a pack among the next to go to this process's pack of
+    /// copies, so that once that is sealed the value is at the front of the queue. Until
+    /// then it is read from where it was.
+    fn copy_forward(&self, key: &[u8; KEY], value: &[u8]) {
+        let Ok(len) = u32::try_from(value.len()) else { return };
+        let record = record(key, value, len);
+        let roll_at = self.tuning.seal_at * ROLL_AFTER;
+        let (copied, full) = self.writer().copy(&self.dir, roll_at, key, &record);
+        if copied {
+            self.copies.fetch_add(1, Ordering::Relaxed);
+        }
+        if let Some(full) = full {
+            self.seal_full(full);
+        }
     }
 
     /// Stops reading a pack that changed after it was first read, and removes it.
@@ -1250,9 +1389,15 @@ impl Store {
         // is hashed and sealed after.
         let record = record(&key, value, len);
         let roll_at = self.tuning.seal_at * ROLL_AFTER;
-        let Some(full) = self.writer().add(&self.dir, roll_at, &key, &record) else {
-            return;
-        };
+        // Bound first: the writer's guard must be dropped before `seal_full` takes it again.
+        let full = self.writer().add(&self.dir, roll_at, &key, &record);
+        if let Some(full) = full {
+            self.seal_full(full);
+        }
+    }
+
+    /// Seals a pack that filled in the middle of a build, outside the writer's lock.
+    fn seal_full(&self, full: New) {
         let sealed = full.seal(&self.dir.dir);
         let mut writer = self.writer();
         match sealed {
@@ -1264,9 +1409,11 @@ impl Store {
         }
     }
 
-    /// How many functions were found, and how many were not, since the last call.
-    pub(super) fn take_counts(&self) -> (usize, usize) {
-        (self.hits.swap(0, Ordering::Relaxed), self.misses.swap(0, Ordering::Relaxed))
+    /// How many functions were found, how many were not, and how many of those found were
+    /// copied forward, since the last call.
+    pub(super) fn take_counts(&self) -> (usize, usize, usize) {
+        let take = |it: &AtomicUsize| it.swap(0, Ordering::Relaxed);
+        (take(&self.hits), take(&self.misses), take(&self.copies))
     }
 }
 
@@ -1281,7 +1428,7 @@ impl Writer {
         if self.keys.contains(key) {
             return None;
         }
-        match self.append(dir, roll_at, record) {
+        match append(&mut self.open, Made::Built, dir, roll_at, record) {
             Ok(full) => {
                 self.keys.insert(*key);
                 full
@@ -1294,24 +1441,43 @@ impl Writer {
         }
     }
 
-    fn append(&mut self, dir: &StoreDir, roll_at: u64, record: &[u8]) -> io::Result<Option<New>> {
-        let new = match &mut self.open {
-            Some(new) => new,
-            empty => empty.insert(New::create(&dir.dir)?),
-        };
-        new.pending.extend_from_slice(record);
-        if new.pending.len() >= WRITE_AT {
-            new.write_out()?;
+    /// Copies the record of `key` forward, unless it was copied since the sealed packs were
+    /// last read. Says whether it did, and gives back the pack of copies once it has
+    /// `roll_at` bytes, for the caller to seal.
+    fn copy(
+        &mut self,
+        dir: &StoreDir,
+        roll_at: u64,
+        key: &[u8; KEY],
+        record: &[u8],
+    ) -> (bool, Option<New>) {
+        if self.stopped.is_some() || self.copying.contains(key) || self.copied.contains(key) {
+            return (false, None);
         }
-        Ok(if new.written >= roll_at { self.open.take() } else { None })
+        match append(&mut self.copies, Made::Copied, dir, roll_at, record) {
+            Ok(full) => {
+                self.copying.insert(*key);
+                if full.is_some() {
+                    self.copied.extend(self.copying.drain());
+                }
+                (true, full)
+            }
+            Err(e) => {
+                self.stop(e);
+                (false, None)
+            }
+        }
     }
 
-    /// Adds nothing more until the build ends. What the open pack has on disk stays for
-    /// whoever seals it.
+    /// Adds nothing more until the build ends. What the open packs have on disk stays for
+    /// whoever seals them.
     fn stop(&mut self, error: io::Error) {
         self.open = None;
+        self.copies = None;
         // Some of them were in what is now given up.
         self.keys.clear();
+        self.copying.clear();
+        self.copied.clear();
         eprintln!("store: nothing more is kept of this build: {error}");
         self.stopped = Some(error.to_string());
     }
@@ -1333,24 +1499,61 @@ impl Writer {
     }
 
     fn seal_if_large(&mut self, dir: &StoreDir, seal_at: u64) -> io::Result<()> {
-        let Some(new) = &mut self.open else { return Ok(()) };
-        new.write_out()?;
-        if new.written >= seal_at
-            && let Some(large) = self.open.take()
-        {
-            large.seal(&dir.dir)?;
-            self.rolled = true;
+        for made in [Made::Built, Made::Copied] {
+            let open = match made {
+                Made::Built => &mut self.open,
+                Made::Copied => &mut self.copies,
+            };
+            let Some(new) = open.as_mut() else { continue };
+            new.write_out()?;
+            // Copies are sealed at the end of every build that made any: the packs they were
+            // copied from are the next to go, and once they are gone an unsealed copy is
+            // found by no other process. Small packs of copies are made one by `collect`.
+            let seal_from = match made {
+                Made::Built => seal_at,
+                Made::Copied => MAGIC.len() as u64 + 1,
+            };
+            if new.written >= seal_from
+                && let Some(large) = open.take()
+            {
+                large.seal(&dir.dir)?;
+                self.rolled = true;
+                if made == Made::Copied {
+                    self.copied.extend(self.copying.drain());
+                }
+            }
         }
         Ok(())
     }
 }
 
+/// Appends a record to the open pack in `open`, opening one for `made` if there is none.
+/// What comes back is the pack once it has `roll_at` bytes, for the caller to seal: the next
+/// record opens another.
+fn append(
+    open: &mut Option<New>,
+    made: Made,
+    dir: &StoreDir,
+    roll_at: u64,
+    record: &[u8],
+) -> io::Result<Option<New>> {
+    let new = match &mut *open {
+        Some(new) => new,
+        empty => empty.insert(New::create(&dir.dir, made)?),
+    };
+    new.pending.extend_from_slice(record);
+    if new.pending.len() >= WRITE_AT {
+        new.write_out()?;
+    }
+    Ok(if new.written >= roll_at { open.take() } else { None })
+}
+
 impl New {
-    fn create(dir: &Path) -> io::Result<New> {
+    fn create(dir: &Path, made: Made) -> io::Result<New> {
         // A daemon that seals what was left open may take this one for left open before it
         // is locked, and remove it.
         for _ in 0..8 {
-            let path = dir.join(format!("{}-{}.open", std::process::id(), nanos()));
+            let path = dir.join(format!("{}-{}{}", std::process::id(), nanos(), made.open()));
             let mut options = OpenOptions::new();
             // Read when it is sealed, for the name its bytes give it.
             let options = options.read(true).write(true).create_new(true);
@@ -1363,7 +1566,7 @@ impl New {
                 continue;
             }
             let pending = MAGIC.to_vec();
-            return Ok(New { path, file, written: 0, pending });
+            return Ok(New { made, path, file, written: 0, pending });
         }
         Err(io::Error::other("no open pack could be held"))
     }
@@ -1392,7 +1595,7 @@ impl New {
         let mut hash = Sha256::new();
         io::Seek::seek(&mut self.file, io::SeekFrom::Start(0))?;
         io::copy(&mut self.file, &mut hash)?;
-        std::fs::rename(&self.path, dir.join(named(&hash.finalize())))?;
+        std::fs::rename(&self.path, dir.join(named_as(&hash.finalize(), self.made)))?;
         sync_dir(dir)
     }
 }
@@ -1785,23 +1988,57 @@ mod tests {
     }
 
     #[test]
-    fn the_packs_unused_the_longest_go_first() {
-        let dir = scratch("lru");
-        let oldest = pack_of(&dir, 1, 1000, 300);
-        let middle = pack_of(&dir, 2, 1000, 200);
-        let newest = pack_of(&dir, 3, 1000, 100);
-        // Reading from the oldest makes it the newest.
-        let store = open(&dir, EAGER);
-        assert!(store.get(&[1; KEY]).is_some());
+    fn the_oldest_pack_goes_whole_and_what_was_read_from_it_was_copied_forward() {
+        // A pack of one record of 1000 bytes.
+        const PACK: u64 = (MAGIC.len() + HEADER + 1000) as u64;
+        assert_eq!(endangered(&[PACK; 4], None), 0);
+        assert_eq!(endangered(&[PACK; 4], Some(8 * PACK)), 0);
+        // The newest three take no more than three quarters of the limit; the oldest is past.
+        assert_eq!(endangered(&[PACK; 4], Some(4 * PACK)), 1);
+        assert_eq!(to_evict(&[PACK; 4], Some(3 * PACK)), 1);
+
+        let dir = scratch("generations");
+        let oldest = pack_of(&dir, 1, 1000, 400);
+        let older = pack_of(&dir, 2, 1000, 300);
+        let newer = pack_of(&dir, 3, 1000, 200);
+        let newest = pack_of(&dir, 4, 1000, 100);
+        // Room for one more pack, with the oldest in the danger zone.
+        let limit = Some(5 * PACK + 10);
+        let store = open(&dir, Tuning { seal_at: 1, limit });
+        let place = |store: &Store, key: u8| {
+            store.sealed().index[&store.identity.key(&[key; KEY])].pack.name.clone()
+        };
+        // Read from the oldest, its value is copied forward, once; from a newer one it is not.
+        for _ in 0..2 {
+            assert_eq!(store.get(&[1; KEY]).as_deref(), Some(&[1; 1000][..]));
+        }
+        assert_eq!(store.get(&[3; KEY]).as_deref(), Some(&[3; 1000][..]));
+        assert_eq!(store.take_counts(), (0, 0, 1));
         store.flush();
-        let collected = StoreDir::at(&dir).collect(Some(2500)).unwrap();
-        assert_eq!((collected.evicted, collected.kept), (1, 2));
-        assert!(oldest.exists() && !middle.exists() && newest.exists());
-        // A daemon that has it open still reads it; the next does not find it.
-        assert_eq!(store.get(&[2; KEY]).as_deref(), Some(&[2; 1000][..]));
-        assert_eq!(open(&dir, EAGER).get(&[2; KEY]), None);
-        let collected = StoreDir::at(&dir).collect(Some(0)).unwrap();
-        assert_eq!((collected.evicted, collected.kept, collected.kept_bytes), (2, 0, 0));
+        let copies: Vec<PathBuf> = files(&dir, Kind::Pack)
+            .into_iter()
+            .filter(|it| it.extension().is_some_and(|it| it == "refresh"))
+            .collect();
+        assert_eq!(copies.len(), 1);
+        // A copy is never sent to a remote: the pack it came from was.
+        assert_eq!(StoreDir::at(&dir).packs().unwrap().len(), 4);
+        // The newest copy is read, by this daemon and by the next.
+        let copy = copies[0].file_name().unwrap().to_str().unwrap().to_owned();
+        assert_eq!(place(&store, 1), copy);
+        assert_eq!(place(&open(&dir, EAGER), 1), copy);
+
+        // Over the limit, the oldest pack goes whole: its record that was read lives on in
+        // the copy, while the unread one of the next oldest pack goes with it.
+        pack_of(&dir, 5, 1000, 50);
+        let collected = StoreDir::at(&dir).collect(limit).unwrap();
+        assert_eq!(collected.evicted, 1);
+        assert!(!oldest.exists() && older.exists());
+        let collected = StoreDir::at(&dir).collect(Some(3 * PACK + 10)).unwrap();
+        assert_eq!(collected.evicted, 2);
+        assert!(!older.exists() && !newer.exists() && newest.exists());
+        let next = open(&dir, EAGER);
+        assert_eq!(next.get(&[1; KEY]).as_deref(), Some(&[1; 1000][..]));
+        assert_eq!((next.get(&[2; KEY]), next.get(&[3; KEY])), (None, None));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -2001,6 +2238,7 @@ mod tests {
         let dir = scratch("full");
         let store = open(&dir, EAGER);
         let full = New {
+            made: Made::Built,
             path: dir.join("1-1.open"),
             file: File::options().write(true).open("/dev/full").unwrap(),
             written: 0,

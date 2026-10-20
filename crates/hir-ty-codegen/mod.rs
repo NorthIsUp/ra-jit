@@ -718,9 +718,15 @@ impl CodegenUnit {
                             kept.written(writer.finish());
                         }
                         store.flush();
-                        let (found, added) = store.take_counts();
+                        let (found, added, copied) = store.take_counts();
                         if found + added != 0 {
-                            eprintln!("store: {found} functions found, {added} compiled and added");
+                            let copied = match copied {
+                                0 => String::new(),
+                                copied => format!(", {copied} copied forward"),
+                            };
+                            eprintln!(
+                                "store: {found} functions found, {added} compiled and added{copied}"
+                            );
                         }
                         kept.report();
                         if !misses.is_empty() {

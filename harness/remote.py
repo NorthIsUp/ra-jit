@@ -168,7 +168,7 @@ class Machine:
                     **remote.env}
         self.said = ""
 
-    def ra-jit(self, *args, env=None, cwd=None, timeout=300):
+    def ra_jit(self, *args, env=None, cwd=None, timeout=300):
         out = subprocess.run([RA_JIT, *args], capture_output=True, text=True, env={**self.env, **(env or {})}, cwd=cwd,
                              timeout=timeout)
         self.said += out.stdout + out.stderr
@@ -194,7 +194,7 @@ class Machine:
 
     def cache(self, verb, *args, env=None):
         """`ra-jit cache stats|verify|gc`: (whether it ended well, its `name: number` lines, what it printed)."""
-        out = self.ra-jit("cache", verb, *args, env=env)
+        out = self.ra_jit("cache", verb, *args, env=env)
         numbers = {}
         for line in out.stdout.splitlines():
             name, _, value = line.partition(":")
@@ -229,7 +229,7 @@ class Machine:
         obj, self.program = os.path.join(self.out, "ra-jit.o"), os.path.join(self.out, "program")
         link = linkline.with_output(linkline.ahead(list(self.link_args), [obj], RA_JIT), self.program)
         start = time.time()
-        out = self.ra-jit(self.ws, *TARGET_ARGS, *(x for c in crates for x in ("--crate", c)), "--out", obj,
+        out = self.ra_jit(self.ws, *TARGET_ARGS, *(x for c in crates for x in ("--crate", c)), "--out", obj,
                          "--link-cmd", linkline.join(link), *symbols, env=env, timeout=3600)
         if out.returncode != 0:
             raise SystemExit(f"ra-jit failed:\n{out.stderr[-3000:]}")
@@ -293,7 +293,7 @@ def round_trip(top, remote, name, crates, target, workspace):
     expected = a.run(a.reference)
     check("A compiles and its program prints what cargo's does", compiled(log) and a.run() == expected, f"{compiled(log)} compiled")
     # A store too small to seal is sent by the next thing that finds it left open.
-    out = a.ra-jit("cache", "push", address)
+    out = a.ra_jit("cache", "push", address)
     objects = bucket.objects()
     packs = [it for it in objects if it.startswith("packs/")]
     check("the bucket has A's packs, their keys and the manifest",
@@ -303,7 +303,7 @@ def round_trip(top, remote, name, crates, target, workspace):
     check("every object in the bucket is what its name says",
           all(digest(unpacked(bucket.get(it)) if it.endswith(".zst") else bucket.get(it)) == it.split("/")[1].split(".")[0]
               for it in objects if not it.startswith("manifests/")))
-    out = a.ra-jit("cache", "push", address)
+    out = a.ra_jit("cache", "push", address)
     check("a second push sends nothing", out.returncode == 0 and out.stdout.startswith("0 packs added"), out.stdout.strip())
 
     log, _ = b.build(crates, env={"RA_JIT_REMOTE": address})
@@ -321,10 +321,10 @@ def configuration(top, remote, a, address, bucket):
     print(f"{remote.name}: credentials, addressing, reading only", flush=True)
     c = Machine(top, f"config-{remote.name}", remote)
     before = bucket.objects()
-    out = a.ra-jit("cache", "push", address, "other", env={"RA_JIT_REMOTE_READONLY": "1"})
+    out = a.ra_jit("cache", "push", address, "other", env={"RA_JIT_REMOTE_READONLY": "1"})
     check("a machine that only reads refuses to push and says why",
           out.returncode != 0 and "RA_JIT_REMOTE_READONLY" in out.stderr and bucket.objects() == before, out.stderr.strip()[-80:])
-    out = c.ra-jit("cache", "pull", address, env={"RA_JIT_REMOTE_READONLY": "1"})
+    out = c.ra_jit("cache", "pull", address, env={"RA_JIT_REMOTE_READONLY": "1"})
     check("and pulls", out.returncode == 0 and all(c.packs().values()) and c.packs(), out.stdout.strip())
     if not remote.server:
         return
@@ -349,7 +349,7 @@ def configuration(top, remote, a, address, bucket):
                          env={**c.env, "AWS_ENDPOINT_URL": remote.endpoint})
     check("the endpoint from AWS_ENDPOINT_URL", out.returncode == 0 and c.packs(), (out.stdout + out.stderr).strip()[-80:])
     c.empty()
-    out = c.ra-jit("cache", "pull", address + "&region=eu-west-1&path-style=true")
+    out = c.ra_jit("cache", "pull", address + "&region=eu-west-1&path-style=true")
     check("another region and addressing by path asked for", out.returncode == 0 and c.packs(), out.stderr.strip()[-80:])
     if remote.server.kind == "minio" and os.name == "nt":
         # glibc and macOS answer for every name under `localhost`; Windows asks the network.
@@ -358,15 +358,15 @@ def configuration(top, remote, a, address, bucket):
         c.empty()
         remote.proxy.clear()
         by_host = address.replace("127.0.0.1", "localhost") + "&path-style=false"
-        out = c.ra-jit("cache", "pull", by_host)
+        out = c.ra_jit("cache", "pull", by_host)
         asked = remote.proxy.seen("GET", "/packs/")
         check("the bucket in the name of the host",
               out.returncode == 0 and c.packs() and asked and not any(remote.bucket_name in it[1] for it in asked),
               (out.stdout + out.stderr).strip()[-80:])
     c.empty()
-    out = c.ra-jit("cache", "pull", address, env={"AWS_SECRET_ACCESS_KEY": "wrong-" + SECRET[::-1]})
+    out = c.ra_jit("cache", "pull", address, env={"AWS_SECRET_ACCESS_KEY": "wrong-" + SECRET[::-1]})
     check("the wrong secret is refused by the service, and said", out.returncode != 0 and not c.packs(), out.stderr.strip()[-60:])
-    out = c.ra-jit("cache", "pull", address + "&nonsense=1")
+    out = c.ra_jit("cache", "pull", address + "&nonsense=1")
     check("an option that is none is refused", out.returncode != 0 and "nonsense" in out.stderr)
     everything = c.said + a.said
     check("no secret in anything ra-jit printed", not any(it in everything or it[::-1] in everything for it in remote.secrets))
@@ -393,7 +393,7 @@ def transfers(top, remote):
 
     def pushed(what):
         a, b, address, bucket, name = pair(what)
-        out = a.ra-jit("cache", "push", address)
+        out = a.ra_jit("cache", "push", address)
         if out.returncode != 0:
             raise SystemExit(f"the push before `{what}` failed: {out.stderr}")
         proxy.clear()
@@ -403,7 +403,7 @@ def transfers(top, remote):
         return machine.packs() == {name: True} and not machine.partials()
 
     a, b, address, bucket, name = pair("parts")
-    out = a.ra-jit("cache", "push", address)
+    out = a.ra_jit("cache", "push", address)
     parts = proxy.seen("PUT", "partNumber=")
     check("a big pack goes up in parts, a few at a time",
           out.returncode == 0 and len(parts) == 3 and proxy.seen("POST", r"uploads") and proxy.seen("POST", "uploadId=")
@@ -411,34 +411,34 @@ def transfers(top, remote):
     check("ra-jit counts the requests the proxy saw", said_number(out.stderr, "requests") == len(proxy.requests),
           f"{said_number(out.stderr, 'requests')} and {len(proxy.requests)}")
     proxy.clear()
-    out = b.ra-jit("cache", "pull", address)
+    out = b.ra_jit("cache", "pull", address)
     check("and comes down whole", out.returncode == 0 and whole(b, name) and said_number(out.stderr, "bytes received") >= BIG)
     check("in the requests the proxy saw", said_number(out.stderr, "requests") == len(proxy.requests),
           f"{said_number(out.stderr, 'requests')} and {len(proxy.requests)}")
 
     a, b, address, bucket, name = pushed("503 down")
     fault = proxy.fault("GET", "/packs/", times=2, status=503)
-    out = b.ra-jit("cache", "pull", address)
+    out = b.ra_jit("cache", "pull", address)
     check("503 twice on a fetch: asked again", out.returncode == 0 and whole(b, name) and fault.hits == 2
           and said_number(out.stderr, "tried again") >= 2, out.stderr.strip().split("\n")[0][-70:])
 
     a, b, address, bucket, name = pair("503 up")
     faults = [proxy.fault("PUT", "partNumber=2", times=2, status=500), proxy.fault("POST", "uploadId=", times=1, status=503),
               proxy.fault("PUT", "/manifests/", times=1, status=503)]
-    out = a.ra-jit("cache", "push", address)
+    out = a.ra_jit("cache", "push", address)
     check("5xx on a part, on completing and on the manifest: sent again",
           out.returncode == 0 and [it.hits for it in faults] == [2, 1, 1] and digest(unpacked(bucket.get("packs/" + name + ".zst"))) == name[:-5])
 
     a, b, address, bucket, name = pushed("always 503")
     proxy.fault("GET", "/packs/", times=1000, status=503)
     start = time.time()
-    out = b.ra-jit("cache", "pull", address)
+    out = b.ra_jit("cache", "pull", address)
     check("503 every time: given up, said, nothing left as a pack", out.returncode != 0 and not b.packs() and "503" in out.stderr,
           f"{time.time() - start:.1f}s, {len(proxy.requests)} requests")
 
     a, b, address, bucket, name = pushed("cut down")
     fault = proxy.fault("GET", "/packs/", times=2, cut=5 * MIB)
-    out = b.ra-jit("cache", "pull", address)
+    out = b.ra_jit("cache", "pull", address)
     ranges = [it[2] for it in proxy.seen("GET", "/packs/")]
     check("the connection dropped twice in a fetch: taken up where it stopped",
           out.returncode == 0 and whole(b, name) and said_number(out.stderr, "transfers resumed") == 2
@@ -446,19 +446,19 @@ def transfers(top, remote):
 
     a, b, address, bucket, name = pushed("reset")
     fault = proxy.fault("GET", "/packs/", times=2, reset=True)
-    out = b.ra-jit("cache", "pull", address)
+    out = b.ra_jit("cache", "pull", address)
     check("the connection closed with no answer, twice", out.returncode == 0 and whole(b, name) and fault.hits == 2)
 
     a, b, address, bucket, name = pair("cut up")
     fault = proxy.fault("PUT", "partNumber=1", times=1, cut_request=2 * MIB)
-    out = a.ra-jit("cache", "push", address)
+    out = a.ra_jit("cache", "push", address)
     check("the connection dropped in the middle of a part: sent again",
           out.returncode == 0 and fault.hits == 1 and digest(unpacked(bucket.get("packs/" + name + ".zst"))) == name[:-5] and not bucket.uploads())
 
     a, b, address, bucket, name = pushed("stall")
     fault = proxy.fault("GET", "/packs/", times=1, stall=(3 * MIB, 6))
     start = time.time()
-    out = b.ra-jit("cache", "pull", address, env=quick)
+    out = b.ra_jit("cache", "pull", address, env=quick)
     check("a fetch that stops for 6s with 2s of patience: taken up",
           out.returncode == 0 and whole(b, name) and said_number(out.stderr, "transfers resumed") >= 1 and time.time() - start < 6,
           f"{time.time() - start:.1f}s")
@@ -466,7 +466,7 @@ def transfers(top, remote):
     a, b, address, bucket, name = pushed("slow answer")
     proxy.hold = 4
     start = time.time()
-    out = b.ra-jit("cache", "pull", address, env={"RA_JIT_REMOTE_TIMEOUT": "1", "AWS_MAX_ATTEMPTS": "2"})
+    out = b.ra_jit("cache", "pull", address, env={"RA_JIT_REMOTE_TIMEOUT": "1", "AWS_MAX_ATTEMPTS": "2"})
     check("a service that takes 4s to answer with 1s of patience: given up, said",
           out.returncode != 0 and not b.packs() and time.time() - start < 45, f"{time.time() - start:.1f}s {out.stderr.strip()[-50:]}")
     proxy.hold = 0
@@ -492,14 +492,14 @@ def transfers(top, remote):
     b.cache("gc")
     check("a collection an hour later leaves what was kept aside", b.partials() == left and aside
           and os.path.getsize(aside) == size)
-    out = b.ra-jit("cache", "pull", address)
+    out = b.ra_jit("cache", "pull", address)
     check("the next one fetches the rest only", out.returncode == 0 and whole(b, name)
           and said_number(out.stderr, "bytes received") < BIG - size + MIB, out.stderr.strip().split("\n")[0][-60:])
 
     a, b, address, bucket, name = pushed("spoiled partial")
     b.add_pack(filler(f"{remote.name} there already", 4096))
     open(os.path.join(b.store, name + ".zst.tmp"), "wb").write(b"what a stopped process left of something else" * 1000)
-    out = b.ra-jit("cache", "pull", address)
+    out = b.ra_jit("cache", "pull", address)
     check("a part kept aside that is of something else: fetched from the start",
           out.returncode == 0 and b.packs().get(name) is True and not b.partials()
           and said_number(out.stderr, "objects rejected") == 0)
@@ -520,10 +520,10 @@ def transfers(top, remote):
         a.add_pack(filler(f"{remote.name} small {at}", 64 << 10))
     proxy.clear()
     proxy.hold = 0.05
-    out = a.ra-jit("cache", "push", address, env={"RA_JIT_REMOTE_JOBS": "3"})
+    out = a.ra_jit("cache", "push", address, env={"RA_JIT_REMOTE_JOBS": "3"})
     most = proxy.most_flying
     proxy.most_flying = 0
-    out2 = b.ra-jit("cache", "pull", address, env={"RA_JIT_REMOTE_JOBS": "3"})
+    out2 = b.ra_jit("cache", "pull", address, env={"RA_JIT_REMOTE_JOBS": "3"})
     check("twelve packs with three requests at a time: never more in flight",
           out.returncode == 0 and out2.returncode == 0 and 2 <= most <= 3 and 2 <= proxy.most_flying <= 3 and len(b.packs()) == 12
           and all(b.packs().values()),
@@ -543,7 +543,7 @@ def transfers(top, remote):
         down.append(time.time() - start)
     bouncing = threading.Thread(target=bounce)
     bouncing.start()
-    out = b.ra-jit("cache", "pull", address)
+    out = b.ra_jit("cache", "pull", address)
     bouncing.join()
     # A service is back when it reads again, which is seconds after it listens again and is
     # not the same every time. ra-jit waits about 16s for a byte; an outage well under that
@@ -552,7 +552,7 @@ def transfers(top, remote):
         taken_up = out.returncode == 0 and whole(b, name) and said_number(out.stderr, "transfers resumed") >= 1
     else:
         proxy.rate = None
-        taken_up = out.returncode != 0 and not b.packs() and b.ra-jit("cache", "pull", address).returncode == 0 and whole(b, name)
+        taken_up = out.returncode != 0 and not b.packs() and b.ra_jit("cache", "pull", address).returncode == 0 and whole(b, name)
     check("the service killed in a fetch and back: taken up", taken_up,
           f"reading again after {down[0]:.1f}s; " + out.stderr.strip().split("\n")[0][-90:])
 
@@ -561,14 +561,14 @@ def transfers(top, remote):
     killing = threading.Timer(1.5, remote.server.kill)
     killing.start()
     start = time.time()
-    out = b.ra-jit("cache", "pull", address)
+    out = b.ra_jit("cache", "pull", address)
     killing.join()
     left = b.partials()
     check("the service killed in a fetch and gone: given up, said, no pack",
           out.returncode != 0 and not b.packs() and len(left) == 1 and "fetching packs/" in out.stderr, f"{time.time() - start:.1f}s")
     remote.restart()
     proxy.rate = None
-    out = b.ra-jit("cache", "pull", address)
+    out = b.ra_jit("cache", "pull", address)
     check("back: the rest is fetched", out.returncode == 0 and whole(b, name) and said_number(out.stderr, "bytes received") < BIG,
           out.stderr.strip()[-200:])
 
@@ -576,14 +576,14 @@ def transfers(top, remote):
     proxy.rate = 4 * MIB
     killing = threading.Timer(1.5, remote.server.kill)
     killing.start()
-    out = a.ra-jit("cache", "push", address, env={"AWS_MAX_ATTEMPTS": "2"})
+    out = a.ra_jit("cache", "push", address, env={"AWS_MAX_ATTEMPTS": "2"})
     killing.join()
     remote.restart()
     proxy.rate = None
     objects = bucket.objects()
     check("the service killed in a push: said, no pack and no manifest in the bucket",
           out.returncode != 0 and "packs/" + name + ".zst" not in objects and "manifests/default" not in objects, out.stderr.strip()[-60:])
-    out = a.ra-jit("cache", "push", address)
+    out = a.ra_jit("cache", "push", address)
     check("back: the push goes through and no upload is left unfinished",
           out.returncode == 0 and digest(unpacked(bucket.get("packs/" + name + ".zst"))) == name[:-5] and not bucket.uploads(),
           out.stdout.strip() or out.stderr.strip()[-200:])
@@ -595,10 +595,10 @@ def stored(top, remote):
     address, bucket = remote.fresh()
     a, b, c = (Machine(top, f"k-{remote.name}-{it}", remote) for it in "abc")
     sent = [a.add_pack(filler(f"{remote.name} kept {at}", MIB)) for at in range(6)]
-    if a.ra-jit("cache", "push", address).returncode != 0:
+    if a.ra_jit("cache", "push", address).returncode != 0:
         raise SystemExit("the push failed")
 
-    out = b.ra-jit("cache", "pull", address)
+    out = b.ra_jit("cache", "pull", address)
     whole, verified, _ = b.cache("verify")
     _, counted, _ = b.cache("stats")
     check("after a pull verify and stats count what was fetched", out.returncode == 0 and whole
@@ -607,14 +607,14 @@ def stored(top, remote):
           f"{counted.get('pack bytes')} bytes")
 
     ok, collected, _ = b.cache("gc", "--max", "0")
-    out = b.ra-jit("cache", "pull", address)
+    out = b.ra_jit("cache", "pull", address)
     whole, verified, _ = b.cache("verify")
     check("packs that were evicted are fetched again", ok and collected.get("evicted packs") == 6 and out.returncode == 0
           and whole and sorted(b.packs()) == sorted(sent) and said_number(out.stderr, "bytes received") > 6 * MIB)
 
     limit = {"RA_JIT_CACHE_MAX": str(3 * MIB + 4096)}
     packs_fetched(remote)
-    out = c.ra-jit("cache", "pull", address, env=limit)
+    out = c.ra_jit("cache", "pull", address, env=limit)
     _, counted, _ = c.cache("stats", env=limit)
     whole, _, _ = c.cache("verify")
     check("a pull into a store with a limit fetches what fits and says what does not",
@@ -627,22 +627,22 @@ def stored(top, remote):
     old = [d.add_pack(filler(f"{remote.name} old {at}", MIB)) for at in range(2)]
     for name in old:
         os.utime(os.path.join(d.store, name), (time.time() - 3600, time.time() - 3600))
-    out = d.ra-jit("cache", "pull", address, env=limit)
+    out = d.ra_jit("cache", "pull", address, env=limit)
     _, counted, _ = d.cache("stats", env=limit)
     whole, _, _ = d.cache("verify")
-    check("what is fetched counts toward the limit: the packs unused the longest go",
-          out.returncode == 0 and "2 packs unused the longest evicted" in out.stdout and whole and counted.get("packs") == 3
+    check("what is fetched counts toward the limit: the packs sealed the longest ago go",
+          out.returncode == 0 and "2 packs sealed the longest ago evicted" in out.stdout and whole and counted.get("packs") == 3
           and not set(old) & set(d.packs()) and set(d.packs()) <= set(sent), out.stdout.strip()[-80:])
 
     # A store makes one pack of many small ones; what was fetched is then there under another name.
     address, bucket = remote.fresh()
     f, g = (Machine(top, f"k-{remote.name}-{it}", remote) for it in "fg")
     small = [f.add_pack(filler(f"{remote.name} small kept {at}", 64 << 10)) for at in range(24)]
-    f.ra-jit("cache", "push", address)
-    first = g.ra-jit("cache", "pull", address)
+    f.ra_jit("cache", "push", address)
+    first = g.ra_jit("cache", "pull", address)
     ok, collected, _ = g.cache("gc")
     packs_fetched(remote)
-    out = g.ra-jit("cache", "pull", address)
+    out = g.ra_jit("cache", "pull", address)
     whole, verified, _ = g.cache("verify")
     check("packs the store made one of are not fetched again", first.returncode == 0 and ok and len(g.packs()) < 24
           and out.returncode == 0 and out.stdout.startswith("0 packs") and "in other packs of the store passed over" in out.stdout
@@ -660,7 +660,7 @@ def stored(top, remote):
     packs_fetched(remote)
     for said_format, what in ((FORMAT - 1, "left"), (FORMAT, "rejected")):
         bucket.put("manifests/default", f"{digest(other)} {len(other)} {digest(keys)} {said_format}\n".encode())
-        out = e.ra-jit("cache", "pull", address)
+        out = e.ra_jit("cache", "pull", address)
         whole, verified, _ = e.cache("verify")
         left = out.returncode == 0 and "1 of another format left" in out.stdout and packs_fetched(remote) in (0, None)
         rejected = out.returncode != 0 and "is not what it is listed as" in out.stderr and said_number(out.stderr, "objects rejected") == 1
@@ -675,7 +675,7 @@ def collected(top, remote):
     DAYS = 24 * 3600
 
     def gc(machine, address, *args, env=None):
-        out = machine.ra-jit("cache", "gc", "--remote", address, *args, env=env)
+        out = machine.ra_jit("cache", "gc", "--remote", address, *args, env=env)
         numbers = {}
         for line in out.stdout.splitlines():
             name, _, value = line.partition(":")
@@ -689,7 +689,7 @@ def collected(top, remote):
     address, bucket = remote.fresh()
     a, b = (Machine(top, f"g-{remote.name}-{it}", remote) for it in "ab")
     sent = [a.add_pack(filler(f"{remote.name} collected {at}", 256 << 10)) for at in range(3)]
-    if a.ra-jit("cache", "push", address).returncode != 0:
+    if a.ra_jit("cache", "push", address).returncode != 0:
         raise SystemExit("the push failed")
     stray = filler(f"{remote.name} listed nowhere", 256 << 10)
     strays = {f"packs/{digest(stray)}.pack.zst": packed(stray), f"keys/{digest(b'k' * 32)}": b"k" * 32,
@@ -726,13 +726,13 @@ def collected(top, remote):
           and said.get("objects removed") == [3] and said.get("bytes") == [sum(len(it) for it in strays.values())]
           and set(before) - set(left) == set(strays), out.stdout.replace("\n", "; ")[:110])
     aged(0)
-    out = b.ra-jit("cache", "pull", address)
+    out = b.ra_jit("cache", "pull", address)
     whole, verified, _ = b.cache("verify")
     check("what the lists name is all still there to pull", out.returncode == 0 and whole and sorted(b.packs()) == sorted(sent))
 
     # A list this machine does not trust keeps what it names and all its lines.
     key_file = os.path.join(remote.keys, "collector")
-    public = a.ra-jit("cache", "keygen", key_file).stdout.strip()
+    public = a.ra_jit("cache", "keygen", key_file).stdout.strip()
     aged(3 * DAYS)
     out, said = gc(a, address, "--older-than", "1d", env={"RA_JIT_REMOTE_SIGN": key_file, "RA_JIT_REMOTE_TRUST": public})
     check("a list of another signer is left with its lines and what they name",
@@ -744,7 +744,7 @@ def collected(top, remote):
     c = Machine(top, f"g-{remote.name}-c", remote)
     c.add_pack(stray)
     aged(3 * DAYS)
-    out = c.ra-jit("cache", "push", address, "another")
+    out = c.ra_jit("cache", "push", address, "another")
     check("a push sends again what has been there unlisted for long", out.returncode == 0
           and len(remote.proxy.seen("PUT", "/packs/")) == 1, out.stdout.strip()[:80])
 
@@ -753,9 +753,9 @@ def collected(top, remote):
     check("--older-than takes old packs off the lists and out of the remote", out.returncode == 0
           and said.get("lines taken out") == [4, 0] and said.get("manifests written") == [2]
           and not [it for it in bucket.objects() if it.startswith(("packs/", "keys/"))], out.stdout.replace("\n", "; ")[:110])
-    out = a.ra-jit("cache", "push", address)
+    out = a.ra_jit("cache", "push", address)
     d = Machine(top, f"g-{remote.name}-d", remote)
-    pulled = d.ra-jit("cache", "pull", address)
+    pulled = d.ra_jit("cache", "pull", address)
     check("what was taken out is pushed again by a machine that has it", out.returncode == 0 and out.stdout.startswith("3 packs")
           and pulled.returncode == 0 and sorted(d.packs()) == sorted(sent), out.stdout.strip()[:80])
 
@@ -764,15 +764,15 @@ def collected(top, remote):
     e, f = (Machine(top, f"g-{remote.name}-{it}", remote) for it in "ef")
     for at in range(24):
         e.add_pack(filler(f"{remote.name} small collected {at}", 64 << 10))
-    e.ra-jit("cache", "push", address)
+    e.ra_jit("cache", "push", address)
     ok, merged, _ = e.cache("gc")
-    out = e.ra-jit("cache", "push", address)
+    out = e.ra_jit("cache", "push", address)
     twice = len([it for it in bucket.objects() if it.startswith("packs/")])
     aged(3 * DAYS)
     collect, said = gc(e, address)
     aged(0)
     once = [it for it in bucket.objects() if it.startswith("packs/")]
-    pulled = f.ra-jit("cache", "pull", address)
+    pulled = f.ra_jit("cache", "pull", address)
     whole, verified, _ = f.cache("verify")
     check("packs whose keys are all in a merged pack are taken out, and the merged one stays",
           ok and out.returncode == 0 and twice > len(once) and collect.returncode == 0
@@ -812,7 +812,7 @@ def kept(top, remote, crates, target, workspace):
 
         # Another machine adds to the manifest; the daemon has it after its next build lacks something.
         other = b.add_pack(filler(f"{remote.name} from another machine", 256 << 10))
-        out = b.ra-jit("cache", "push", address)
+        out = b.ra_jit("cache", "push", address)
         took = a.edit(socket, "edited twice")
         check("a build that lacks something has the daemon pull when the manifest changed",
               out.returncode == 0 and took is not None and until(lambda: other in a.packs())
@@ -832,7 +832,7 @@ def kept(top, remote, crates, target, workspace):
         tell_to_end(daemon)
         ended = daemon.wait(timeout=90)
     ok, counted, _ = a.cache("stats")
-    out = a.ra-jit("cache", "push", address)
+    out = a.ra_jit("cache", "push", address)
     check("told to end, the daemon ends as it was told, with nothing left to send", ended == TOLD_TO_END and ok
           and counted.get("open packs") == 0 and out.returncode == 0 and out.stdout.startswith("0 packs added"),
           f"exit {ended}; {out.stdout.strip()[:40]}")
@@ -900,14 +900,14 @@ def over_tls(top, remote):
         a, b = (Machine(top, f"tls-{it}", remote) for it in "ab")
         name = big_store(a, "over tls")
         trusting = {"SSL_CERT_FILE": certificate}
-        sent = a.ra-jit("cache", "push", address, env=trusting)
-        out = b.ra-jit("cache", "pull", address, env=trusting)
+        sent = a.ra_jit("cache", "push", address, env=trusting)
+        out = b.ra_jit("cache", "pull", address, env=trusting)
         check("a big pack sent and fetched over TLS, the certificate trusted through SSL_CERT_FILE",
               sent.returncode == 0 and out.returncode == 0 and b.packs() == {name: True}
               and digest(unpacked(bucket.get("packs/" + name + ".zst"))) == name[:-5], out.stdout.strip())
         b.empty()
         start = time.time()
-        out = b.ra-jit("cache", "pull", address, env={"RA_JIT_REMOTE_TIMEOUT": "2"})
+        out = b.ra_jit("cache", "pull", address, env={"RA_JIT_REMOTE_TIMEOUT": "2"})
         took = time.time() - start
         check("a certificate nobody vouches for: refused, said, nothing fetched",
               out.returncode != 0 and not b.packs() and not b.partials() and "ertificate" in out.stderr, out.stderr.strip()[-90:])
@@ -928,28 +928,28 @@ def spoiled(top, remote):
         data = filler(f"{remote.name} {what}", MIB)
         name = a.add_pack(data)
         other = big_store(a, f"{remote.name} {what} whole") if what == "one byte changed" else None
-        if a.ra-jit("cache", "push", address).returncode != 0:
+        if a.ra_jit("cache", "push", address).returncode != 0:
             raise SystemExit("the push failed")
         sent = bucket.get("packs/" + name + ".zst")
         bucket.put("packs/" + name + ".zst", spoil(sent))
-        out = b.ra-jit("cache", "pull", address)
+        out = b.ra_jit("cache", "pull", address)
         check(f"a pack with {what}: rejected, said, counted, not in the store",
               out.returncode != 0 and name not in b.packs() and not b.partials() and "rejected packs/" + name + ".zst" in out.stderr
               and said_number(out.stderr, "objects rejected") == 1 and (other is None or b.packs() == {other: True}),
               out.stderr.strip().split("\n")[-1][-60:])
         bucket.put("packs/" + name + ".zst", sent)
-        out = b.ra-jit("cache", "pull", address)
+        out = b.ra_jit("cache", "pull", address)
         check("put back: fetched", out.returncode == 0 and b.packs().get(name) is True)
     # An object that is what the manifest says and unpacks to something else than the pack.
     address, bucket = remote.fresh()
     a, b = (Machine(top, f"s-{remote.name}-inside-{it}", remote) for it in "ab")
     name = a.add_pack(filler(f"{remote.name} inside", MIB))
-    a.ra-jit("cache", "push", address)
+    a.ra_jit("cache", "push", address)
     line = bucket.get("manifests/default").decode().split()
     for what, inside in (("another pack inside", packed(filler(f"{remote.name} other", MIB))), ("not compressed inside", b"x" * 4096)):
         bucket.put("packs/" + name + ".zst", inside)
         bucket.put("manifests/default", (" ".join(line[:4] + [digest(inside), str(len(inside))]) + "\n").encode())
-        out = b.ra-jit("cache", "pull", address)
+        out = b.ra_jit("cache", "pull", address)
         check(f"a compressed object with {what}: rejected after unpacking, nothing left",
               out.returncode != 0 and not b.packs() and not b.partials() and "rejected packs/" + name + ".zst" in out.stderr
               and said_number(out.stderr, "objects rejected") == 1 and b.cache("verify")[0],
@@ -957,9 +957,9 @@ def spoiled(top, remote):
     address, bucket = remote.fresh()
     a, b = (Machine(top, f"s-{remote.name}-gone-{it}", remote) for it in "ab")
     name = big_store(a, f"{remote.name} gone")
-    a.ra-jit("cache", "push", address)
+    a.ra_jit("cache", "push", address)
     bucket.delete("packs/" + name + ".zst")
-    out = b.ra-jit("cache", "pull", address)
+    out = b.ra_jit("cache", "pull", address)
     check("a pack the manifest lists that is not there: said", out.returncode != 0 and "is listed and is not there" in out.stderr
           and not b.packs() and not b.partials())
 
@@ -971,14 +971,14 @@ def guarded(top, remote):
     address, bucket = remote.fresh()
     a, b, c, d = (Machine(top, f"u-{remote.name}-{it}", remote) for it in "abcd")
     first = a.add_pack(filler(f"{remote.name} guarded 1", MIB))
-    out = a.ra-jit("cache", "push", address, env=nothing_asked)
+    out = a.ra_jit("cache", "push", address, env=nothing_asked)
     check("a machine with no keys pushes without being asked anything", out.returncode == 0 and "packs/" + first + ".zst" in bucket.objects())
     for value in ("", "0", "true"):
-        out = b.ra-jit("cache", "pull", address, env={"RA_JIT_REMOTE_UNSIGNED": value})
+        out = b.ra_jit("cache", "pull", address, env={"RA_JIT_REMOTE_UNSIGNED": value})
         check(f"a list nobody signed is not taken with RA_JIT_REMOTE_UNSIGNED={value!r}",
               out.returncode != 0 and "RA_JIT_REMOTE_UNSIGNED=1" in out.stderr and not b.packs() and not b.partials(),
               out.stderr.strip()[-60:])
-    out = b.ra-jit("cache", "pull", address)
+    out = b.ra_jit("cache", "pull", address)
     check("and is with RA_JIT_REMOTE_UNSIGNED=1", out.returncode == 0 and b.packs().get(first) is True, out.stdout.strip())
 
     # A pack is as long as its list says, as it is sent and as it unpacks: one byte less
@@ -991,7 +991,7 @@ def guarded(top, remote):
                       [(f"listed as {listed} sent", f"{pack} {size} {keys} {fmt} {zdigest} {listed}")
                        for listed in (0, int(zsize) - 1)]:
         bucket.put("manifests/default", (line + "\n").encode())
-        out = b.ra-jit("cache", "pull", address)
+        out = b.ra_jit("cache", "pull", address)
         check(f"a pack of {size} bytes, {zsize} sent, {what}: rejected, nothing kept",
               out.returncode != 0 and "1 of them rejected" in out.stderr and not b.packs() and not b.partials()
               and not [it for it in os.listdir(b.store) if it not in ("version", "lock", "turns")],
@@ -1001,11 +1001,11 @@ def guarded(top, remote):
     bombs, bomb_bucket = remote.fresh()
     bomber = Machine(top, f"u-{remote.name}-bomb", remote)
     bomb = bomber.add_pack(pack_of([(hashlib.sha256(b"bomb").digest(), bytes(64 * MIB))]))
-    bomber.ra-jit("cache", "push", bombs)
+    bomber.ra_jit("cache", "push", bombs)
     pack, size, keys, fmt, zdigest, zsize = bomb_bucket.get("manifests/default").decode().split()
     bomb_bucket.put("manifests/default", f"{pack} {MIB} {keys} {fmt} {zdigest} {zsize}\n".encode())
     address, sent = bombs, int(zsize)
-    out = b.ra-jit("cache", "pull", address)
+    out = b.ra_jit("cache", "pull", address)
     most = max([os.path.getsize(os.path.join(b.store, it)) for it in os.listdir(b.store)
                 if os.path.isfile(os.path.join(b.store, it))] + [0])
     check(f"{sent} bytes that unpack to 64 MiB, listed as 1 MiB: rejected, nothing kept",
@@ -1014,60 +1014,60 @@ def guarded(top, remote):
           out.stderr.strip().splitlines()[0][-60:])
     # A list is read to 16 MiB and no further.
     address, bucket = remote.fresh()
-    a.ra-jit("cache", "push", address, env=nothing_asked)
+    a.ra_jit("cache", "push", address, env=nothing_asked)
     manifest = bucket.get("manifests/default").decode()
     bucket.put("manifests/default", manifest.encode() + b"\n" * (16 * MIB - len(manifest)))
-    out = b.ra-jit("cache", "pull", address)
+    out = b.ra_jit("cache", "pull", address)
     check("a manifest of 16 MiB is read", out.returncode == 0 and b.packs().get(first) is True, out.stdout.strip()[:50])
     b.empty()
     bucket.put("manifests/default", manifest.encode() + b"\n" * (16 * MIB - len(manifest) + 1))
-    out = b.ra-jit("cache", "pull", address)
+    out = b.ra_jit("cache", "pull", address)
     check("one byte more and it is not", out.returncode != 0 and "is longer than" in out.stderr and not b.packs(),
           out.stderr.strip().splitlines()[0][-70:])
 
     # Signed lists have a turn, and a machine takes none older than it took before.
     key_file = os.path.join(remote.keys, "guarded.key")
-    public = a.ra-jit("cache", "keygen", key_file).stdout.strip()
+    public = a.ra_jit("cache", "keygen", key_file).stdout.strip()
     address, bucket = remote.fresh()
     signing, trusting = {"RA_JIT_REMOTE_SIGN": key_file}, {"RA_JIT_REMOTE_TRUST": public, "RA_JIT_REMOTE_UNSIGNED": ""}
     turn = lambda listed: int(listed.decode().splitlines()[-1].split()[2])
-    a.ra-jit("cache", "push", address, env=signing)
+    a.ra_jit("cache", "push", address, env=signing)
     old = bucket.get("manifests/default")
-    out = c.ra-jit("cache", "pull", address, env=trusting)
+    out = c.ra_jit("cache", "pull", address, env=trusting)
     check("C, trusting A's key, takes A's first list", out.returncode == 0 and set(c.packs()) == {first}, out.stdout.strip()[:40])
     second = a.add_pack(filler(f"{remote.name} guarded 2", MIB))
-    a.ra-jit("cache", "push", address, env=signing)
+    a.ra_jit("cache", "push", address, env=signing)
     new = bucket.get("manifests/default")
-    out = c.ra-jit("cache", "pull", address, env=trusting)
+    out = c.ra_jit("cache", "pull", address, env=trusting)
     check("and the second, which has a later turn", out.returncode == 0 and set(c.packs()) == {first, second}
           and turn(new) > turn(old) >= int(time.time()) - 3600, f"{turn(old)} then {turn(new)}")
     bucket.put("manifests/default", old)
     # Its packs go and what it remembers of the lists stays.
     for name in c.packs():
         os.remove(os.path.join(c.store, name))
-    out = c.ra-jit("cache", "pull", address, env=trusting)
+    out = c.ra_jit("cache", "pull", address, env=trusting)
     check("the first list put back: refused as older, nothing fetched",
           out.returncode != 0 and "an older list is not taken" in out.stderr and not c.packs() and not c.partials(),
           out.stderr.strip().splitlines()[0][-70:])
-    out = d.ra-jit("cache", "pull", address, env=trusting)
+    out = d.ra_jit("cache", "pull", address, env=trusting)
     check("a machine that never pulled takes it: it has nothing to tell by", out.returncode == 0 and set(d.packs()) == {first})
-    out = c.ra-jit("cache", "forget", address)
-    again = c.ra-jit("cache", "pull", address, env=trusting)
+    out = c.ra_jit("cache", "forget", address)
+    again = c.ra_jit("cache", "pull", address, env=trusting)
     check("`cache forget` has C take whatever is there", out.returncode == 0 and "forgotten" in out.stdout
           and again.returncode == 0 and set(c.packs()) == {first}, out.stdout.strip()[-40:])
     # The signer, under which the list was put back, signs nothing on top of it.
     third = a.add_pack(filler(f"{remote.name} guarded 3", MIB))
-    out = a.ra-jit("cache", "push", address, env=signing)
+    out = a.ra_jit("cache", "push", address, env=signing)
     newest = bucket.get("manifests/default")
     names = {line.split()[0] + ".pack" for line in newest.decode().splitlines()[:-1]}
     check("A, pushing over the list that was put back, writes a new one with a later turn",
           out.returncode == 0 and "an older list is not taken" in out.stderr and turn(newest) > turn(new) and third in names,
           f"turn {turn(newest)}, {len(names)} packs")
     bucket.put("manifests/default", newest)
-    out = c.ra-jit("cache", "pull", address, env=trusting)
+    out = c.ra_jit("cache", "pull", address, env=trusting)
     check("and C, given the newest, takes it and then not the second again", out.returncode == 0 and third in c.packs())
     bucket.put("manifests/default", new)
-    out = c.ra-jit("cache", "pull", address, env=trusting)
+    out = c.ra_jit("cache", "pull", address, env=trusting)
     check("the second list put back after the third: refused", out.returncode != 0 and "an older list is not taken" in out.stderr)
 
     # Collecting the remote is not a way around the signature: a machine with no key takes
@@ -1075,20 +1075,20 @@ def guarded(top, remote):
     bucket.put("manifests/default", newest)
     before = bucket.objects()
     for env in (nothing_asked, {}):
-        out = d.ra-jit("cache", "gc", "--remote", address, "--older-than", "0s", "--unlisted-after", "2h", env=env)
+        out = d.ra_jit("cache", "gc", "--remote", address, "--older-than", "0s", "--unlisted-after", "2h", env=env)
         check(f"`gc --remote` by a machine with no key{' told to take unsigned lists' if not env else ''}: the signed list stays",
               bucket.get("manifests/default") == newest and bucket.objects() == before, (out.stdout + out.stderr).strip()[-70:])
     d.add_pack(filler(f"{remote.name} guarded by d", MIB))
-    out = d.ra-jit("cache", "push", address, env=nothing_asked)
+    out = d.ra_jit("cache", "push", address, env=nothing_asked)
     check("nor does its push write over the signed list", out.returncode != 0 and "is signed" in out.stderr
           and bucket.get("manifests/default") == newest, out.stderr.strip()[-70:])
     time.sleep(1.1)
-    out = a.ra-jit("cache", "gc", "--remote", address, "--older-than", "0s", "--unlisted-after", "2h", env=signing)
+    out = a.ra_jit("cache", "gc", "--remote", address, "--older-than", "0s", "--unlisted-after", "2h", env=signing)
     after = bucket.get("manifests/default")
     check("the signer collects: the list is signed again, at a later turn",
           out.returncode == 0 and after != newest and after.decode().splitlines()[-1].startswith(f"signed {public} ")
           and turn(after) > turn(newest), f"turn {turn(after)}")
-    out = c.ra-jit("cache", "pull", address, env=trusting)
+    out = c.ra_jit("cache", "pull", address, env=trusting)
     check("and C takes it", out.returncode == 0, out.stdout.strip()[:50])
 
 
@@ -1121,10 +1121,10 @@ def poisoned(top, remote, a, crates, target, workspace, address, bucket, expecte
     # 2. The same with the manifest rewritten to name the changed pack by its own hash: every
     #    hash fits. Only a signature tells this list from A's.
     key_file = os.path.join(remote.keys, "a.key")
-    public = a.ra-jit("cache", "keygen", key_file).stdout.strip()
+    public = a.ra_jit("cache", "keygen", key_file).stdout.strip()
     signed_address, signed_bucket = remote.fresh()
     signing = {"RA_JIT_REMOTE_SIGN": key_file}
-    out = a.ra-jit("cache", "push", signed_address, env=signing)
+    out = a.ra_jit("cache", "push", signed_address, env=signing)
     trusted = signed_bucket.get("manifests/default").decode()
     check("A signs its manifest", out.returncode == 0 and trusted.splitlines()[-1].startswith(f"signed {public} "))
     b = machine("signed")
@@ -1152,15 +1152,15 @@ def poisoned(top, remote, a, crates, target, workspace, address, bucket, expecte
     check("a forged manifest with no signature: refused", "is not signed" in log and forged_name + ".pack" not in b.packs()
           and b.run() == expected)
     other_key = os.path.join(remote.keys, "other.key")
-    a.ra-jit("cache", "keygen", other_key)
+    a.ra_jit("cache", "keygen", other_key)
     c = Machine(top, f"p-{remote.name}-other", remote)
     shutil.copytree(a.store, c.store)
-    out = c.ra-jit("cache", "push", signed_address, env={"RA_JIT_REMOTE_SIGN": other_key})
+    out = c.ra_jit("cache", "push", signed_address, env={"RA_JIT_REMOTE_SIGN": other_key})
     b = machine("stranger")
     log, _ = b.build(crates, env={"RA_JIT_REMOTE": signed_address, "RA_JIT_REMOTE_TRUST": public})
     check("a manifest signed by a key B does not trust: refused", out.returncode == 0 and "not a key this machine trusts" in log
           and compiled(log) > 0 and b.run() == expected)
-    out = c.ra-jit("cache", "push", signed_address, env={"RA_JIT_REMOTE_TRUST": public})
+    out = c.ra_jit("cache", "push", signed_address, env={"RA_JIT_REMOTE_TRUST": public})
     check("a machine that trusts and cannot sign does not push", out.returncode != 0 and "RA_JIT_REMOTE_SIGN" in out.stderr)
 
     # 3. What B does with the forged manifest when it trusts nobody: said in the report.
@@ -1182,7 +1182,7 @@ def lazy(top, remote, a, crates, target, workspace, expected):
     print(f"{remote.name}: packs fetched as the build asks", flush=True)
     address, bucket = remote.fresh()
     unused = big_store(a, f"{remote.name} unused")
-    out = a.ra-jit("cache", "push", address)
+    out = a.ra_jit("cache", "push", address)
     os.remove(os.path.join(a.store, unused))
     b = Machine(top, f"lazy-{remote.name}", remote)
     b.checkout(workspace)
@@ -1261,7 +1261,7 @@ def measure(args):
         pulled = ""
         if deps:
             directory = os.path.join("target", "debug")
-            out = m.ra-jit("deps", "pull", address, directory, cwd=m.ws)
+            out = m.ra_jit("deps", "pull", address, directory, cwd=m.ws)
             pulled = out.stdout.strip() + " | " + out.stderr.strip().split("\n")[-1]
         t_deps = time.time() - start
         t_cargo = m.cargo(target)
@@ -1290,7 +1290,7 @@ def measure(args):
         address, bucket = remote.fresh()
         a, alone = fresh("a", {"RA_JIT_REMOTE": address}, None)
         show("A, nothing anywhere, sends its store", alone)
-        out = a.ra-jit("deps", "push", address, os.path.join("target", "debug"), cwd=a.ws)
+        out = a.ra_jit("deps", "push", address, os.path.join("target", "debug"), cwd=a.ws)
         print(f"    {out.stdout.strip()} | {out.stderr.strip().splitlines()[-1]}")
         shutil.rmtree(a.dir, ignore_errors=True)
         sizes = bucket.objects()

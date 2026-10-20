@@ -689,7 +689,9 @@ fn keys_object(keys: &Digest) -> String {
     format!("keys/{keys}")
 }
 
-/// The sealed packs of a store, by the hash their names say.
+/// The sealed packs of a store, by the hash their names say. Packs of records copied forward
+/// (`.refresh`) are not among them: each of those records was in a `.pack` first, which is
+/// what is sent.
 fn local_packs(store: &StoreDir) -> anyhow::Result<BTreeSet<Digest>> {
     let names = store.packs()?;
     Ok(names.iter().filter_map(|it| Digest::parse(it.strip_suffix(".pack")?)).collect())
@@ -864,13 +866,13 @@ async fn lacking(
     Ok((lacking.into_iter().map(|it| it.0).collect(), here_already.len()))
 }
 
-/// Removes the packs that have gone unused the longest until the store is under its limit,
+/// Removes the packs sealed the longest ago until the store is under its limit,
 /// which what was just fetched may have put it over.
 async fn keep_under(dir: StoreDir, limit: Option<u64>) -> anyhow::Result<String> {
     let collected = tokio::task::spawn_blocking(move || dir.collect(limit)).await??;
     Ok(match collected.evicted {
         0 => String::new(),
-        evicted => format!(", {evicted} packs unused the longest evicted to stay under the limit"),
+        evicted => format!(", {evicted} packs sealed the longest ago evicted to stay under the limit"),
     })
 }
 
@@ -1038,9 +1040,11 @@ fn stats(store: &Path) -> anyhow::Result<()> {
         Some(limit) => println!("limit bytes: {limit}"),
         None => println!("limit bytes: off"),
     }
-    if let Some((first, last)) = stats.used {
-        println!("least recently used: {} seconds ago", seconds_since(first));
-        println!("most recently used: {} seconds ago", seconds_since(last));
+    println!("copied forward packs: {}", stats.copied_packs);
+    println!("copied forward bytes: {}", stats.copied_bytes);
+    if let Some((first, last)) = stats.sealed {
+        println!("oldest sealed: {} seconds ago", seconds_since(first));
+        println!("newest sealed: {} seconds ago", seconds_since(last));
     }
     Ok(())
 }

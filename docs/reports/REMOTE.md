@@ -59,7 +59,7 @@ The merge put the remote on the format-2 store. What that means in the code:
   rejected after the fetch and never gets its name.
 - `RA_JIT_CACHE_MAX`: a pull fetches the listed packs that fit under the limit and says how
   many do not ("N left that do not fit under RA_JIT_CACHE_MAX"), then runs the store's
-  collection, which evicts the packs unused the longest if the store is now over. A pulled
+  collection, which evicts the packs sealed the longest ago if the store is now over. A pulled
   pack is a pack like any other after that. One that is evicted is missing again, so the
   next pull fetches it.
 - A collection also makes one pack of many small ones, under a new name. So "is this

@@ -30,7 +30,7 @@ instead.
 Before a record is written, the store hashes that key together with the store format, a
 hash of the ra-jit executable and the toolchain's commit. An entry is therefore only ever
 found by the same ra-jit binary, for the same toolchain. Upgrading ra-jit makes the old
-entries unreachable; they are removed over time as least recently used.
+entries unreachable; they are removed over time as their packs reach the end of the queue.
 
 `harness/keys.py` tests the keying: it changes, one at a time, each thing code can depend
 on that is not the text of its file, and checks that a build with a store filled before the
@@ -81,18 +81,29 @@ at all it prints `store: not used: ...` and runs without a store.
 
 A collection runs when a daemon opens the store, after it seals a pack, and on
 `ra-jit cache gc`. It seals open packs left behind, removes old temporaries, merges sealed
-packs smaller than 4M into one when there are more than 16 of them, and then removes the
-least recently used packs until the rest fit under `RA_JIT_CACHE_MAX`. A pack counts as used
-when a daemon read a value from it during a build.
+packs smaller than 4M into one when there are more than 16 of them (each kind apart, see
+below), and then removes the packs sealed the longest ago, whole, until the rest fit under
+`RA_JIT_CACHE_MAX`. A merged pack counts as sealed when the newest of its inputs was.
 
-Eviction is by pack, not by record. One recently used record keeps its whole pack, which
-can be up to 64M, so a limit smaller than a few packs evicts nearly everything.
+The packs are a queue, and what is still used is kept by moving it to the front: when a
+daemon reads a value from a pack in the oldest quarter of the limit (the danger zone), it
+also appends that record to a pack of its own, `<pid>-<nanos>.refreshing`, sealed as
+`<sha256>.refresh` at the end of every build that copied anything (before the oldest
+packs are collected, so that no copy is lost with the pack it came from) or when it is
+full. Small `.refresh` packs are merged like small packs. When a key is in more than one pack,
+the newest is read. This is the copy-on-read scheme of Buildbarn's local blob store: a
+hot record outlives its pack, and a cold one goes with it. A daemon prints how many it
+copied as `, N copied forward` on its `store:` line.
+
+Copied records are not sent by `ra-jit cache push`: only `.pack` files are, and every
+copied record was in a `.pack` first. A record whose pack was evicted before it was
+pushed, and that lives on only in a copy, is not sent.
 
 ### Commands
 
 These act on the store `RA_JIT_CACHE` names.
 
-    ra-jit cache stats                 format, packs, bytes, limit, oldest and newest use
+    ra-jit cache stats                 format, packs, bytes, limit, copies, oldest and newest seal
     ra-jit cache verify                read everything; exit 1 if a pack is not what was written
     ra-jit cache gc [--max SIZE]       collect now, to RA_JIT_CACHE_MAX or to SIZE
 
