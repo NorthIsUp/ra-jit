@@ -698,8 +698,9 @@ pub(crate) fn serve() -> anyhow::Result<()> {
     });
     daemon.spare();
     eprintln!(
-        "daemon {} of pid {} listens on {}",
+        "daemon {} ({}) of pid {} listens on {}",
         daemon.version,
+        crate::version(),
         std::process::id(),
         socket.display()
     );

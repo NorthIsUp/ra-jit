@@ -18,8 +18,9 @@ use crate::theme::Theme;
 pub struct Sending {
     /// The newest text not sent yet, when it was typed, and whether the file needs it.
     next: Option<(String, Instant, bool)>,
-    /// When the text sent last was typed: the patch built of it lands after this.
-    pub in_flight: Option<Instant>,
+    /// When the text sent last was typed, and when it was sent: the patch built of it lands
+    /// after both. The time between is the edit's wait for the one before to be answered.
+    pub in_flight: Option<(Instant, Instant)>,
     /// What the daemon answered last, or why it could not be asked.
     pub answer: Option<Result<String, String>>,
     /// Edits sent so far.
@@ -53,7 +54,7 @@ fn send_as_typed(file: PathBuf, shared: Shared) {
             loop {
                 if let Some(next) = sending.next.take() {
                     sending.busy = true;
-                    sending.in_flight = Some(next.1);
+                    sending.in_flight = Some((next.1, Instant::now()));
                     break next;
                 }
                 sending = shared.1.wait(sending).unwrap_or_else(PoisonError::into_inner);

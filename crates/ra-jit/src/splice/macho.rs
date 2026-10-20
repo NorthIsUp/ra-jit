@@ -29,6 +29,7 @@
 use std::{
     fs::{File, OpenOptions},
     path::Path,
+    sync::atomic::AtomicBool,
 };
 
 use anyhow::{Context, bail, ensure};
@@ -37,7 +38,6 @@ use object::{
     SectionIndex, SymbolIndex, SymbolKind, macho,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
-use sha2::{Digest, Sha256};
 
 use super::{Spliced, Stamp};
 
@@ -253,6 +253,7 @@ impl Signature {
         kept: u64,
         dirty: &[(u64, Vec<u8>)],
         added: &[u8],
+        give_up: &AtomicBool,
     ) -> anyhow::Result<Vec<u8>> {
         let limit = kept + added.len() as u64;
         let page_len = self.page;
@@ -269,10 +270,36 @@ impl Signature {
             .collect();
         for index in pages {
             super::read_exact_at(&file, &mut page, (index * page_len) as u64)?;
-            hashes[index * Self::HASH..][..Self::HASH].copy_from_slice(&Sha256::digest(&page));
+            hashes[index * Self::HASH..][..Self::HASH]
+                .copy_from_slice(&super::sha256::digest(&page));
         }
-        for page in added.chunks(page_len) {
-            hashes.extend_from_slice(&Sha256::digest(page));
+        // Every page appended, tens of megabytes for a large debug build: without the
+        // processor's SHA-256 instructions the pages are hashed on several threads.
+        let pages: Vec<&[u8]> = added.chunks(page_len).collect();
+        let threads = match super::sha256::fast() {
+            true => 1,
+            false => std::thread::available_parallelism().map_or(1, |it| it.get()).min(8),
+        };
+        let part = pages.len().div_ceil(threads).max(1);
+        let parts: Vec<Result<Vec<u8>, super::GaveUp>> = std::thread::scope(|scope| {
+            let parts: Vec<_> = (pages.chunks(part))
+                .map(|pages| {
+                    scope.spawn(move || -> Result<Vec<u8>, super::GaveUp> {
+                        let mut hashes = Vec::with_capacity(pages.len() * Self::HASH);
+                        for (index, page) in pages.iter().enumerate() {
+                            if index % 256 == 0 {
+                                super::go_on(give_up)?;
+                            }
+                            hashes.extend_from_slice(&super::sha256::digest(page));
+                        }
+                        Ok(hashes)
+                    })
+                })
+                .collect();
+            parts.into_iter().map(|it| it.join().expect("hashing pages panicked")).collect()
+        });
+        for part in parts {
+            hashes.extend_from_slice(&part?);
         }
 
         let mut directory = self.directory.clone();
@@ -640,7 +667,7 @@ impl Image {
             }
             let hash =
                 new.hashes.get_mut(index * Signature::HASH..).context("a short signature")?;
-            hash[..Signature::HASH].copy_from_slice(&Sha256::digest(&content));
+            hash[..Signature::HASH].copy_from_slice(&super::sha256::digest(&content));
         }
         self.signature = new;
         Ok(())
@@ -1769,7 +1796,15 @@ pub(super) fn splice(
     originals: &mut FxHashMap<u64, Vec<u8>>,
     stamp: &mut Stamp,
     patch: &[u8],
+    give_up: &AtomicBool,
 ) -> anyhow::Result<Spliced> {
+    let start = std::time::Instant::now();
+    let mut steps = Vec::new();
+    let mut step = |name: &'static str, from: &mut std::time::Instant| {
+        steps.push((name, from.elapsed()));
+        *from = std::time::Instant::now();
+    };
+    let mut from = start;
     let patch = Patch::read(patch, image)?;
     let defined: FxHashSet<&[u8]> = patch.replaced.iter().map(|it| it.name).collect();
     ensure!(
@@ -1777,13 +1812,20 @@ pub(super) fn splice(
         "a function the executable was linked with a patch of is as it first was"
     );
     let addition = patch.place(image)?;
+    step("place", &mut from);
 
     ensure!(Stamp::of(&File::open(path)?)? == *stamp, "the executable was written by someone else");
     let mut copy = path.as_os_str().to_owned();
     copy.push(".spliced");
     _ = std::fs::remove_file(&copy);
+    super::go_on(give_up)?;
     std::fs::copy(path, &copy)?;
+    step("copy", &mut from);
+    // What is undone of the last splice is the copy's: the executable keeps it until the
+    // rename, and a splice given up on leaves it as it was.
+    let undone = undo.clone();
     let written = (|| -> anyhow::Result<Stamp> {
+        super::go_on(give_up)?;
         let file = OpenOptions::new().read(true).write(true).open(&copy)?;
         for (offset, bytes) in undo.drain(..).rev() {
             super::write_all_at(&file, &bytes, offset)?;
@@ -1806,14 +1848,30 @@ pub(super) fn splice(
             undo.push((*offset, old));
             super::write_all_at(&file, bytes, *offset)?;
         }
-        let signature = image.signature.of(&file, addition.offset, &dirty, &addition.appended)?;
-        super::write_all_at(&file, &addition.appended, addition.offset)?;
+        step("overwrite", &mut from);
+        let signature =
+            image.signature.of(&file, addition.offset, &dirty, &addition.appended, give_up)?;
+        step("sign", &mut from);
+        // In parts, to give up between them.
+        for (index, part) in addition.appended.chunks(1 << 20).enumerate() {
+            super::go_on(give_up)?;
+            super::write_all_at(&file, part, addition.offset + (index << 20) as u64)?;
+        }
         super::write_all_at(&file, &signature, addition.offset + addition.appended.len() as u64)?;
+        step("append", &mut from);
+        super::go_on(give_up)?;
         std::fs::rename(&copy, path)?;
+        step("rename", &mut from);
         Stamp::of(&file)
     })();
+    if std::env::var_os("RA_JIT_STATS").is_some() {
+        let shown: Vec<String> =
+            steps.iter().map(|(name, took)| format!("{name}={}", took.as_micros())).collect();
+        eprintln!("splice-us: {} bytes={}", shown.join(" "), addition.appended.len());
+    }
     if written.is_err() {
         _ = std::fs::remove_file(&copy);
+        *undo = undone;
     }
     *stamp = written?;
     Ok(Spliced { redirected: addition.redirected, appended: addition.appended.len() })
