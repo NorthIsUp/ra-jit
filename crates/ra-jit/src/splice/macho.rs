@@ -29,6 +29,7 @@
 use std::{
     fs::{File, OpenOptions},
     path::Path,
+    sync::atomic::AtomicBool,
 };
 
 use anyhow::{Context, bail, ensure};
@@ -253,6 +254,7 @@ impl Signature {
         kept: u64,
         dirty: &[(u64, Vec<u8>)],
         added: &[u8],
+        give_up: &AtomicBool,
     ) -> anyhow::Result<Vec<u8>> {
         let limit = kept + added.len() as u64;
         let page_len = self.page;
@@ -271,7 +273,10 @@ impl Signature {
             super::read_exact_at(&file, &mut page, (index * page_len) as u64)?;
             hashes[index * Self::HASH..][..Self::HASH].copy_from_slice(&Sha256::digest(&page));
         }
-        for page in added.chunks(page_len) {
+        for (index, page) in added.chunks(page_len).enumerate() {
+            if index % 256 == 0 {
+                super::go_on(give_up)?;
+            }
             hashes.extend_from_slice(&Sha256::digest(page));
         }
 
@@ -1766,6 +1771,7 @@ pub(super) fn splice(
     originals: &mut FxHashMap<u64, Vec<u8>>,
     stamp: &mut Stamp,
     patch: &[u8],
+    give_up: &AtomicBool,
 ) -> anyhow::Result<Spliced> {
     let start = std::time::Instant::now();
     let mut steps = Vec::new();
@@ -1787,9 +1793,14 @@ pub(super) fn splice(
     let mut copy = path.as_os_str().to_owned();
     copy.push(".spliced");
     _ = std::fs::remove_file(&copy);
+    super::go_on(give_up)?;
     std::fs::copy(path, &copy)?;
     step("copy", &mut from);
+    // What is undone of the last splice is the copy's: the executable keeps it until the
+    // rename, and a splice given up on leaves it as it was.
+    let undone = undo.clone();
     let written = (|| -> anyhow::Result<Stamp> {
+        super::go_on(give_up)?;
         let file = OpenOptions::new().read(true).write(true).open(&copy)?;
         for (offset, bytes) in undo.drain(..).rev() {
             super::write_all_at(&file, &bytes, offset)?;
@@ -1813,11 +1824,17 @@ pub(super) fn splice(
             super::write_all_at(&file, bytes, *offset)?;
         }
         step("overwrite", &mut from);
-        let signature = image.signature.of(&file, addition.offset, &dirty, &addition.appended)?;
+        let signature =
+            image.signature.of(&file, addition.offset, &dirty, &addition.appended, give_up)?;
         step("sign", &mut from);
-        super::write_all_at(&file, &addition.appended, addition.offset)?;
+        // In parts, to give up between them.
+        for (index, part) in addition.appended.chunks(1 << 20).enumerate() {
+            super::go_on(give_up)?;
+            super::write_all_at(&file, part, addition.offset + (index << 20) as u64)?;
+        }
         super::write_all_at(&file, &signature, addition.offset + addition.appended.len() as u64)?;
         step("append", &mut from);
+        super::go_on(give_up)?;
         std::fs::rename(&copy, path)?;
         step("rename", &mut from);
         Stamp::of(&file)
@@ -1829,6 +1846,7 @@ pub(super) fn splice(
     }
     if written.is_err() {
         _ = std::fs::remove_file(&copy);
+        *undo = undone;
     }
     *stamp = written?;
     Ok(Spliced { redirected: addition.redirected, appended: addition.appended.len() })

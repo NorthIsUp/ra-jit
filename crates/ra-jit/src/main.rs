@@ -16,6 +16,7 @@ mod process;
 mod remote;
 mod socket;
 mod splice;
+mod splicer;
 mod stub;
 mod symbols;
 mod tree;
@@ -2896,10 +2897,15 @@ fn link(
     patch: Option<&Path>,
     object: &Path,
     patched: bool,
+    defer: bool,
 ) -> anyhow::Result<()> {
     static SPLICING: std::sync::LazyLock<bool> =
         std::sync::LazyLock::new(|| std::env::var_os("RA_JIT_SPLICE").is_none_or(|it| it != "0"));
     let splice = splice.filter(|_| *SPLICING);
+    // An older edit's splice under way gives the executable back.
+    if let Some(binary) = splice {
+        splicer::claim(binary);
+    }
     // An executable linked with the object as it was is not one to add to, also when the
     // object was written for a request that does not link.
     let rewritten = match splice {
@@ -2918,6 +2924,10 @@ fn link(
         None => false,
     };
     let Some(cmd) = cmd else { return Ok(()) };
+    // This splice or link has the edits of the one that waits.
+    if let Some(binary) = splice {
+        splicer::forget(binary);
+    }
     let start = Instant::now();
     let mut declined = String::new();
     let running = splice.map_or(Ok(false), set_aside)?;
@@ -2933,12 +2943,23 @@ fn link(
         let spliced = match known {
             _ if rewritten => Err(anyhow::anyhow!("the whole object was written again")),
             _ if running => Err(anyhow::anyhow!("the executable is running")),
-            Some(Ok(mut baseline)) if baseline.is_of(binary) => {
-                let spliced = std::fs::read(patch)
+            Some(Ok(mut baseline)) if baseline.is_of(binary) => match std::fs::read(patch) {
+                // The program has the edit: the executable on disk is for its next start,
+                // and is spliced once the edits stop (see `splicer`).
+                Ok(patch) if defer && baseline.uuid().is_some() => {
+                    lock(&LINKED).insert(binary.to_owned(), Executable::Read(Box::new(baseline)));
+                    splicer::defer(binary, patch);
+                    eprintln!(
+                        "link: {:.1?} (the splice waits for the edits to stop)",
+                        start.elapsed()
+                    );
+                    return Ok(());
+                }
+                read => read
                     .map_err(anyhow::Error::from)
-                    .and_then(|patch| baseline.splice(&patch));
-                spliced.map(|spliced| (baseline, spliced))
-            }
+                    .and_then(|patch| baseline.splice(&patch, &AtomicBool::new(false)))
+                    .map(|spliced| (baseline, spliced)),
+            },
             Some(Ok(_)) => Err(anyhow::anyhow!("another executable is asked for")),
             Some(Err(why)) => Err(why),
             None => Err(anyhow::anyhow!("no executable to add to")),
@@ -3533,6 +3554,9 @@ enum Request {
     /// Bring the objects up to date and leave the linking to the client, which loads the
     /// patch object into a program that is running.
     Patch,
+    /// An editor's text, built as `Sync` is: the program that runs has the edit before the
+    /// executable on disk does, which is written once the edits stop.
+    Edit,
 }
 
 impl Request {
@@ -3548,6 +3572,7 @@ impl Request {
         match self {
             Request::Sync => "sync",
             Request::Patch => "patch",
+            Request::Edit => "edit",
         }
     }
 }
@@ -4927,6 +4952,7 @@ fn run_holding(
         args.patch.as_deref(),
         &args.out,
         false,
+        false,
     )?;
     // What this build added goes to the other machines while the daemon waits for edits; a
     // build that is not a daemon's has nothing to wait for but this.
@@ -5078,6 +5104,16 @@ fn run_holding(
                     let Some((request, target, stream)) = builds.waiting.pop_front() else {
                         break;
                     };
+                    // What a client asks of is the executable on disk: the splices that wait
+                    // for the edits to stop are done first.
+                    for binary in splicer::flush() {
+                        let linked_at =
+                            |it: &&mut Program| it.args.splice.as_deref() == Some(&*binary);
+                        programs
+                            .iter_mut()
+                            .filter(linked_at)
+                            .for_each(|it| it.unbuilt.stale = true);
+                    }
                     let asked = target.clone();
                     let mut target = target;
                     // A checkout that is not what it was loaded from is loaded again before
@@ -5398,11 +5434,11 @@ fn run_holding(
                         outputs.insert(at, Outputs::of(&programs[at].args));
                         if let Ok(stream) = edited.client.stream.try_clone() {
                             let client = Client { stream, env: edited.client.env.clone() };
-                            clients.push((at, (Request::Sync, target(at), client)));
+                            clients.push((at, (Request::Edit, target(at), client)));
                         }
                     }
                     outputs.insert(owners[0], Outputs::of(&programs[owners[0]].args));
-                    clients.push((owners[0], (Request::Sync, target(owners[0]), edited.client)));
+                    clients.push((owners[0], (Request::Edit, target(owners[0]), edited.client)));
                 }
                 builds.stuck = clients.is_empty();
                 if builds.stuck {
@@ -5681,6 +5717,7 @@ fn run_holding(
                 }
                 // The program is linked unless every client of it loads the patch.
                 let link = clients.iter().any(|it| it.0 != Request::Patch);
+                let defer = clients.iter().all(|it| it.0 == Request::Edit);
                 let patches = program.known.patches() && !program.moved;
                 let kept = patches || program.interrupted >= INTERRUPTIONS;
                 // What stands in for the program while it is built says what program it is.
@@ -5702,7 +5739,7 @@ fn run_holding(
                 let wanted = outputs.remove(&at);
                 std::thread::spawn(move || {
                     let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        program.sync(&db, &listed, &paths, &edit, wanted.as_ref(), link)
+                        program.sync(&db, &listed, &paths, &edit, wanted.as_ref(), link, defer)
                     }));
                     // The write that interrupts waits for this.
                     drop(db);
@@ -5729,10 +5766,14 @@ fn run_holding(
                         let link = !clients.iter().any(|it| it.0 == at)
                             || clients.iter().any(|it| it.0 == at && it.1.0 != Request::Patch);
                         let link = link && !detached;
+                        let mut theirs = clients.iter().filter(|it| it.0 == at).peekable();
+                        let defer =
+                            theirs.peek().is_some() && theirs.all(|it| it.1.0 == Request::Edit);
                         let (db, listed, paths, edit) = (db.clone(), &*listed, &*paths, &edit);
                         let wanted = outputs.get(&at);
-                        let build = scope
-                            .spawn(move || program.sync(&db, listed, paths, edit, wanted, link));
+                        let build = scope.spawn(move || {
+                            program.sync(&db, listed, paths, edit, wanted, link, defer)
+                        });
                         (at, build)
                     })
                     .collect();
@@ -5815,6 +5856,7 @@ fn run_holding(
             let patched = built.starts_with("patch=");
             let spliced = patch.clone();
             let link_cmd = link_cmd.filter(|_| clients.iter().any(|it| it.0 != Request::Patch));
+            let defer = clients.iter().all(|it| it.0 == Request::Edit);
             let sender = sender.clone();
             let base = &programs[at].args.checkout;
             let over = viewed.get(base).unwrap_or(base);
@@ -5828,6 +5870,7 @@ fn run_holding(
                     spliced.as_deref(),
                     &object,
                     patched,
+                    defer,
                 )
                 .err();
                 if failed.is_none() {
@@ -6138,6 +6181,7 @@ impl Program {
         edit: &Edit,
         wanted: Option<&Outputs>,
         link_it: bool,
+        defer: bool,
     ) -> anyhow::Result<Result<String, String>> {
         // The crates left to rustc are as edited when a client has named what it built since.
         let named_anew = std::mem::take(&mut self.unbuilt.named_anew);
@@ -6199,7 +6243,7 @@ impl Program {
             let patched = known.stats.patched.is_some();
             let (splice, patch) = (args.splice.as_deref(), args.patch.as_deref());
             let cmd = args.link_cmd.as_deref().filter(|_| failed.is_none() && link_it);
-            let unlinked = link(cmd, splice, patch, &args.out, patched).err();
+            let unlinked = link(cmd, splice, patch, &args.out, patched, defer).err();
             failed = failed.or(unlinked.map(|it| it.to_string()));
         }
         if let Some(why) = &failed {

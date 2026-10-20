@@ -38,6 +38,7 @@ use std::{
     fs::{File, OpenOptions},
     mem::offset_of,
     path::{Path, PathBuf},
+    sync::atomic::AtomicBool,
     thread::JoinHandle,
     time::SystemTime,
 };
@@ -195,7 +196,9 @@ impl Baseline {
 
     /// Brings the executable from what the linker wrote to that with `patch` in place of the
     /// functions it defines. On an error the file may be neither: it has to be linked again.
-    pub(crate) fn splice(&mut self, patch: &[u8]) -> anyhow::Result<Spliced> {
+    /// A Mach-O splice stops when `give_up` is set, with [`GaveUp`], and leaves the executable
+    /// and what is known of it as they were.
+    pub(crate) fn splice(&mut self, patch: &[u8], give_up: &AtomicBool) -> anyhow::Result<Spliced> {
         self.read_again_if_signed()?;
         let (addition, len) = match &self.image {
             Executable::Elf(image) => {
@@ -216,7 +219,7 @@ impl Baseline {
             }
             Executable::MachO(image) => {
                 let Baseline { path, baked, undo, originals, stamp, .. } = self;
-                return macho::splice(image, path, baked, undo, originals, stamp, patch);
+                return macho::splice(image, path, baked, undo, originals, stamp, patch, give_up);
             }
         };
 
@@ -326,6 +329,22 @@ impl Baseline {
         );
         Ok(())
     }
+}
+
+/// Why a splice stopped half way: a newer edit wants the executable.
+#[derive(Debug)]
+pub(crate) struct GaveUp;
+
+impl std::fmt::Display for GaveUp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("given up for a newer edit")
+    }
+}
+
+impl std::error::Error for GaveUp {}
+
+fn go_on(give_up: &AtomicBool) -> Result<(), GaveUp> {
+    if give_up.load(std::sync::atomic::Ordering::Relaxed) { Err(GaveUp) } else { Ok(()) }
 }
 
 #[cfg(unix)]
