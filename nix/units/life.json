@@ -3090,7 +3090,7 @@
    "license_file": "",
    "links": null,
    "name": "ra-jit-live",
-   "readme": "",
+   "readme": "README.md",
    "repository": "https://github.com/indexable-inc/ra-jit",
    "rust_version": "",
    "source": {
