@@ -1,8 +1,8 @@
 {
  "dir": ".",
  "inputs": {
-  "Cargo.lock": "f70a157fe16748a2c4f7b422df454c5f780382275470e469565e6dad21df6b8c",
-  "Cargo.toml": "6a80e8265b739e9a27dd7205ef765bad8fa3f03a0ace15b2017aad77872c1905"
+  "Cargo.lock": "66e535cf1ed73ebc4b486cc7e1b090a06f8342188a257b99d6f161ccb50ff32a",
+  "Cargo.toml": "bd5b5a13eaab5fb3e2cdd68e6f25b4282fd4c79edb2ca95acba2d5bb96d8a5a8"
  },
  "packages": {
   "adler2@2.0.1": {
@@ -4343,7 +4343,7 @@
   "ra-jit-live@0.1.0": {
    "authors": "Indexable, Inc.",
    "description": "Applies ra-jit's edits to a program while it runs",
-   "homepage": "",
+   "homepage": "https://ra-jit.ix.dev",
    "license": "MIT OR Apache-2.0",
    "license_file": "",
    "links": null,
@@ -4357,22 +4357,22 @@
    },
    "version": "0.1.0"
   },
-  "ra-jit@0.0.0": {
+  "ra-jit@0.1.0": {
    "authors": "ra-jit contributors",
-   "description": "Spike: persistent compiler on top of rust-analyzer's database",
-   "homepage": "",
+   "description": "Rust compiler daemon over rust-analyzer's MIR: incremental builds and live edits through cargo",
+   "homepage": "https://ra-jit.ix.dev",
    "license": "MIT OR Apache-2.0",
    "license_file": "",
    "links": null,
    "name": "ra-jit",
    "readme": "",
-   "repository": "",
+   "repository": "https://github.com/indexable-inc/ra-jit",
    "rust_version": "1.98",
    "source": {
     "dir": "crates/ra-jit",
     "kind": "path"
    },
-   "version": "0.0.0"
+   "version": "0.1.0"
   },
   "rand_core@0.6.4": {
    "authors": "The Rand Project Developers:The Rust Project Developers",
@@ -17842,7 +17842,7 @@
      "features": [],
      "kind": "bin",
      "mode": "build",
-     "pkg": "ra-jit@0.0.0",
+     "pkg": "ra-jit@0.1.0",
      "profile": {
       "codegen_units": null,
       "debug_assertions": false,
@@ -18063,7 +18063,7 @@
      "features": [],
      "kind": "bin",
      "mode": "build",
-     "pkg": "ra-jit@0.0.0",
+     "pkg": "ra-jit@0.1.0",
      "profile": {
       "codegen_units": null,
       "debug_assertions": false,
@@ -18284,7 +18284,7 @@
      "features": [],
      "kind": "bin",
      "mode": "build",
-     "pkg": "ra-jit@0.0.0",
+     "pkg": "ra-jit@0.1.0",
      "profile": {
       "codegen_units": null,
       "debug_assertions": false,
@@ -18505,7 +18505,7 @@
      "features": [],
      "kind": "bin",
      "mode": "build",
-     "pkg": "ra-jit@0.0.0",
+     "pkg": "ra-jit@0.1.0",
      "profile": {
       "codegen_units": null,
       "debug_assertions": false,
@@ -34182,7 +34182,7 @@
      "features": [],
      "kind": "bin",
      "mode": "build",
-     "pkg": "ra-jit@0.0.0",
+     "pkg": "ra-jit@0.1.0",
      "profile": {
       "codegen_units": null,
       "debug_assertions": false,
@@ -34403,7 +34403,7 @@
      "features": [],
      "kind": "bin",
      "mode": "build",
-     "pkg": "ra-jit@0.0.0",
+     "pkg": "ra-jit@0.1.0",
      "profile": {
       "codegen_units": null,
       "debug_assertions": false,
@@ -34624,7 +34624,7 @@
      "features": [],
      "kind": "bin",
      "mode": "build",
-     "pkg": "ra-jit@0.0.0",
+     "pkg": "ra-jit@0.1.0",
      "profile": {
       "codegen_units": null,
       "debug_assertions": false,
@@ -34845,7 +34845,7 @@
      "features": [],
      "kind": "bin",
      "mode": "build",
-     "pkg": "ra-jit@0.0.0",
+     "pkg": "ra-jit@0.1.0",
      "profile": {
       "codegen_units": null,
       "debug_assertions": false,
@@ -50382,7 +50382,7 @@
      "features": [],
      "kind": "bin",
      "mode": "build",
-     "pkg": "ra-jit@0.0.0",
+     "pkg": "ra-jit@0.1.0",
      "profile": {
       "codegen_units": null,
       "debug_assertions": false,
@@ -50603,7 +50603,7 @@
      "features": [],
      "kind": "bin",
      "mode": "build",
-     "pkg": "ra-jit@0.0.0",
+     "pkg": "ra-jit@0.1.0",
      "profile": {
       "codegen_units": null,
       "debug_assertions": false,
@@ -50824,7 +50824,7 @@
      "features": [],
      "kind": "bin",
      "mode": "build",
-     "pkg": "ra-jit@0.0.0",
+     "pkg": "ra-jit@0.1.0",
      "profile": {
       "codegen_units": null,
       "debug_assertions": false,
@@ -51045,7 +51045,7 @@
      "features": [],
      "kind": "bin",
      "mode": "build",
-     "pkg": "ra-jit@0.0.0",
+     "pkg": "ra-jit@0.1.0",
      "profile": {
       "codegen_units": null,
       "debug_assertions": false,
@@ -66749,7 +66749,7 @@
      "features": [],
      "kind": "bin",
      "mode": "build",
-     "pkg": "ra-jit@0.0.0",
+     "pkg": "ra-jit@0.1.0",
      "profile": {
       "codegen_units": null,
       "debug_assertions": false,
@@ -66970,7 +66970,7 @@
      "features": [],
      "kind": "bin",
      "mode": "build",
-     "pkg": "ra-jit@0.0.0",
+     "pkg": "ra-jit@0.1.0",
      "profile": {
       "codegen_units": null,
       "debug_assertions": false,
@@ -67191,7 +67191,7 @@
      "features": [],
      "kind": "bin",
      "mode": "build",
-     "pkg": "ra-jit@0.0.0",
+     "pkg": "ra-jit@0.1.0",
      "profile": {
       "codegen_units": null,
       "debug_assertions": false,
@@ -67412,7 +67412,7 @@
      "features": [],
      "kind": "bin",
      "mode": "build",
-     "pkg": "ra-jit@0.0.0",
+     "pkg": "ra-jit@0.1.0",
      "profile": {
       "codegen_units": null,
       "debug_assertions": false,

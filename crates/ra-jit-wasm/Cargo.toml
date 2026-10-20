@@ -1,6 +1,6 @@
 [package]
 name = "ra-jit-wasm"
-version = "0.0.0"
+version = "0.1.0"
 description = "Spike: ra-jit's compiler as a library that emits WebAssembly, to run in a browser"
 publish = false
 edition = "2024"

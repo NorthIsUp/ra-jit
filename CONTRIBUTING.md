@@ -1,0 +1,35 @@
+# Contributing
+
+The long version, with the rules for code and how to change the rust-analyzer submodule, is
+[docs/contributing.md](docs/contributing.md). The short version:
+
+## Build
+
+```
+git clone --recursive https://github.com/indexable-inc/ra-jit
+cd ra-jit
+nix develop            # Rust 1.99.0 with rust-src, and Python; or install 1.99.0 with rustup
+cargo build -p ra-jit --release
+```
+
+A clone made without `--recursive` needs `git submodule update --init` first.
+
+## Test
+
+```
+cargo fmt --all -- --check
+cargo test --release -p hir-ty -p hir-def -p parser -p syntax -p ra-jit
+```
+
+The real gate compares ra-jit's output with rustc's on real programs: see
+[docs/harness.md](docs/harness.md). Run what fits your change and say in the pull request
+what you ran and on which platform.
+
+## Changes
+
+- Add a reduced case that fails before your change and passes after.
+- Add a line under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md) for anything a user
+  would notice.
+- Contributions are accepted under MIT OR Apache-2.0, the project's licence.
+
+Security problems go through [SECURITY.md](SECURITY.md), not public issues.

@@ -1,10 +1,15 @@
 [package]
 name = "ra-jit-live"
+# Kept in step with `workspace.package.version` by hand: the nix build of the demo copies this
+# crate without the workspace's Cargo.toml, so nothing here can be inherited from it.
 version = "0.1.0"
 description = "Applies ra-jit's edits to a program while it runs"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 authors = ["Indexable, Inc."]
 repository = "https://github.com/indexable-inc/ra-jit"
+homepage = "https://ra-jit.ix.dev"
+keywords = ["hot-reload", "live-coding", "jit", "ra-jit"]
+categories = ["development-tools"]
 
 [dependencies]
