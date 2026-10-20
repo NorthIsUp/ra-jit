@@ -88,4 +88,62 @@ impl Live {
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         None
     }
+
+    /// Applies each patch as soon as it comes, on a thread of its own, instead of at
+    /// [`Live::poll`], and tells `told` what became of it. For a program whose functions
+    /// can change between any two calls; one of many functions that work together can be
+    /// in the middle of a frame when some of them do.
+    pub fn apply_as_they_come(self, told: impl FnMut(Outcome) + Send + 'static) {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        self.inner.apply_as_they_come(told);
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        drop(told);
+    }
+}
+
+/// Hands the daemon the text of the source file at `path`, as an editor has it, without
+/// writing it: the daemon builds from that text at once and a program that runs takes the
+/// patch. The answer is the daemon's, as `cargo ra-jit build` prints it: `ok patch=...
+/// functions=N files=N ms=N`, `ok unchanged`, or why the edit is not built. The file itself
+/// is the editor's to write when it likes; the daemon sees that it has that text already.
+#[cfg(unix)]
+pub fn edit(path: &std::path::Path, text: &str) -> Result<String, String> {
+    use std::io::{BufRead as _, Write as _};
+    let socket = daemon_socket().ok_or("no home directory to find the daemon in")?;
+    let path = std::path::absolute(path).map_err(|it| format!("{}: {it}", path.display()))?;
+    let path = path.to_str().ok_or("a path that is not UTF-8")?;
+    let mut line = String::with_capacity(text.len() + path.len() + 8);
+    line.push_str("edit\t");
+    format::escape(path, &mut line);
+    line.push('\t');
+    format::escape(text, &mut line);
+    line.push('\n');
+    let mut stream = std::os::unix::net::UnixStream::connect(&socket)
+        .map_err(|it| format!("no daemon at {}: {it}", socket.display()))?;
+    stream.write_all(line.as_bytes()).map_err(|it| format!("sending the edit: {it}"))?;
+    let mut reply = String::new();
+    std::io::BufReader::new(stream)
+        .read_line(&mut reply)
+        .map_err(|it| format!("reading the daemon's answer: {it}"))?;
+    let reply = reply.trim_end();
+    match reply.strip_prefix("error: ") {
+        _ if reply.is_empty() => Err("the daemon hung up without an answer".to_owned()),
+        _ if reply.starts_with("ok") => Ok(reply.to_owned()),
+        Some(why) => Err(why.to_owned()),
+        None => Err(reply.to_owned()),
+    }
+}
+
+/// Where the daemon of this user listens, as ra-jit finds it: in `RA_JIT_HOME`, else in
+/// `XDG_RUNTIME_DIR/ra-jit`, else in `~/.cache/ra-jit`.
+#[cfg(unix)]
+fn daemon_socket() -> Option<std::path::PathBuf> {
+    let set = |name| std::env::var_os(name).filter(|it: &std::ffi::OsString| !it.is_empty());
+    let home = match (set("RA_JIT_HOME"), set("XDG_RUNTIME_DIR"), set("HOME")) {
+        (Some(home), _, _) => std::path::PathBuf::from(home),
+        (None, Some(runtime), _) => std::path::Path::new(&runtime).join("ra-jit"),
+        (None, None, Some(home)) => std::path::Path::new(&home).join(".cache/ra-jit"),
+        (None, None, None) => return None,
+    };
+    Some(home.join("daemon.sock"))
 }

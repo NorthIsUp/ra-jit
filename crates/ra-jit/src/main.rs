@@ -3543,6 +3543,20 @@ struct Target {
 }
 
 impl Target {
+    /// What a client would send to have the program of `args` built.
+    fn of(args: &Args) -> Target {
+        Target {
+            project: Some(args.project.clone()),
+            krate: args.krate.clone(),
+            batch: Some(args.batch.clone()),
+            out: args.out.clone(),
+            patch: args.patch.clone(),
+            link_cmd: args.link_cmd.clone(),
+            splice: args.splice.clone(),
+            symbol_files: args.symbol_files.clone(),
+        }
+    }
+
     fn is(&self, args: &Args) -> bool {
         self.krate == args.krate && self.out == args.out
     }
@@ -3768,11 +3782,23 @@ impl std::io::Write for &Client {
 /// What the daemon waits for.
 enum Event {
     Asked(Asked),
+    /// The text of a source file as an editor has it, which it has not written yet.
+    Edited(Edited),
     /// The build of a program is over, with what to tell its clients: nothing when a change
     /// to the source interrupted it.
     Built(usize, Box<Program>, Option<anyhow::Result<Result<String, String>>>),
     /// The link of a program's last build failed, after the build was over.
     Unlinked(usize),
+}
+
+/// An `edit` request: the programs that link the file are built from `text` at once, with
+/// no look at the disk, and the client is answered as one that asked for a build of them.
+struct Edited {
+    path: PathBuf,
+    text: String,
+    client: Client,
+    /// When it was read.
+    at: Instant,
 }
 
 /// Set while the builds under way are told to stop for a change to the source.
@@ -3805,6 +3831,9 @@ struct Builds {
     waiting: std::collections::VecDeque<Asked>,
     /// Whether the requests that wait can only be built once something else happens.
     stuck: bool,
+    /// The edits that wait, the newest of each file: one typed over before it was built is
+    /// answered as superseded.
+    edits: Vec<Edited>,
 }
 
 impl Builds {
@@ -3815,6 +3844,15 @@ impl Builds {
         let (at, program, answer) = match event {
             Event::Asked(asked) => {
                 self.waiting.push_back(asked);
+                return Ok(());
+            }
+            Event::Edited(edited) => {
+                if let Some(older) = self.edits.iter_mut().find(|it| it.path == edited.path) {
+                    let _ = writeln!(&older.client, "ok superseded");
+                    *older = edited;
+                } else {
+                    self.edits.push(edited);
+                }
                 return Ok(());
             }
             Event::Built(at, program, answer) => (at, program, answer),
@@ -3966,7 +4004,7 @@ fn watch_loaded(db: &mut RootDatabase, tree: &mut tree::Tree, files: &mut Vec<Wa
 
 /// Reads the request a client sent on `stream`, and the variables of its process: the
 /// result is where to send the outcome. One that is not a request is told so and is `None`.
-fn requested(stream: UnixStream) -> Option<Asked> {
+fn requested(stream: UnixStream) -> Option<Event> {
     let [request, env] = match socket::read_request_and_env(&stream) {
         Ok(lines) => lines,
         Err(error) => {
@@ -3975,13 +4013,23 @@ fn requested(stream: UnixStream) -> Option<Asked> {
             return None;
         }
     };
+    let (name, rest) = request.split_once('\t').unwrap_or((&request, ""));
+    eprintln!("request: {name} at_us={}", live::epoch_us());
+    if name == "edit"
+        && let Some((path, text)) = rest.split_once('\t')
+    {
+        let path = PathBuf::from(ra_jit_live::format::unescape(path));
+        let text = ra_jit_live::format::unescape(text);
+        let client = Client { stream, env: process::decode(&env) };
+        return Some(Event::Edited(Edited { path, text, client, at: Instant::now() }));
+    }
     let fields: Vec<&str> = request.split('\t').collect();
-    eprintln!("request: {} at_us={}", fields[0], live::epoch_us());
     let target = Target::parse(&fields[1..]);
     if let Some(request) = Request::parse(fields[0])
         && (fields.len() == 1 || target.is_some())
     {
-        return Some((request, target, Client { stream, env: process::decode(&env) }));
+        let client = Client { stream, env: process::decode(&env) };
+        return Some(Event::Asked((request, target, client)));
     }
     let _ = writeln!(&stream, "error: unknown request {request:?}");
     None
@@ -4912,9 +4960,9 @@ fn run_holding(
                 let sender = sender.clone();
                 std::thread::spawn(move || {
                     let _open = open;
-                    if let Some(request) = requested(stream) {
+                    if let Some(event) = requested(stream) {
                         // The daemon is ending when nothing takes requests any more.
-                        let _ = sender.send(Event::Asked(request));
+                        let _ = sender.send(event);
                     }
                 });
             }
@@ -4940,7 +4988,13 @@ fn run_holding(
         Err(_) => Overlay::Quick,
     };
     let mut builds =
-        Builds { events, running: FxHashMap::default(), waiting: Default::default(), stuck: false };
+        Builds {
+            events,
+            running: FxHashMap::default(),
+            waiting: Default::default(),
+            stuck: false,
+            edits: Vec::new(),
+        };
     // How many times running each checkout that is read as a loaded one has been long to turn
     // to or from.
     let mut slow: FxHashMap<PathBuf, u32> = FxHashMap::default();
@@ -4976,10 +5030,12 @@ fn run_holding(
         let mut outputs: FxHashMap<usize, Outputs> = FxHashMap::default();
         // The checkout each loaded one has to be read from for them.
         let mut looked: FxHashMap<PathBuf, PathBuf> = FxHashMap::default();
+        // The text editors sent of files they have not written yet, and when it came.
+        let mut sent: FxHashMap<vfs::FileId, (String, Instant)> = FxHashMap::default();
         match serving {
             true => {
                 let mut later = Vec::new();
-                if builds.stuck || builds.waiting.is_empty() {
+                if builds.stuck || builds.waiting.is_empty() && builds.edits.is_empty() {
                     let event = builds.events.recv()?;
                     builds.take(event, &mut programs)?;
                 }
@@ -5249,6 +5305,75 @@ fn run_holding(
                     }
                 }
                 builds.waiting.extend(later);
+                // Text an editor sent before it wrote it: the programs that link the file
+                // are built from it, with no look at the disk.
+                for mut edited in std::mem::take(&mut builds.edits) {
+                    let source = |it: &WatchedFile| match it.file {
+                        Watched::Source(id) => Some((id, it.path.clone())),
+                        Watched::Included(_) => None,
+                    };
+                    let found = files
+                        .iter()
+                        .filter(|it| it.path == edited.path)
+                        .find_map(source)
+                        .or_else(|| {
+                            let path = dunce::canonicalize(&edited.path).ok()?;
+                            files.iter().find_map(|it| {
+                                source(it).filter(|_| {
+                                    dunce::canonicalize(&it.path).is_ok_and(|it| it == path)
+                                })
+                            })
+                        });
+                    let Some((id, path)) = found else {
+                        let shown = edited.path.display();
+                        let _ = writeln!(&edited.client, "error: {shown} is not a source file");
+                        continue;
+                    };
+                    if viewed.keys().any(|base| path.starts_with(base)) {
+                        let shown = path.display();
+                        let _ = writeln!(&edited.client, "error: {shown} is read from elsewhere");
+                        continue;
+                    }
+                    let owners: Vec<usize> = (0..programs.len())
+                        .filter(|&at| programs[at].wrote.is_some())
+                        .filter(|&at| programs[at].args.owns(&db, id, &path))
+                        .collect();
+                    if owners.is_empty() {
+                        let shown = path.display();
+                        let _ = writeln!(&edited.client, "error: no program built has {shown}");
+                        continue;
+                    }
+                    let busy = owners.iter().any(|at| {
+                        builds.running.contains_key(at)
+                            || outputs.get(at).is_some_and(|it| *it != Outputs::of(&programs[*at].args))
+                    });
+                    if busy {
+                        builds.edits.push(edited);
+                        continue;
+                    }
+                    let rust = path.extension().is_some_and(|it| it == "rs");
+                    let text = std::mem::take(&mut edited.text);
+                    let text = if rust { load_cargo::source_text(text) } else { text };
+                    if *text != **db.file_text(id).text(&db) {
+                        sent.insert(id, (text, edited.at));
+                    }
+                    // Built for the process the last build was for.
+                    edited.client.env =
+                        ide_db::base_db::ProcessEnv::try_get(&db)
+                            .map(|it| it.vars(&db).clone())
+                            .unwrap_or_default();
+                    // Asked as a client of each would: one interrupted asks again.
+                    let target = |at: usize| (at != 0).then(|| Target::of(&programs[at].args));
+                    for &at in &owners[1..] {
+                        outputs.insert(at, Outputs::of(&programs[at].args));
+                        if let Ok(stream) = edited.client.stream.try_clone() {
+                            let client = Client { stream, env: edited.client.env.clone() };
+                            clients.push((at, (Request::Sync, target(at), client)));
+                        }
+                    }
+                    outputs.insert(owners[0], Outputs::of(&programs[owners[0]].args));
+                    clients.push((owners[0], (Request::Sync, target(owners[0]), edited.client)));
+                }
                 builds.stuck = clients.is_empty();
                 if builds.stuck {
                     continue;
@@ -5318,6 +5443,14 @@ fn run_holding(
         let mut touched = FxHashSet::default();
         // Source files that are no longer there.
         let mut gone = FxHashSet::default();
+        for (index, file) in files.iter().enumerate() {
+            if let Watched::Source(id) = file.file
+                && let Some((_, at)) = sent.get(&id)
+            {
+                touched.insert(index);
+                noticed.get_or_insert((*at, Duration::ZERO));
+            }
+        }
         loop {
             if tree.relisted(&db) {
                 builds.settle(&mut db, &mut programs)?;
@@ -5353,9 +5486,20 @@ fn run_holding(
                         noticed.get_or_insert((Instant::now(), Duration::ZERO));
                     }
                 } else if now != file.mtime {
-                    file.mtime = now;
-                    touched.insert(index);
-                    noticed.get_or_insert((Instant::now(), now.elapsed().unwrap_or_default()));
+                    let was = std::mem::replace(&mut file.mtime, now);
+                    // An editor that sent its text writes it after: the same text again.
+                    let built = match file.file {
+                        Watched::Source(id) if was != SystemTime::UNIX_EPOCH => {
+                            !sent.contains_key(&id)
+                                && source_on_disk(&on_disk)
+                                    .is_ok_and(|text| *text == **db.file_text(id).text(&db))
+                        }
+                        _ => false,
+                    };
+                    if !built {
+                        touched.insert(index);
+                        noticed.get_or_insert((Instant::now(), now.elapsed().unwrap_or_default()));
+                    }
                 }
             }
             switched.clear();
@@ -5410,7 +5554,10 @@ fn run_holding(
             let WatchedFile { file, path, .. } = &files[index];
             match file {
                 Watched::Source(id) => {
-                    let text = source_on_disk(&db.on_disk(path))?;
+                    let text = match sent.remove(id) {
+                        Some((text, _)) => text,
+                        None => source_on_disk(&db.on_disk(path))?,
+                    };
                     change.change_file(*id, Some(text));
                     sources.push(*id);
                 }

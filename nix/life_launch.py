@@ -9,12 +9,12 @@ Started by the `ra-jit-life` wrapper in flake.nix, which passes everything in RA
   PREBUILT     the demo built per cargo unit, run where live edits are not supported
   PATH, LIBS   toolchain (and linker) on PATH, and the GUI libraries to dlopen
 
-The source is copied to a writable temporary directory. With live edits, the copy is built by the
-ra-jit daemon, started, and built again by the daemon after each save, which the running window
-picks up. The window's editor writes the copy's src/main.rs as you type, and the result of each
-build goes to the file RA_JIT_LIFE_STATUS names, which the window shows. Without them (live edits are macOS on AArch64 only) the prebuilt window runs, and the
-edited copy is not used. RA_JIT_LIFE_DAEMON=1 forces the daemon path, RA_JIT_LIFE_DAEMON=0 the
-prebuilt one.
+The source is copied to a writable temporary directory. With live edits, the copy is built once
+by cargo and the ra-jit daemon, and started. From then on the window's editor sends each edit's
+text straight to the daemon, which builds it from memory and patches the running window; the
+editor writes the copy's src/main.rs after that, and nothing here runs again. Without live edits
+(they are macOS on AArch64 only) the prebuilt window runs, and the edited copy is not used.
+RA_JIT_LIFE_DAEMON=1 forces the daemon path, RA_JIT_LIFE_DAEMON=0 the prebuilt one.
 
 Python 3.13, stdlib only.
 """
@@ -97,21 +97,7 @@ def prepare(work: Path) -> Path:
     return life
 
 
-def compiler_errors(output: str) -> str:
-    """The compiler's diagnostics from a failed build, without cargo's progress lines."""
-    lines = output.strip().splitlines()
-    first = next((i for i, line in enumerate(lines) if line.startswith(("error", "warning"))), 0)
-    return "\n".join(lines[first:][-40:])
-
-
-def report(status: Path, ok: bool, text: str) -> None:
-    """Tells the window how the last build went (it shows this under the editor)."""
-    tmp = status.with_suffix(".tmp")
-    tmp.write_text(("ok" if ok else "error") + "\n" + text + "\n")
-    tmp.replace(status)
-
-
-async def daemon_session(life: Path, run_env: dict[str, str], target: Path, status: Path) -> None:
+async def daemon_session(life: Path, run_env: dict[str, str], target: Path) -> None:
     build = ["cargo-ra-jit", "ra-jit", "build", "--locked"]
     print("ra-jit: building the demo (the first build compiles eframe, a few minutes)", file=sys.stderr)
     await run("first build", build, BUILD_TIMEOUT, life, run_env)
@@ -121,22 +107,9 @@ async def daemon_session(life: Path, run_env: dict[str, str], target: Path, stat
         while "[ra-jit]" not in await run("wait for the daemon", build, BUILD_TIMEOUT, life, run_env):
             await asyncio.sleep(0.5)
     main_rs = life / "src" / "main.rs"
-    print(f"ra-jit: type in the editor on the right (or edit {main_rs}); the window changes on the next frame", file=sys.stderr)
-    seen = main_rs.stat().st_mtime_ns
+    print(f"ra-jit: type in the editor on the right ({main_rs}); the window changes as you type", file=sys.stderr)
     window = await asyncio.create_subprocess_exec(str(target / "debug" / "life"), cwd=life, env=run_env)
-    while window.returncode is None:
-        await asyncio.sleep(0.2)
-        mtime = main_rs.stat().st_mtime_ns
-        if mtime != seen:
-            seen = mtime
-            try:
-                out = await run("rebuild", build, BUILD_TIMEOUT, life, run_env)
-                last = out.strip().splitlines()[-1] if out.strip() else "built"
-                print(f"ra-jit: {last}", file=sys.stderr)
-                report(status, True, last.strip())
-            except StepError as error:
-                print(f"ra-jit: {error}", file=sys.stderr)
-                report(status, False, compiler_errors(error.output) or str(error))
+    await window.wait()
 
 
 async def main() -> None:
@@ -145,10 +118,8 @@ async def main() -> None:
     try:
         life = prepare(work)
         run_env = child_env(cache / "target")
-        status = work / "build-status"
-        run_env["RA_JIT_LIFE_STATUS"] = str(status)
         if use_daemon():
-            await daemon_session(life, run_env, cache / "target", status)
+            await daemon_session(life, run_env, cache / "target")
         else:
             print("ra-jit: live edits need macOS on AArch64; running the prebuilt window", file=sys.stderr)
             window = await asyncio.create_subprocess_exec(env("PREBUILT"), cwd=life, env=run_env)

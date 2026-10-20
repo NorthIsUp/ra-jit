@@ -5,6 +5,8 @@
 //!   in its memory the next edit goes.
 //! - `patch`, which the daemon writes: the code of the functions that differ from the
 //!   executable, laid out for that place, or why the program has to be started again.
+//! - `wake`, a datagram socket the program listens on: the daemon sends it a byte each time
+//!   it has written `patch`, and the program reads the patch at once.
 //!
 //! Every address here is as the executable's load commands have it, before the loader
 //! slid the program: the program adds its slide.
@@ -12,6 +14,9 @@
 use std::path::{Path, PathBuf};
 
 const MAGIC: &[u8; 8] = b"RAJITLV1";
+
+/// The socket in [`dir`] that the daemon wakes the program on once it wrote a patch.
+pub const WAKE: &str = "wake";
 
 /// The directory that holds one for each executable that runs.
 pub fn root() -> Option<PathBuf> {
@@ -24,6 +29,40 @@ pub fn root() -> Option<PathBuf> {
 /// a hard link of it in another, and a program may be copied and run from anywhere.
 pub fn dir(uuid: &[u8; 16]) -> Option<PathBuf> {
     Some(root()?.join(hex(uuid)))
+}
+
+/// Text on one line, as an edit goes to the daemon: a backslash, a newline, a tab and a
+/// carriage return are written as `\\`, `\n`, `\t` and `\r`.
+pub fn escape(text: &str, line: &mut String) {
+    for c in text.chars() {
+        match c {
+            '\\' => line.push_str("\\\\"),
+            '\n' => line.push_str("\\n"),
+            '\t' => line.push_str("\\t"),
+            '\r' => line.push_str("\\r"),
+            c => line.push(c),
+        }
+    }
+}
+
+/// What [`escape`] wrote.
+pub fn unescape(line: &str) -> String {
+    let mut text = String::with_capacity(line.len());
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            text.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => text.push('\n'),
+            Some('t') => text.push('\t'),
+            Some('r') => text.push('\r'),
+            Some(other) => text.push(other),
+            None => text.push('\\'),
+        }
+    }
+    text
 }
 
 fn hex(bytes: &[u8]) -> String {

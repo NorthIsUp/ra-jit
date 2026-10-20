@@ -1,9 +1,11 @@
 //! The source editor on the right of the window: line-number gutter, caret-row and
-//! matching-bracket highlight, Rust highlighting, Tab as four spaces. Every edit is written to
-//! the file (and Cmd/Ctrl+S writes it again); the launcher sees the file change, the daemon
-//! builds, and the window applies the patch on its next frame.
+//! matching-bracket highlight, Rust highlighting, Tab as four spaces. Every edit goes to the
+//! ra-jit daemon as text, the way an editor tells a language server (`ra_jit_live::edit`):
+//! the daemon builds it from memory and the window applies the patch as it arrives. The file
+//! is written after that, for the edit to stay; nothing waits for it.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use eframe::egui;
@@ -11,19 +13,94 @@ use eframe::egui;
 use crate::highlight::Highlighter;
 use crate::theme::Theme;
 
+/// What the sending thread and the window share.
+#[derive(Default)]
+pub struct Sending {
+    /// The newest text not sent yet, when it was typed, and whether the file needs it.
+    next: Option<(String, Instant, bool)>,
+    /// When the text sent last was typed: the patch built of it lands after this.
+    pub in_flight: Option<Instant>,
+    /// What the daemon answered last, or why it could not be asked.
+    pub answer: Option<Result<String, String>>,
+    /// Edits sent so far.
+    pub sent: u64,
+    /// Why the last write of the file failed.
+    pub write_error: Option<String>,
+    /// Whether an edit is on its way: the file is not written yet.
+    busy: bool,
+}
+
+impl Sending {
+    /// Whether an edit is not sent and written yet.
+    fn waits(&self) -> bool {
+        self.busy || self.next.is_some()
+    }
+}
+
+pub type Shared = Arc<(Mutex<Sending>, Condvar)>;
+
+pub fn lock(shared: &Shared) -> MutexGuard<'_, Sending> {
+    shared.0.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Sends the newest text to the daemon, one edit at a time, and writes each to `file` once
+/// the daemon has it: what typing gets ahead of the daemon is sent as one edit. A write lands
+/// before the next text is sent, so the daemon never finds older text on disk than it has.
+fn send_as_typed(file: PathBuf, shared: Shared) {
+    loop {
+        let (text, _, write) = {
+            let mut sending = lock(&shared);
+            loop {
+                if let Some(next) = sending.next.take() {
+                    sending.busy = true;
+                    sending.in_flight = Some(next.1);
+                    break next;
+                }
+                sending = shared.1.wait(sending).unwrap_or_else(PoisonError::into_inner);
+            }
+        };
+        let answer = send(&file, &text);
+        if let Err(why) = &answer {
+            eprintln!("life: the edit was not built: {why}");
+        }
+        let written = if write { write_through(&file, &text).err() } else { None };
+        let mut sending = lock(&shared);
+        sending.answer = Some(answer);
+        sending.sent += 1;
+        sending.write_error = written;
+        sending.busy = false;
+    }
+}
+
+#[cfg(unix)]
+fn send(file: &Path, text: &str) -> Result<String, String> {
+    ra_jit_live::edit(file, text)
+}
+
+#[cfg(not(unix))]
+fn send(_: &Path, _: &str) -> Result<String, String> {
+    Err("live edits run on macOS only".to_owned())
+}
+
+/// Writes by rename, so that nothing reads a half-written file.
+fn write_through(file: &Path, text: &str) -> Result<(), String> {
+    let tmp = file.with_extension("rs.tmp");
+    std::fs::write(&tmp, text)
+        .and_then(|()| std::fs::rename(&tmp, file))
+        .map_err(|why| format!("could not save {}: {why}", file.display()))
+}
+
 pub struct Editor {
     /// Where the edits go; `None` when the source was not found.
     pub file: Option<PathBuf>,
     pub text: String,
+    /// The text last handed to the sending thread.
+    handed: String,
+    /// The file as it was last read or written, to see another editor's writes by.
     on_disk: String,
     last_edit: Instant,
     last_poll: Instant,
-    /// When the text last reached the file.
-    pub wrote_at: Option<Instant>,
-    /// Edits written so far.
-    pub writes: u64,
-    /// Why the last write failed.
-    pub write_error: Option<String>,
+    pub shared: Shared,
     hl: Highlighter,
     focused_once: bool,
 }
@@ -34,38 +111,38 @@ impl Editor {
             .as_ref()
             .and_then(|f| std::fs::read_to_string(f).ok())
             .unwrap_or_else(|| fallback.to_owned());
+        let shared = Shared::default();
+        if let Some(file) = &file {
+            let (file, shared) = (file.clone(), shared.clone());
+            std::thread::Builder::new()
+                .name("life-send".to_owned())
+                .spawn(move || send_as_typed(file, shared))
+                .expect("starting the thread that sends edits");
+        }
         Editor {
             file,
+            handed: text.clone(),
             on_disk: text.clone(),
             text,
             last_edit: Instant::now() - Duration::from_secs(10),
             last_poll: Instant::now(),
-            wrote_at: None,
-            writes: 0,
-            write_error: None,
+            shared,
             hl: Highlighter::default(),
             focused_once: false,
         }
     }
 
-    /// Writes the text out, by rename so that the build never sees a half-written file.
-    fn write(&mut self) {
-        let Some(file) = &self.file else { return };
-        if self.text == self.on_disk {
+    /// Hands the text to the sending thread, in place of any it has not sent yet.
+    fn hand(&mut self, write: bool) {
+        if self.file.is_none() || self.text == self.handed {
             return;
         }
-        let tmp = file.with_extension("rs.tmp");
-        match std::fs::write(&tmp, &self.text).and_then(|()| std::fs::rename(&tmp, file)) {
-            Ok(()) => {
-                self.on_disk = self.text.clone();
-                self.wrote_at = Some(Instant::now());
-                self.writes += 1;
-                self.write_error = None;
-            }
-            Err(why) => {
-                self.write_error = Some(format!("could not save {}: {why}", file.display()))
-            }
-        }
+        self.handed = self.text.clone();
+        let mut sending = lock(&self.shared);
+        let write = write || sending.next.as_ref().is_some_and(|it| it.2);
+        sending.next = Some((self.text.clone(), Instant::now(), write));
+        drop(sending);
+        self.shared.1.notify_one();
     }
 
     /// Picks up edits made outside the window (another editor), unless we are typing.
@@ -73,6 +150,7 @@ impl Editor {
         let Some(file) = &self.file else { return };
         if self.last_poll.elapsed() < Duration::from_millis(250)
             || self.last_edit.elapsed() < Duration::from_secs(1)
+            || lock(&self.shared).waits()
         {
             return;
         }
@@ -80,14 +158,19 @@ impl Editor {
         if let Ok(t) = std::fs::read_to_string(file)
             && t != self.on_disk
         {
-            self.text = t.clone();
-            self.on_disk = t;
+            self.on_disk = t.clone();
+            if t != self.handed {
+                // The daemon builds what it is sent, not what it finds on disk.
+                self.text = t;
+                self.hand(false);
+            }
         }
     }
 
     fn edited(&mut self) {
         self.last_edit = Instant::now();
-        self.write();
+        self.hand(true);
+        self.on_disk = self.text.clone();
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, t: &Theme) {
@@ -96,7 +179,7 @@ impl Editor {
         let font = egui::TextStyle::Monospace.resolve(ui.style());
 
         if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S)) {
-            self.on_disk.clear();
+            self.handed.clear();
             self.edited();
         }
 
