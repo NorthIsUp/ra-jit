@@ -33,6 +33,14 @@ All notable changes to ra-jit are written here. The format follows
   the dev profile does ([docs/tiers.md](docs/tiers.md)).
 - `harness/tierbench.py`, the benchmark table of docs/tiers.md.
 - `RA_JIT_DUMP_LLVM=after` prints the LLVM IR as the passes left it.
+- A borrow checker, `crates/hir-ty-borrowck`, written to give rustc's verdict: Polonius alpha
+  by default as nightly rustc does, NLL with `RA_JIT_BORROWCK=nll`. It gives rustc's errors on
+  1033 of 1578 of rustc's own borrow-check tests that it can run (245 with none), scored by
+  `harness/borrowck_ui.py`, and finds nothing in ripgrep, fd, bat, hyperfine, just and axum.
+  Its errors are rust-analyzer diagnostics and `ra-jit borrowck` prints them; the daemon
+  does not refuse a build for them yet ([docs/borrowck.md](docs/borrowck.md)).
+- `ra-jit borrowck`: the borrow-check errors of single files, or of a cargo workspace with
+  `--project`.
 
 ### Changed
 

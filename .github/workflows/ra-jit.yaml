@@ -183,6 +183,28 @@ jobs:
           cat CARGO-RA_JIT.md
           exit $status
 
+  # The borrow checker against rustc's own borrow-check tests (docs/borrowck.md), at the
+  # commit of the nightly whose verdicts they are scored by, with a floor under the passes.
+  borrowck:
+    name: borrowck
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - run: rustup toolchain install 1.99.0 --profile minimal -c rust-src && rustup default 1.99.0
+      - run: rustup toolchain install nightly-2026-10-09 --profile minimal
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p ra-jit --release
+      - name: rustc's tests
+        run: |
+          git init -q "$RUNNER_TEMP/rust"
+          cd "$RUNNER_TEMP/rust"
+          git remote add origin https://github.com/rust-lang/rust
+          git sparse-checkout set tests/ui
+          git fetch -q --depth 1 --filter=blob:none origin a30aa9064df6a504b6a323c6884a2f4cfbfff666
+          git checkout -q FETCH_HEAD
+      - run: python3 harness/borrowck_ui.py "$RUNNER_TEMP/rust" --bin target/release/ra-jit --jobs 4 --mode both --min-pass 1020
+
   windows-checks:
     name: fmt and tests (windows)
     runs-on: windows-2025

@@ -105,7 +105,7 @@ loop {
 ## What to know
 
 - Live edits work on macOS Apple silicon only. Elsewhere you still get fast builds.
-- No borrow checker: keep running `cargo check`.
+- The borrow checker is partial and does not stop a build yet: keep running `cargo check`.
 - Rust 1.99.0 only.
 - Changing a struct the program is using asks for a restart.
 
