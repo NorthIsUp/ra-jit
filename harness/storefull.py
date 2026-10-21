@@ -27,7 +27,8 @@ WINDOWS = os.name == "nt"
 # NTFS keeps a log and a file table of its own, which do not fit in the 8 MB a tmpfs can be.
 SIZE = (64 if WINDOWS else 8) << 20
 # How much room the store has, in bytes. A cold build of the workspace writes about 1.5 MB
-# with Cranelift on Linux and under 1 MB with LLVM on Windows, so the last room is measured.
+# with Cranelift on Linux and under 512 KB with LLVM on Windows, so the last room is measured,
+# two thirds of what it writes, and only the rooms smaller than that are tried.
 ROOMS = [0, 4096, 16 << 10, 128 << 10, 512 << 10]
 SEALS = {"RA_JIT_CACHE_SEAL_AT": "1", "RA_JIT_CACHE_MAX": "off"}
 NO_ROOM = "There is not enough space on the disk" if WINDOWS else "No space left on device"
@@ -216,7 +217,8 @@ def main():
     checkout = Checkout(work)
     disk = Disk(work)
     try:
-        rooms = [*ROOMS, cold(checkout, disk) * 2 // 3]
+        last = cold(checkout, disk) * 2 // 3
+        rooms = [*(room for room in ROOMS if room < last), last]
         not_used = sum(built_without(checkout, disk, room) for room in rooms)
         kept_again(checkout, disk)
         commands(checkout, disk, work)

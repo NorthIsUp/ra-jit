@@ -895,7 +895,9 @@ def abuse(work, ws, tree, env, check, status, alive):
     here.cargo("stop")
 
 
-CONNECT = "import socket, sys\ns = socket.socket(socket.AF_UNIX)\ns.settimeout(5)\ntry:\n    s.connect(sys.argv[1])\nexcept OSError as e:\n    print('connect:', e.strerror)\n    sys.exit()\ns.sendall(sys.argv[2].encode() + b'\\n')\ntry:\n    print('answer:', s.recv(65536).decode())\nexcept OSError as e:\n    print('answer:', e)\n"
+# A daemon that turns the peer away closes the connection, which can come before the request
+# is sent (a broken pipe) as well as after it.
+CONNECT = "import socket, sys\ns = socket.socket(socket.AF_UNIX)\ns.settimeout(5)\ntry:\n    s.connect(sys.argv[1])\nexcept OSError as e:\n    print('connect:', e.strerror)\n    sys.exit()\ntry:\n    s.sendall(sys.argv[2].encode() + b'\\n')\n    print('answer:', s.recv(65536).decode())\nexcept OSError as e:\n    print('answer:', e)\n"
 
 LISTEN = "import os, socket, sys\ns = socket.socket(socket.AF_UNIX)\ns.bind(sys.argv[1])\nos.chmod(sys.argv[1], 0o666)\ns.listen()\nprint('listening', flush=True)\ns.settimeout(20)\ntry:\n    c, _ = s.accept()\n    c.settimeout(5)\n    print('heard:', len(c.recv(65536)))\nexcept OSError as e:\n    print('heard: nothing,', e)\n"
 
@@ -918,7 +920,10 @@ def stranger(home, check):
     sock = os.path.join(home, "daemon.sock")
     version = re.search(r"version (\S+),", subprocess.run(["cargo", "ra-jit", "status"], env=dict(os.environ, RA_JIT_HOME=home, PATH=os.path.dirname(RA_JIT) + os.pathsep + os.environ["PATH"]), capture_output=True, text=True).stdout)[1]
     request = json.dumps({"version": version, "replaces": False, "request": "Status"})
-    knock = lambda user: subprocess.run([*(["sudo", "-n", "-u", user] if user else []), sys.executable, "-c", CONNECT, sock, request], capture_output=True, text=True, cwd="/").stdout.strip()
+    def knock(user):
+        run = subprocess.run([*(["sudo", "-n", "-u", user] if user else []), sys.executable, "-c", CONNECT, sock, request], capture_output=True, text=True, cwd="/")
+        # What went wrong before the request was made, where nothing was printed.
+        return run.stdout.strip() or run.stderr.strip()[-300:]
     try:
         mine = knock(None)
         check("the user's own raw request is answered", made.returncode == 0 and '"Status"' in mine, mine[:60])

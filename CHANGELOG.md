@@ -67,6 +67,12 @@ All notable changes to ra-jit are written here. The format follows
 
 ### Fixed
 
+- Before the 2024 edition, a panic in a block's tail drops the tail's temporaries after the
+  block's locals, as rustc does; ra-jit dropped them first, so a `Drop` that printed or
+  locked saw the other order (`breakers.py unwind_tail_after_local`).
+- What leaving a scope early drops (`break`, `continue`, `return`, a future dropped at an
+  `await`) is placed on the line where the scope ends, as rustc places it, so a backtrace or
+  a debugger's step through those drops shows the same lines under ra-jit as under rustc.
 - On macOS, signing a splice reuses the hash of each appended page that is the same as the
   last splice's: 21 ms to 5 ms of each edit of nushell.
 - The value of a `match` arm's guard was marked dead before the branch that reads it; with

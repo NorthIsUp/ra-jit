@@ -46,7 +46,7 @@ jobs:
     steps:
       - if: runner.os == 'Windows'
         run: git config --global core.autocrlf false
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/toolchain
       # Caches are written by main alone: a pull request reads main's and writes none.
       - uses: Swatinem/rust-cache@v2
@@ -64,7 +64,7 @@ jobs:
     steps:
       - if: runner.os == 'Windows'
         run: git config --global core.autocrlf false
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/toolchain
         with:
           llvm: build
@@ -87,7 +87,7 @@ jobs:
         run: |
           exe=$([ "$RUNNER_OS" = Windows ] && echo .exe || true)
           tar -cf ra-jit.tar ra-jit$exe cargo-ra-jit$exe ra-jit-rustc$exe ra-jit-rustc-first$exe
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ra-jit-${{ inputs.platform }}
           path: target/release/ra-jit.tar
@@ -112,7 +112,7 @@ jobs:
     steps:
       - if: runner.os == 'Windows'
         run: git config --global core.autocrlf false
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/toolchain
         with:
           llvm: run
@@ -150,7 +150,7 @@ jobs:
           docker cp "$container:/usr/bin/minio" "$HOME/s3tools/minio"
           docker rm "$container"
           "$HOME/s3tools/minio" --version
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ra-jit-${{ inputs.platform }}
           path: target/release
@@ -194,11 +194,11 @@ jobs:
       RA_JIT_OPT: 2
       RA_JIT_EMIT: fast
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/toolchain
         with:
           llvm: run
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ra-jit-${{ inputs.platform }}
           path: target/release
@@ -229,11 +229,11 @@ jobs:
       RA_JIT_OPT: 2
       RA_JIT_EMIT: fast
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/toolchain
         with:
           llvm: run
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ra-jit-${{ inputs.platform }}
           path: target/release
@@ -259,11 +259,11 @@ jobs:
     timeout-minutes: 60
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/toolchain
         with:
           llvm: run
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ra-jit-${{ inputs.platform }}
           path: target/release
@@ -275,7 +275,7 @@ jobs:
           export RA_JIT_BIN="$GITHUB_WORKSPACE/target/release/ra-jit" RA_JIT_LLVM_BIN="$GITHUB_WORKSPACE/target/release/ra-jit"
           $PYTHON bench.py ripgrep --out "$RUNNER_TEMP/bench.json"
           $PYTHON bench.py --compare bench-baseline.json "$RUNNER_TEMP/bench.json" --threshold 200
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: bench
