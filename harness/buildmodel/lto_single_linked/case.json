@@ -11,5 +11,8 @@
     "--release"
   ],
   "expect": "refused",
-  "handed": true
+  "handed": true,
+  "open": {
+    "windows": "ra-jit takes the MSVC link line rustc printed with `lto` to have a library of `core`, compiles nothing and says nothing; not looked into on a Windows host yet"
+  }
 }

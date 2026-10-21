@@ -9,5 +9,8 @@
   ],
   "ra-jit": [
     "--release"
-  ]
+  ],
+  "open": {
+    "linux": "ra-jit's code unwinds under `panic = \"abort\"` too: its landing pads call `_Unwind_Resume`, which a `no_std` program does not link"
+  }
 }

@@ -10,10 +10,11 @@ reference, and by cargo with ra-jit's code for the named crates linked in front 
 Both programs run and what they print and return is compared. A case may then change one of
 its inputs a step at a time under one daemon, and each step is compared with cargo the same way.
 
-A row is one of
+  A row is one of
   supported  the same output, every function of the named crates compiled by ra-jit
   refused    ra-jit said why it does not build this, and built nothing that runs differently
   WRONG      different output, a crash, or a refusal without a reason
+  open       WRONG where the case's `open` says it is known to be, and why
   skipped    the case is of another host: a Linux cross target has its linker and runner there
 and the run fails on any WRONG row and on any row that is not what its `case.json` expects.
 
@@ -40,6 +41,8 @@ and the run fails on any WRONG row and on any row that is not what its `case.jso
             it is given ARTIFACT, and RA_JIT_OBJECTS with ra-jit's objects for the second build
   args      what the program is run with
   expect    "supported" (the default) or "refused"
+  open      why the case is known to come out WRONG, or {"linux" | "darwin" | "windows": why} where
+            only on those hosts. It is shown as open, and fails the run once it does not.
   handed    ra-jit is given the link line of the build and links by itself
   fails     cargo itself turns the project down, and so must ra-jit
   steps     [{"what": .., "edit": [[file, old, new]], "write": {file: text}, "env": {..},
@@ -523,6 +526,13 @@ def main():
         for case, (verdict, detail, steps) in zip(cases, rows):
             name, backend = case.name, case.backend
             expect = case.spec.get("expect", "supported")
+            known = case.spec.get("open", {})
+            if isinstance(known, dict):
+                known = known.get("windows" if sys.platform == "win32" else sys.platform)
+            if known:
+                expect = "open"
+                if verdict == "WRONG":
+                    verdict, detail = "open", f"{known} ({detail})"
             unexpected = verdict not in ("WRONG", "skipped", expect)
             failed = verdict == "WRONG" or unexpected or any(s[1] == "WRONG" for s in steps)
             bad += failed
@@ -536,7 +546,9 @@ def main():
         write_table(a.table, table)
     wrong = sum(t[3] == "WRONG" or any(s[1] == "WRONG" for s in t[5]) for t in table)
     skipped = sum(t[3] == "skipped" for t in table)
-    print(f"{len(table) - bad - skipped} of {len(table) - skipped} as expected, {wrong} WRONG" + (f", {skipped} skipped" if skipped else ""))
+    known = sum(t[3] == "open" for t in table)
+    print(f"{len(table) - bad - skipped} of {len(table) - skipped} as expected, {wrong} WRONG"
+          + (f", {known} open" if known else "") + (f", {skipped} skipped" if skipped else ""))
     sys.exit(1 if bad else 0)
 
 

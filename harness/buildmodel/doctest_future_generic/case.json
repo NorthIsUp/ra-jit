@@ -4,5 +4,6 @@
   "crates": [
     "app"
   ],
-  "doctests": true
+  "doctests": true,
+  "open": "rustc's copy of the generic `sum` holds the future of `next`, which ra-jit's copy makes and polls, and ra-jit lays that future out in 112 bytes to rustc's 104: it keeps two one-byte locals across the await that rustc does not"
 }
