@@ -36,6 +36,13 @@ impl BitSet {
         changed
     }
 
+    /// Keeps only the bits `other` has too.
+    pub(super) fn intersect(&mut self, other: &BitSet) {
+        for (index, word) in self.words.iter_mut().enumerate() {
+            *word &= other.words.get(index).copied().unwrap_or(0);
+        }
+    }
+
     pub(super) fn iter(&self) -> impl Iterator<Item = usize> + '_ {
         self.words.iter().enumerate().flat_map(|(index, &word)| {
             let mut word = word;

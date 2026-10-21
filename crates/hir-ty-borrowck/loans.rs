@@ -3,11 +3,15 @@
 //! where its region stops holding, or the reference to it is overwritten, or the place it
 //! borrows goes away.
 
-use hir_def::hir::Expr;
+use hir_def::{
+    DefWithBodyId,
+    hir::{Array, Expr},
+};
 use rustc_hash::{FxHashMap, FxHashSet};
 use rustc_type_ir::inherent::IntoKind;
 
 use crate::{
+    InferBodyId,
     mir::{
         BorrowKind, LocalId, MirBody, MirSpan, MutBorrowKind, OperandKind, PlaceElem,
         ProjectionElem, Rvalue, StatementKind, TerminatorKind,
@@ -125,6 +129,41 @@ pub(super) fn static_locals(body: &MirBody<'_>) -> FxHashSet<LocalId> {
     found
 }
 
+/// The temporaries a `const` or `static` item's value borrows where rustc extends their
+/// lifetime, into the value itself: the operand of a `&` the value is, or that is an element,
+/// a field, a block's value or a cast operand of such.
+fn extended_temporaries(ctx: &Ctx<'_, '_>, body: &MirBody<'_>) -> FxHashSet<LocalId> {
+    let mut refs = FxHashSet::default();
+    let mut stack: Vec<_> = ctx.store.expr_roots().next_back().into_iter().collect();
+    while let Some(expr) = stack.pop() {
+        match &ctx.store[expr] {
+            Expr::Ref { expr: inner, .. } => {
+                refs.insert(expr);
+                stack.push(*inner);
+            }
+            Expr::Array(Array::ElementList { elements }) => stack.extend(elements.iter().copied()),
+            Expr::Tuple { exprs } => stack.extend(exprs.iter().copied()),
+            Expr::RecordLit { fields, .. } => stack.extend(fields.iter().map(|it| it.expr)),
+            Expr::Block { tail: Some(tail), .. } => stack.push(*tail),
+            Expr::Cast { expr, .. } => stack.push(*expr),
+            _ => (),
+        }
+    }
+    let mut found = FxHashSet::default();
+    for (_, block) in body.basic_blocks.iter() {
+        for statement in &block.statements {
+            if let StatementKind::Assign(_, Rvalue::Ref(_, place)) = &statement.kind
+                && let MirSpan::ExprId(expr) = statement.span
+                && refs.contains(&expr)
+                && place.projection.is_empty()
+            {
+                found.insert(place.local);
+            }
+        }
+    }
+    found
+}
+
 impl Loans {
     pub(super) fn gather<'db>(
         ctx: &Ctx<'_, 'db>,
@@ -134,16 +173,24 @@ impl Loans {
         unique: impl Fn(LocalId, LocalId, &[PlaceElem]) -> bool,
     ) -> Self {
         let mut statics = static_locals(body);
-        // A promoted constant is `'static`, as a `static` is.
+        // A promoted constant is `'static`, as a `static` is; so is what a `const` or `static`
+        // item's value borrows, which becomes part of that value whatever it calls.
+        let item = matches!(
+            body.owner,
+            InferBodyId::DefWithBodyId(DefWithBodyId::ConstId(_) | DefWithBodyId::StaticId(_))
+        );
         statics.extend(
             body.promoted_locals
                 .iter()
                 .filter(|&&(local, expr)| {
                     // rustc promotes no call, not even of a `const fn` in a `const` block.
-                    !is_call(ctx, expr) && ctx.is_plain(body.locals[local].ty.as_ref())
+                    item || (!is_call(ctx, expr) && ctx.is_plain(body.locals[local].ty.as_ref()))
                 })
                 .map(|&(local, _)| local),
         );
+        if item {
+            statics.extend(extended_temporaries(ctx, body));
+        }
         let mut loans = Loans {
             loans: Vec::new(),
             at: FxHashMap::default(),

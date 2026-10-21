@@ -14,7 +14,8 @@ use smallvec::SmallVec;
 
 use crate::{
     mir::{
-        LocalId, MirBody, Operand, OperandKind, PlaceElem, Rvalue, StatementKind, TerminatorKind,
+        BasicBlockId, LocalId, MirBody, Operand, OperandKind, PlaceElem, Rvalue, StatementKind,
+        TerminatorKind,
     },
     next_solver::{Clause, DbInterner, GenericArgKind, Region, Ty, TyKind},
 };
@@ -126,6 +127,7 @@ fn live_points(
     cfg: &Cfg,
     effects: &[Effects],
     uses: impl Fn(&Effects) -> &[LocalId],
+    edge: impl Fn(BasicBlockId, BasicBlockId, &mut BitSet),
     mut visit: impl FnMut(usize, &BitSet),
 ) {
     let locals = body.locals.len();
@@ -137,7 +139,9 @@ fn live_points(
         for &block in cfg.order.iter().rev() {
             let mut live = BitSet::new(locals);
             for &successor in &cfg.successors[index(block)] {
-                live.union(&entry[index(successor)]);
+                let mut from = entry[index(successor)].clone();
+                edge(block, successor, &mut from);
+                live.union(&from);
             }
             let start = cfg.block_start(block);
             let end = cfg.block_end(body, block);
@@ -159,7 +163,9 @@ fn live_points(
     for &block in &cfg.order {
         let mut live = BitSet::new(locals);
         for &successor in &cfg.successors[index(block)] {
-            live.union(&entry[index(successor)]);
+            let mut from = entry[index(successor)].clone();
+            edge(block, successor, &mut from);
+            live.union(&from);
         }
         let start = cfg.block_start(block);
         let end = cfg.block_end(body, block);
@@ -205,7 +211,7 @@ pub(super) fn region_liveness<'db>(
         }
     }
     // A drop of what cannot be initialized there does nothing.
-    let maybe_init = maybe_initialized_at_drops(body, cfg, moves);
+    let (maybe_init, init_at_exit) = maybe_initialized_at_drops(body, cfg, moves);
     for (point, it) in effects.iter_mut().enumerate() {
         it.drops.retain(|&local| maybe_init.get(&point).is_some_and(|set| set.contains(&local)));
     }
@@ -224,6 +230,7 @@ pub(super) fn region_liveness<'db>(
         cfg,
         &effects,
         |it| &it.uses,
+        |_, _, _| (),
         |point, live| {
             use_live[point] = live.clone();
             for local in live.iter() {
@@ -242,6 +249,9 @@ pub(super) fn region_liveness<'db>(
         cfg,
         &effects,
         |it| &it.drops,
+        // Dropping a local makes it live back to where it may be initialized only, as
+        // rustc's `compute_drop_live_points_for` has it.
+        |block, successor, live| live.intersect(init_at_exit.at(block, successor)),
         |point, live| {
             for local in live.iter() {
                 if use_live[point].contains(local) {
@@ -263,12 +273,14 @@ pub(super) fn region_liveness<'db>(
     values
 }
 
-/// For each drop, the locals it drops that may be initialized there.
+/// For each drop, the locals it drops that may be initialized there; and for each edge
+/// between blocks, the locals that may be initialized, if partly, leaving the first for the
+/// second.
 fn maybe_initialized_at_drops(
     body: &MirBody<'_>,
     cfg: &Cfg,
     moves: &MoveData,
-) -> FxHashMap<usize, Vec<LocalId>> {
+) -> (FxHashMap<usize, Vec<LocalId>>, InitAtExit) {
     let paths = moves.paths.len();
     let blocks = body.basic_blocks.len();
     let mut entry: Vec<Option<BitSet>> = vec![None; blocks];
@@ -326,6 +338,19 @@ fn maybe_initialized_at_drops(
             }
         }
     }
+    let locals = body.locals.len();
+    let initialized = |state: &BitSet| {
+        let mut out = BitSet::new(locals);
+        for (local, _) in body.locals.iter() {
+            let path = moves.local_path(local);
+            if moves.find_in_descendants(path, &|it| state.contains(it)).is_some() {
+                out.insert(local.into_raw().into_u32() as usize);
+            }
+        }
+        out
+    };
+    let empty = BitSet::new(locals);
+    let mut exits: Vec<Option<(BitSet, Option<(BasicBlockId, BitSet)>)>> = vec![None; blocks];
     let mut found: FxHashMap<usize, Vec<LocalId>> = FxHashMap::default();
     for &block in &cfg.order {
         let Some(mut state) = entry[index(block)].clone() else { continue };
@@ -333,6 +358,17 @@ fn maybe_initialized_at_drops(
         for statement in 0..data.statements.len() {
             apply(Location { block, statement }, &mut state, false);
         }
+        let mut exit = state.clone();
+        apply(Location { block, statement: data.statements.len() }, &mut exit, false);
+        let returned = match data.terminator.as_ref().map(|it| &it.kind) {
+            Some(TerminatorKind::Call { target: Some(target), .. }) => {
+                let mut returned = exit.clone();
+                apply(Location { block, statement: data.statements.len() }, &mut returned, true);
+                Some((*target, initialized(&returned)))
+            }
+            _ => None,
+        };
+        exits[index(block)] = Some((initialized(&exit), returned));
         if let Some(TerminatorKind::Drop { place, .. }) =
             data.terminator.as_ref().map(|it| &it.kind)
             && place.projection.is_empty()
@@ -344,7 +380,23 @@ fn maybe_initialized_at_drops(
             }
         }
     }
-    found
+    (found, InitAtExit { exits, empty })
+}
+
+/// The locals that may be initialized, if partly, leaving a block for a successor.
+struct InitAtExit {
+    exits: Vec<Option<(BitSet, Option<(BasicBlockId, BitSet)>)>>,
+    empty: BitSet,
+}
+
+impl InitAtExit {
+    fn at(&self, block: BasicBlockId, successor: BasicBlockId) -> &BitSet {
+        match &self.exits[index(block)] {
+            Some((_, Some((target, returned)))) if *target == successor => returned,
+            Some((exit, _)) => exit,
+            None => &self.empty,
+        }
+    }
 }
 
 /// The regions dropping a value of type `ty` may use: rustc's dropck outlives constraints.
