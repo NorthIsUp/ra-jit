@@ -28,6 +28,8 @@ what you ran and on which platform.
 - Add a reduced case that fails before your change and passes after.
 - Add a line under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md) for anything a user
   would notice.
+- Credit anyone whose idea, diagnosis or patch the change carries with a `Co-authored-by:`
+  trailer: [docs/contributing.md](docs/contributing.md#credit).
 - Contributions are accepted under MIT OR Apache-2.0, the project's licence.
 
 Security problems go through [SECURITY.md](SECURITY.md), not public issues.

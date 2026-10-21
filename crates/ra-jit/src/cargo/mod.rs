@@ -91,7 +91,7 @@ fn settle(cargo: u32, typed: &[String]) -> anyhow::Result<()> {
         let cwd = std::env::current_dir()?;
         let key = asked.key(&cwd);
         eprintln!("settling {key}: cargo {} in {}", typed.join(" "), cwd.display());
-        if let Ok(state) = by_cargo(&asked, &cwd, &key, Counts::default())? {
+        if let Ok(state) = by_cargo(&asked, &cwd, &key, Counts::default(), None)? {
             state.write()?;
         }
         anyhow::Ok(())
@@ -137,7 +137,7 @@ fn build(asked: &Invocation) -> anyhow::Result<i32> {
             say::fallback(&reason, "building with cargo");
             let mut counts = state.counts;
             *counts.cargo.entry(reason).or_default() += 1;
-            match by_cargo(asked, &cwd, &key, counts)? {
+            match by_cargo(asked, &cwd, &key, counts, None)? {
                 Ok(state) => state,
                 Err(code) => return Ok(code),
             }
@@ -156,11 +156,11 @@ fn build(asked: &Invocation) -> anyhow::Result<i32> {
                     say::error(&why);
                     return Ok(FAILED);
                 }
-                Err(NotStaged::Cargos(why)) => {
+                Err(NotStaged::Cargos(why, ahead)) => {
                     if let Some(why) = why {
                         say::fallback(&why, "building with cargo");
                     }
-                    match by_cargo(asked, &cwd, &key, Counts::default())? {
+                    match by_cargo(asked, &cwd, &key, Counts::default(), ahead)? {
                         Ok(state) => state,
                         Err(code) => return Ok(code),
                     }
@@ -185,8 +185,9 @@ const FAILED: i32 = 101;
 enum NotStaged {
     /// Cargo failed, with this status: rustc turned the source down.
     Failed(i32),
-    /// Cargo builds all of it, which it has not begun to, and why when that is worth a line.
-    Cargos(Option<String>),
+    /// Cargo builds all of it, which it has not begun to, and why when that is worth a line;
+    /// with what the daemon is told of the build so that it loads it while cargo builds.
+    Cargos(Option<String>, Option<daemon::Ahead>),
     /// Cargo built its part and the daemon did not build a program, and why.
     Daemons(String),
 }
@@ -195,13 +196,17 @@ enum NotStaged {
 /// and check the crates of the workspace, and the daemon compiles those. Every program is
 /// the daemon's: cargo linked only what stands in for it.
 fn staged(asked: &Invocation, cwd: &Path, key: &str) -> anyhow::Result<Result<State, NotStaged>> {
-    if std::env::var_os(STAGED).is_none_or(|it| it == "0") {
-        return Ok(Err(NotStaged::Cargos(None)));
-    }
-    let crates = match Staged::of(asked)? {
-        Ok(crates) => crates,
-        Err(why) => return Ok(Err(NotStaged::Cargos(Some(why)))),
+    let on = std::env::var_os(STAGED).is_some_and(|it| it != "0");
+    let crates = match Staged::of(asked) {
+        Ok(Ok(crates)) => crates,
+        Ok(Err(why)) => return Ok(Err(NotStaged::Cargos(on.then_some(why), None))),
+        // Cargo's build of all of it loses only the daemon's head start.
+        Err(_) if !on => return Ok(Err(NotStaged::Cargos(None, None))),
+        Err(why) => return Err(why),
     };
+    if !on {
+        return Ok(Err(NotStaged::Cargos(None, crates.ahead)));
+    }
     State::give_back(key);
     let ahead = crates.ahead.as_ref().map(|ahead| {
         // Without an answer the daemon loads the workspace once cargo is done.
@@ -342,15 +347,36 @@ fn warmed(checkout: &Checkout) -> Result<(), String> {
 }
 
 /// Builds with cargo, and has the daemon load what cargo built for the builds to come.
-/// `Err` is cargo's exit status when it failed.
+/// `Err` is cargo's exit status when it failed. With `ahead` the daemon loads the workspace
+/// and compiles what it can while cargo builds, rather than after.
 fn by_cargo(
     asked: &Invocation,
     cwd: &Path,
     key: &str,
     counts: Counts,
+    ahead: Option<daemon::Ahead>,
 ) -> anyhow::Result<Result<State, i32>> {
     State::give_back(key);
-    let built = match Built::by_cargo(asked)? {
+    if let Some(ahead) = &ahead {
+        // Without an answer the daemon loads the workspace once cargo is done.
+        let _ = client::ask(Request::Ahead(ahead.clone()), Start::IfMissing);
+    }
+    let built = loaded_by_cargo(asked, cwd, key, counts, ahead.as_ref());
+    // The worker that loaded ahead is the one the build was given to, unless there is none.
+    if let Some(ahead) = ahead {
+        let _ = client::ask(Request::Forget(ahead.config.id()), Start::Never);
+    }
+    built
+}
+
+fn loaded_by_cargo(
+    asked: &Invocation,
+    cwd: &Path,
+    key: &str,
+    counts: Counts,
+    ahead: Option<&daemon::Ahead>,
+) -> anyhow::Result<Result<State, i32>> {
+    let built = match Built::by_cargo(asked, ahead)? {
         Ok(built) => built,
         Err(code) => return Ok(Err(code)),
     };

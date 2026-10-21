@@ -4,6 +4,7 @@
 
 use std::{
     collections::BTreeMap,
+    ffi::OsString,
     fs::OpenOptions,
     io::{BufReader, Write as _},
     path::{Path, PathBuf},
@@ -327,8 +328,13 @@ impl Built {
     /// Runs cargo on what `asked` builds, with ra-jit as the wrapper of the workspace's
     /// crates. Progress and diagnostics are cargo's own. `Err` is cargo's exit status when
     /// it failed.
-    pub(crate) fn by_cargo(asked: &Invocation) -> anyhow::Result<Result<Built, i32>> {
-        Built::by(asked, None)
+    /// `ahead` is what the daemon was told of the build before cargo started, for the
+    /// worker that loads it meanwhile to hear what the scripts said.
+    pub(crate) fn by_cargo(
+        asked: &Invocation,
+        ahead: Option<&daemon::Ahead>,
+    ) -> anyhow::Result<Result<Built, i32>> {
+        Built::by(asked, None, ahead)
     }
 
     /// The same, with rustc building of the crates rooted at `staged` only what stands in
@@ -337,10 +343,14 @@ impl Built {
         asked: &Invocation,
         staged: &Staged,
     ) -> anyhow::Result<Result<Built, i32>> {
-        Built::by(asked, Some(staged))
+        Built::by(asked, Some(staged), staged.ahead.as_ref())
     }
 
-    fn by(asked: &Invocation, staged: Option<&Staged>) -> anyhow::Result<Result<Built, i32>> {
+    fn by(
+        asked: &Invocation,
+        staged: Option<&Staged>,
+        ahead: Option<&daemon::Ahead>,
+    ) -> anyhow::Result<Result<Built, i32>> {
         let started = stamp_now();
         let mut cargo = Command::new(cargo_path());
         match asked.subcommand {
@@ -357,7 +367,7 @@ impl Built {
         let mut cargo = cargo.spawn().context("running cargo")?;
         let said = cargo.stdout.take().context("cargo has no output")?;
         let mut built = Built { started, artifacts: Vec::new(), scripts: Vec::new() };
-        let ahead = staged.and_then(|it| it.ahead.as_ref()).map(|it| it.config.id());
+        let ahead = ahead.map(|it| it.config.id());
         for message in Message::parse_stream(BufReader::new(said)) {
             let message = message?;
             // The worker that loads the workspace meanwhile reads what the scripts said and
@@ -850,6 +860,18 @@ pub(crate) fn cargo_path() -> PathBuf {
     std::env::var_os("CARGO").map_or_else(|| PathBuf::from("cargo"), PathBuf::from)
 }
 
+/// The rustc cargo builds with: the one it is told, else the one beside the cargo that ran
+/// this command, which is the toolchain's and not the rustup proxy on the path that would
+/// pick it again.
+fn rustc_path() -> OsString {
+    if let Some(rustc) = std::env::var_os("RUSTC") {
+        return rustc;
+    }
+    let rustc = format!("rustc{}", std::env::consts::EXE_SUFFIX);
+    let beside = std::env::var_os("CARGO").map(|it| PathBuf::from(it).with_file_name(rustc));
+    beside.filter(|it| it.is_file()).map_or_else(|| "rustc".into(), PathBuf::into_os_string)
+}
+
 fn metadata(asked: &Invocation) -> anyhow::Result<Metadata> {
     let mut command = MetadataCommand::new();
     command.cargo_path(cargo_path()).no_deps();
@@ -912,7 +934,7 @@ fn project(asked: &Invocation, cwd: &Path, metadata: &Metadata) -> Result<PathBu
 /// is another release than the one ra-jit has the layouts of, or the source of its standard
 /// library, which the daemon compiles from, is not installed.
 fn other_toolchain() -> Option<String> {
-    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    let rustc = rustc_path();
     let said = |flag: &str| {
         let output = Command::new(&rustc).arg(flag).output().ok()?;
         Some(String::from_utf8_lossy(&output.stdout).trim().to_owned())
@@ -963,7 +985,7 @@ const LIBRARY_PATH: &str = if cfg!(windows) {
 /// Where the toolchain cargo builds with has the libraries of the host, `libstd` as a
 /// dynamic library among them. `None` when rustc does not say.
 fn sysroot_libraries() -> Option<PathBuf> {
-    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    let rustc = rustc_path();
     let output = Command::new(rustc).arg("--print=target-libdir").output().ok()?;
     let said = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     (output.status.success() && !said.is_empty()).then(|| PathBuf::from(said))

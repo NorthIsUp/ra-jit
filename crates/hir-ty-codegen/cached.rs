@@ -370,6 +370,11 @@ impl Entry {
         field(program.map_or(&[][..], |it| it));
         // Code of one producer is not what another would have given.
         field(super::Backend::from_env().ok()?.to_string().as_bytes());
+        // Nor is code of an optimized body; the keys of the default level stay what they were.
+        let level = super::mir_opt_level().number();
+        if level != 0 {
+            field(&[b'M', level]);
+        }
         // Nor is code for one target what another runs.
         field(super::Target::selected().ok()?.triple().as_bytes());
         field(&[debug as u8]);

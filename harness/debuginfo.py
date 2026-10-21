@@ -412,6 +412,10 @@ BEHIND = "behind rustc"
 # writes it at 0x344. The first poll finds no valid state and traps, where the cargo build
 # panics in tokio.
 OPEN = {"rung2: frames of each panic", f"rung2: {DEBUGGER}"}
+# Under LLVM gdb shows a slice's length and not its elements, `&[i32](size=2)` where rustc's build
+# shows `&[i32](size=2) = {2, 3}`; not looked into yet. Windows asks cdb, which has no such check.
+if LLVM and sys.platform == "linux":
+    OPEN |= {"types: the debugger shows them"}
 
 
 class Tally:
@@ -796,7 +800,10 @@ def profiler(tally, what, binary, cwd, crates):
         return tally.say(f"{what}: perf", "not run", "perf is of Linux")
     perf = shutil.which("perf")
     data = os.path.join(tempfile.mkdtemp(prefix="ra-jit-debuginfo-perf-"), "perf.data")
-    record = perf and subprocess.run([perf, "record", "-o", data, "-F", "5000", "--call-graph", "dwarf", binary],
+    # One run is over in milliseconds, a few dozen samples: whether any lands in ra-jit's functions, or
+    # unwinds back to main, was chance. Twenty runs under one recording give hundreds.
+    again = 'for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do "$0" >/dev/null || exit; done'
+    record = perf and subprocess.run([perf, "record", "-o", data, "-F", "5000", "--call-graph", "dwarf", "--", "sh", "-c", again, binary],
                                      cwd=cwd, capture_output=True, text=True)
     if not perf or record.returncode != 0 or not os.path.exists(data):
         # Not a verdict on the binary: the machine does not let this user profile.
@@ -989,7 +996,7 @@ def edited(tally, part):
         if daemon.poll() is not None:
             raise SystemExit(f"the daemon did not start: {open(log_path).read()[-2000:]}")
         time.sleep(0.05)
-    spliced = 0
+    spliced, linked, first = 0, True, []
     for what, changes in EDITS:
         seen = len(open(log_path).read())
         text = open(os.path.join(ws, MAIN)).read()
@@ -1007,6 +1014,11 @@ def edited(tally, part):
         links = re.findall(r"^link: \S+ \((.*)\)$", open(log_path).read()[seen:], re.M)
         how = "not linked" if not links else "spliced" if links[-1].startswith("spliced") else "linked in full"
         spliced += how == "spliced"
+        # The debug info a first splice after a link adds to is copied while the daemon waits
+        # (#12): what it copies itself is the section names, if any.
+        if how == "spliced" and linked and (copied := re.search(r", (\d+) copied$", links[-1])):
+            first.append(int(copied[1]))
+        linked = how == "linked in full" or (linked and how == "not linked")
         if not (reply.stdout + reply.stderr).strip().startswith("ok"):
             tally.say(f"{part}: {what}", "REFUSED", (reply.stdout + reply.stderr).strip()[:60])
             continue
@@ -1035,6 +1047,10 @@ def edited(tally, part):
     daemon.kill()
     if os.environ.get("RA_JIT_SPLICE") != "0":
         tally.say(f"{part}: added to the linked binary", "spliced" if spliced else "NONE SPLICED", f"{spliced} of {len(EDITS)} steps")
+    if sys.platform.startswith("linux") and first:
+        copied = max(first)
+        tally.say(f"{part}: first splices after a link", "copied nothing" if copied < 1 << 16 else "COPIED DEBUG INFO",
+                  f"{copied} bytes at most, of {len(first)}")
 
 
 def described(binary):
