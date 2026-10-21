@@ -43,7 +43,8 @@ jobs:
     name: ${{ matrix.target }}
     needs: notes
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    # Two builds of ra-jit and the training between them (build_release.py).
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -56,19 +57,20 @@ jobs:
       NAME: ra-jit-v${{ needs.notes.outputs.version }}-${{ matrix.target }}
     steps:
       - uses: actions/checkout@v7
-      - run: rustup toolchain install 1.99.0 --profile minimal && rustup default 1.99.0
+      # llvm-tools: llvm-profdata, which merges the profile build_release.py trains.
+      - run: rustup toolchain install 1.99.0 --profile minimal --component llvm-tools && rustup default 1.99.0
       # `ra-jit --version` names the commit, as the flake's build does.
       - run: echo "RA_JIT_GIT_SHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
       # No build cache: release binaries come from a clean build. Without the `llvm` feature:
       # that one links libLLVM dynamically, which a machine that downloads the binary lacks.
-      - run: cargo build -p ra-jit --release --locked --target ${{ matrix.target }}
+      - run: python3 .github/scripts/build_release.py --target ${{ matrix.target }}
         env:
           MACOSX_DEPLOYMENT_TARGET: "13.0"
       - name: Archive
         run: |
           mkdir "$NAME"
           cp LICENSE-APACHE LICENSE-MIT README.md CHANGELOG.md "$NAME"
-          cp target/${{ matrix.target }}/release/{ra-jit,cargo-ra-jit,ra-jit-rustc} "$NAME"
+          cp target/${{ matrix.target }}/dist/{ra-jit,cargo-ra-jit,ra-jit-rustc} "$NAME"
           "$NAME/ra-jit" --version | tee /dev/stderr | grep -F "ra-jit ${{ needs.notes.outputs.version }} "
           tar czf "$NAME.tar.gz" "$NAME"
           shasum -a 256 "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
