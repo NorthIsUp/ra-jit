@@ -18,7 +18,8 @@ AREA = "sbase::square!(self.side)"
 
 def scratch(prefix):
     # cargo names a checkout by its real path, and the temporary directory of macOS is a link.
-    return os.path.realpath(tempfile.mkdtemp(prefix=prefix))
+    # That directory is also too long for the path of a daemon's socket in it (104 bytes).
+    return os.path.realpath(tempfile.mkdtemp(prefix=prefix, dir="/tmp" if sys.platform == "darwin" else None))
 
 
 def cache(store, *args, env=None):
