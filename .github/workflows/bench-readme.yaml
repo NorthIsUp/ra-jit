@@ -67,7 +67,7 @@ jobs:
           export RA_JIT_PROJECTS="$BENCH_HOME/projects"
           rm -rf "$BENCH_HOME/work" "$BENCH_HOME/reference"
           full=()
-          [ "$FULL" = true ] && full=(--setups all --setups-on ripgrep,nushell --tests)
+          [ "$FULL" = true ] && full=(--setups all --setups-on "ripgrep,nushell" --tests)
           nix develop .#bench -c env -u CARGO_INCREMENTAL -u RUSTC_WRAPPER python3 harness/bench.py \
             ripgrep fd bat hyperfine just axum nushell helix bevy --runs 5 --cold-runs 5 "${full[@]}" \
             --work "$BENCH_HOME/work" --reference "$BENCH_HOME/reference" --out "$RUNNER_TEMP/bench.json"

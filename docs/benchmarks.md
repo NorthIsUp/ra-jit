@@ -180,6 +180,13 @@ builds now is a regression whatever its time. On a regression the workflow opens
 labelled `bench-regression` with a table of what moved (or comments on the one already open),
 writes the table to the run's summary and fails.
 
+Live edits are checked the same way. `.github/workflows/live-latency.yaml` runs every night on
+main on a GitHub macOS arm64 runner (`macos-15`), times socket, burst and replay edits of the
+four live programs (`harness/live_latency.py`, [live.md](live.md#latency-under-typing)), appends
+one line for all of them to `docs/benchmarks/history/macos-arm64-live.jsonl` and checks the p50
+and p90 of each program and mode (floor 1 ms). A shared runner is noisier than the benchmark
+machine; the band widens with the spread its own history shows.
+
 ## Run it yourself
 
 On Linux x86-64 with Nix (or with Rust 1.99.0, rust-src, LLVM 20 and Python 3 installed):

@@ -44,7 +44,8 @@ All notable changes to ra-jit are written here. The format follows
   appends each run's medians to `docs/benchmarks/history/*.jsonl` and checks the last against
   the runs before it on the same machine; the `bench-readme` workflow commits the history on
   every run, starts the site's deploy, and on a regression past the noise band opens (or
-  comments on) an issue labelled `bench-regression` and fails.
+  comments on) an issue labelled `bench-regression` and fails. The live-edit latency workflow
+  runs every night on main on a macOS arm64 runner and does the same with its history.
 - [ra-jit.ix.dev/bench](https://ra-jit.ix.dev/bench): the benchmark history over commits, from
   `docs/benchmarks/history`: the latest run's table per project, and charts of each edit,
   the cold build, the daemon's peak memory, the store size and live edit-to-running latency
