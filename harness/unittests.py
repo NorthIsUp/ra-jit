@@ -35,6 +35,7 @@ OPEN = {
     "hir_ide::tests::traits::nested_impl_traits",
 }
 
+COLOR = re.compile(r"\x1b\[[0-9;]*m")
 RUNNING = re.compile(r"^\s+Running .*[/\\]deps[/\\](\w+?)-[0-9a-f]{16}")
 DOCTESTS = re.compile(r"^\s+Doc-tests (\w+)")
 RESULT = re.compile(r"^test (\S+)(?: - .*)? \.\.\. (ok|FAILED|ignored)")
@@ -43,10 +44,14 @@ RESULT = re.compile(r"^test (\S+)(?: - .*)? \.\.\. (ok|FAILED|ignored)")
 def main():
     command = ["cargo", "test", "--release", "--no-fail-fast", *(f"-p{c}" for c in CRATES), *sys.argv[1:]]
     print(" ".join(command), flush=True)
-    proc = subprocess.Popen(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
+    # Under CI rust-analyzer's slow tests run, and mark that they did in the target directory,
+    # which they take to be vendor/rust-analyzer/target unless told.
+    env = {"CARGO_TARGET_DIR": os.path.join(ROOT, "target"), **os.environ}
+    proc = subprocess.Popen(command, cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
     binary, seen, failed = "?", set(), set()
     for line in proc.stdout:
         sys.stdout.write(line)
+        line = COLOR.sub("", line)
         if m := RUNNING.match(line) or DOCTESTS.match(line):
             binary = m.group(1)
         elif m := RESULT.match(line):
@@ -59,7 +64,7 @@ def main():
     new, fixed, gone = sorted(failed - OPEN), sorted(OPEN & seen - failed), sorted(OPEN - seen)
     print(f"\n{len(seen)} tests, {len(failed)} failed, {len(OPEN & failed)} of them known (OPEN in harness/unittests.py)")
     for name in new:
-        print(f"::error::{name} fails, and is not known to")
+        print(f"::error::{name} fails, and is not in OPEN in harness/unittests.py")
     for name in fixed:
         print(f"::error::{name} passes now: take it out of OPEN in harness/unittests.py")
     for name in gone:
