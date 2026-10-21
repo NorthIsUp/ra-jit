@@ -537,15 +537,29 @@ impl CodegenUnit {
             if stale.is_empty() {
                 stale.push(base.stale(db, 0, 1));
             }
-            let patch =
-                base.patch(db, symbols, roots, &on_demand, denied, known, own_statics, stale);
-            let patch = match patch {
-                Ok(Ok(patch)) => Some(patch),
-                Ok(Err(why)) => {
-                    declined = Some(why);
-                    None
+            let patch = loop {
+                let patch = base.patch(
+                    db,
+                    symbols,
+                    roots,
+                    &on_demand,
+                    denied,
+                    known,
+                    own_statics.clone(),
+                    stale.clone(),
+                );
+                let why = match patch {
+                    Ok(Ok(patch)) => break Some(patch),
+                    Ok(Err(why)) => Some(why),
+                    Err(_) => None,
+                };
+                // Code compiled at a higher level that a patch can't hold goes, not the
+                // program the patch is for.
+                let told = why.unwrap_or("it could not be compiled");
+                if !known.tiers.refuse(&format!("no patch can hold its code: {told}")) {
+                    declined = why;
+                    break None;
                 }
-                Err(_) => None,
             };
             if let Some(patch) = patch {
                 backend::Tally::global().report();
@@ -11320,10 +11334,12 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             _ => Region::new_erased(interner),
         });
         let instance = Instance { def, args: args.store(), checked: self.cg.checked };
-        if let Some((body, never)) = tier::seen_body(db, &instance, &self.env.store(), tracked)
-            && body.func.signature == *sig
-        {
-            self.cg.declare_seen(id, &body, never);
+        if let Some((body, never)) = tier::seen_body(db, &instance, &self.env.store(), tracked) {
+            if body.func.signature == *sig {
+                self.cg.declare_seen(id, &body, never);
+            } else if std::env::var_os("RA_JIT_DUMP_TIER").is_some() {
+                eprintln!("tier: signature differs: {} vs {}", body.func.signature, sig);
+            }
         }
     }
 

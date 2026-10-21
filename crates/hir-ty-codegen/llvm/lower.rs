@@ -1562,14 +1562,25 @@ impl<'ctx, 'f> Lowering<'ctx, 'f> {
             | Opcode::SsubOverflow
             | Opcode::UmulOverflow
             | Opcode::SmulOverflow => {
-                let (value, overflowed) = overflowing(match opcode {
-                    Opcode::UaddOverflow => "llvm.uadd.with.overflow",
-                    Opcode::SaddOverflow => "llvm.sadd.with.overflow",
-                    Opcode::UsubOverflow => "llvm.usub.with.overflow",
-                    Opcode::SsubOverflow => "llvm.ssub.with.overflow",
-                    Opcode::UmulOverflow => "llvm.umul.with.overflow",
-                    _ => "llvm.smul.with.overflow",
-                })?;
+                // An unsigned sum or difference is checked by comparing, as rustc does: what
+                // LLVM knows of comparisons (that `x < len` in a loop, say) then removes the
+                // check, which it does not for the intrinsics.
+                let (value, overflowed) = match opcode {
+                    Opcode::UaddOverflow => {
+                        let sum = b.build_int_add(l, r, "")?;
+                        (sum, b.build_int_compare(IntPredicate::ULT, sum, l, "")?)
+                    }
+                    Opcode::UsubOverflow => (
+                        b.build_int_sub(l, r, "")?,
+                        b.build_int_compare(IntPredicate::ULT, l, r, "")?,
+                    ),
+                    _ => overflowing(match opcode {
+                        Opcode::SaddOverflow => "llvm.sadd.with.overflow",
+                        Opcode::SsubOverflow => "llvm.ssub.with.overflow",
+                        Opcode::UmulOverflow => "llvm.umul.with.overflow",
+                        _ => "llvm.smul.with.overflow",
+                    })?,
+                };
                 let results = self.func.dfg.inst_results(inst);
                 let byte = b.build_int_z_extend(overflowed, self.context.i8_type(), "")?;
                 self.values.insert(results[0], Operand::Int(value));

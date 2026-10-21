@@ -4,7 +4,7 @@ demo/lifebench, the Game of Life on a 512 x 512 grid run flat out, built each wa
 table of docs/tiers.md has, each run for the same time, the steady rate the mean of the
 half-second rates from `--from` seconds on.
 
-usage: tierbench.py [--seconds 25] [--from 15] [--rounds 1] [--only NAME,...]
+usage: tierbench.py [--seconds 25] [--from 15] [--rounds 1] [--together] [--only NAME,...]
                     (RA_JIT_BIN names the ra-jit built; cargo-ra-jit is found next to it)
 
 The builds, by NAME:
@@ -22,7 +22,11 @@ The builds, by NAME:
   release    `cargo build --release`
 
 With `--rounds N` every build runs N times, the builds taking turns, so that load from
-elsewhere on the machine falls on all of them alike; each is reported by its median.
+elsewhere on the machine falls on all of them alike; each is reported by its median. With
+`--together` the builds of a round run at the same time instead, one program each, so that
+they share whatever load there is second for second: on a machine busy with other work the
+shares of release then hold where the rates of builds run in turn swing by half. It needs a
+core free per build.
 
 Python 3.13, stdlib only.
 """
@@ -72,6 +76,7 @@ async def main() -> None:
     parser.add_argument("--from", dest="since", type=float, default=15)
     parser.add_argument("--rounds", type=int, default=1)
     parser.add_argument("--only", default=",".join(NAMES))
+    parser.add_argument("--together", action="store_true", help="run the builds of a round at the same time")
     parser.add_argument("--events", action="store_true", help="print the tier events of each daemon run")
     args = parser.parse_args()
     names = [it for it in args.only.split(",") if it]
@@ -116,9 +121,9 @@ async def main() -> None:
 
         results: dict[str, list[float]] = {name: [] for name in names}
         for round_ in range(args.rounds):
-            for name in names:
-                binary, env = binaries[name]
-                lines = await run_program(binary, project, env, args.seconds)
+            runs = [run_program(binaries[name][0], project, binaries[name][1], args.seconds) for name in names]
+            outputs = await asyncio.gather(*runs) if args.together else [await run for run in runs]
+            for name, lines in zip(names, outputs):
                 rate, events = steady(lines, args.since)
                 results[name].append(rate)
                 print(f"round {round_ + 1} {name}: {rate:.0f} generations per second", flush=True)

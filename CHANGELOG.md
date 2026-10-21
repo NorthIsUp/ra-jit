@@ -46,11 +46,14 @@ All notable changes to ra-jit are written here. The format follows
   numbers to main when they moved beyond noise.
 - LLVM is given what rustc gives it: reference parameters marked `noalias`, `readonly`,
   `dereferenceable`, `align`, `nonnull` and `noundef` as rustc marks them, addresses as
-  pointers rather than integers, branches threaded before `-O3`, and, at a level above 1, the
-  bodies of the callees it keeps calling. Level 3 of `demo/lifebench` goes from 528 to 763
-  generations per second: 68% of a release build, and 79% of one that checks overflow as
-  the dev profile does ([docs/tiers.md](docs/tiers.md)).
-- `harness/tierbench.py`, the benchmark table of docs/tiers.md.
+  pointers rather than integers, branches threaded before `-O3`, unsigned overflow checked as
+  rustc checks it, a second round of cleanup after `-O3`, and, at a level above 1, the bodies
+  of the callees it keeps calling and of what those call. Level 3 of `demo/lifebench` runs
+  at 88% of a release build and 94 to 96% of one that checks overflow as the dev profile
+  does, from 71 to 74% and 77 to 81%, measured side by side on a loaded machine
+  ([docs/tiers.md](docs/tiers.md)).
+- `harness/tierbench.py`, the benchmark table of docs/tiers.md; `--together` runs the builds
+  of a round at once, so that a loaded machine slows them alike.
 - `RA_JIT_DUMP_LLVM=after` prints the LLVM IR as the passes left it.
 
 ### Changed
@@ -144,6 +147,14 @@ All notable changes to ra-jit are written here. The format follows
 - On macOS a spliced executable lists its sections in the order of their addresses, and
   each segment a splice adds has a section, as `dyld_info` requires: it read none of the
   spliced executables on macOS 27 (`harness/splices.py`: 11 of 71 right, now 71).
+- Tiered code that calls what the executable has no symbol of (`memcmp` where rustc's code
+  calls `bcmp`, a `pthread_` function only rustc's inlined code reached) no longer has the
+  program linked in full and started over at level 1, after which every later patch of it
+  was linked in full too: that function stays where it was, and says why
+  ([docs/tiers.md](docs/tiers.md), "Code no patch can hold").
+- The thread that compiles at a higher level has a stack of 64 MiB, and the bodies a body
+  built in shows are ten deep at most: a deep chain of them overflowed the 2 MiB default and
+  took the worker down.
 
 ## [0.1.0] - 2026-10-20
 
