@@ -99,6 +99,13 @@ All notable changes to ra-jit are written here. The format follows
 
 ### Fixed
 
+- A worker that loaded its workspace beside cargo's first build
+  ([#11](https://github.com/indexable-inc/ra-jit/issues/11)) ends when its daemon does, as
+  every other worker does: once told what cargo built, it waited for a lock on its standard
+  input that it held itself, so a daemon that crashed or was killed left the worker running,
+  holding its memory (2 GB on fd) and its socket, and the next daemon's first build fell
+  back to cargo ("another daemon serves"). `cargo_ra_jit.py`'s "workers of the killed
+  daemon are gone" fails without this.
 - Before the 2024 edition, a panic in a block's tail drops the tail's temporaries after the
   block's locals, as rustc does; ra-jit dropped them first, so a `Drop` that printed or
   locked saw the other order (`breakers.py unwind_tail_after_local`).

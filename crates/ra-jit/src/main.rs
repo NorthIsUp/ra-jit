@@ -4728,8 +4728,15 @@ impl Said {
                 told(&mut read.lines.lock().unwrap_or_else(|e| e.into_inner()));
                 read.more.notify_all();
             };
-            for line in std::io::stdin().lines() {
-                let line = line.ok().and_then(|it| serde_json::from_str::<Line>(&it).ok());
+            loop {
+                // Not `stdin().lines()`: that holds the standard input's lock for the whole loop,
+                // and `end_with_input` below waits for it.
+                let mut text = String::new();
+                let got = std::io::stdin().read_line(&mut text);
+                let line = got
+                    .ok()
+                    .filter(|&len| len > 0)
+                    .and_then(|_| serde_json::from_str::<Line>(&text).ok());
                 match line {
                     Some(Line::Said { said: line }) => tell(&|it| it.said.push(line.clone())),
                     Some(Line::Whole(told)) => {
