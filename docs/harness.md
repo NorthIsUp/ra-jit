@@ -143,7 +143,9 @@ against the same functions in many small files ([reports/INCREMENTAL.md](reports
 `cargo ra-jit build` against `cargo build` on ripgrep, just and nushell (cold, no-op and
 three kinds of edit); the numbers are in [results.md](results.md#11-real-projects). Their docstrings say how to run them.
 `bench.py` on real projects, with `benchreport.py`, is also what writes the README's build table:
-[benchmarks.md](benchmarks.md).
+[benchmarks.md](benchmarks.md). `bench.py --runtime` runs `runbench.py`, which times programs
+ra-jit builds whole with LLVM against `cargo build --release`, and `benchreport.py` writes that
+result to the README's runtime table, refusing it when any program's output differs from cargo's.
 
 ## The fuzzer
 

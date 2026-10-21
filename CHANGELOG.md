@@ -18,6 +18,11 @@ All notable changes to ra-jit are written here. The format follows
   in rustc's `-Zunpretty=mir` format, and `harness/mirparity.py` compares it with rustc's
   function by function: at level 1, 21.5% of functions are identical to rustc's, against 4.0%
   without the passes.
+- The README has a table of how fast programs ra-jit builds with LLVM run against
+  `cargo build --release`, written by `bench.py --runtime` and `benchreport.py` and kept current
+  by the `bench-readme` workflow on the Linux benchmark machine. A run in which any program's
+  output differs from cargo's is never published; none is yet, since on macOS a program ra-jit
+  builds every crate of, with its own `main`, does not run (docs/research/mir-gap.md).
 - [docs/research/](docs/research/README.md): what 2026's Rust compiler work means for ra-jit,
   and the MIR gap with rustc with the production gaps ranked; rustc's pass sources in
   [docs/upstream/rustc-mir-transform/](docs/upstream/rustc-mir-transform/SOURCE.md).

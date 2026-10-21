@@ -69,8 +69,11 @@ runs.
   the spread is the load). The kernels' cold compile: 103 ms with no passes, 104 at level 1,
   122 at level 2. An edit re-optimizes only the bodies it changed, as the passes are salsa
   queries; `movedlines.py`'s six edits took 10 to 27 ms with no passes, 10 to 18 at level 1 and 9 to 20 at level 2. `editbench.py` is
-  Linux-only (it reads `/proc`), so the daemon's edit loop wasn't timed here (unverified
-  beyond those six).
+  Linux-only (it reads `/proc`).
+- **The daemon's edit loop**, `bench.py ripgrep --backend cranelift --runs 3`, twice at each
+  level in alternating order: a body edit took 0.22 and 0.25 s with no passes, 0.18 and 0.19 s
+  at level 2; signature, leaf and generic edits 0.06 to 0.15 s at either level, every one
+  spliced in by the daemon. No cost shows past the spread.
 - **Default.** Off: level 1 costs almost nothing per edit and is the safest to turn on next,
   once it has run on more than the corpus and the interpreter's tests.
 
@@ -116,7 +119,8 @@ Ranked by how likely each is to hurt a real app, then by cost. "Fixed" is in thi
    `__rust_alloc`, a branch to `__rdl_alloc`, so the program returns at once with status 0
    and prints nothing (read: `nm` and `otool -tV` on `runbench.py`'s kernels build; a raw
    `write(2, ..)` as the first line of `main` never shows). Unmodified `main` too, Cranelift and
-   LLVM alike; `cargo ra-jit build` keeps rustc's `main` and is not affected. Linux not checked.
+   LLVM alike; `cargo ra-jit build`, `difftest.py` and `backends.py` keep rustc's `main` and are
+   not affected; `runbench.py` builds this way. Linux not checked.
    It is why the README's runtime table has no macOS numbers.
 1. **Debug-build UB checks** (medium). A program that dereferences a misaligned or null raw
    pointer, or transmutes an invalid enum value, panics under rustc's debug build and carries on
