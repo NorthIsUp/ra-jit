@@ -371,6 +371,9 @@ mod tests {
             std::fs::copy(&ran.real, linked.with_extension("real")).unwrap();
         }
         ran.real = linked.with_extension("real");
+        // A copy on macOS keeps the time of the file it was copied from.
+        let real = std::fs::File::options().write(true).open(&ran.real).unwrap();
+        real.set_modified(SystemTime::now()).unwrap();
         std::fs::write(run_dir.join(RAN), serde_json::to_vec(&ran).unwrap()).unwrap();
         std::fs::write(linked.with_extension("d"), format!("{}: {sources}\n", linked.display()))
             .unwrap();
