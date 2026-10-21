@@ -907,6 +907,20 @@ impl<'db> Builder<'_, '_, 'db> {
         }
     }
 
+    /// `value` with the lifetimes a user wrote, the signature's, kept and the others fresh.
+    fn written<T: rustc_type_ir::TypeFoldable<crate::next_solver::DbInterner<'db>>>(
+        &mut self,
+        value: T,
+    ) -> T {
+        let value = value.fold_with(&mut ObjectDefaults(self.interner()));
+        rustc_type_ir::fold_regions(self.interner(), value, |region, depth| match region.kind() {
+            RegionKind::ReEarlyParam(_) | RegionKind::ReLateParam(_) | RegionKind::ReStatic => {
+                self.signature_region(region, depth).unwrap_or_else(|| self.fresh())
+            }
+            _ => self.fresh(),
+        })
+    }
+
     /// The type of a callee whose path spells out generic arguments, `f::<&'a T>`, with the
     /// lifetimes written there: rustc's user type annotation on the path.
     fn written_callee(&mut self, func: &Operand, call: MirSpan) -> Option<Ty<'db>> {
@@ -924,19 +938,10 @@ impl<'db> Builder<'_, '_, 'db> {
             _ => return None,
         };
         let hir_def::hir::Expr::Path(path) = &self.ctx.store[expr] else { return None };
-        let written = path.type_anchor().is_some()
-            || path.generic_args().is_some_and(|args| args.iter().any(Option::is_some));
-        if !written {
+        if !spells_generics(path) {
             return None;
         }
-        Some(rustc_type_ir::fold_regions(self.interner(), ty, |region, depth| {
-            match region.kind() {
-                RegionKind::ReEarlyParam(_) | RegionKind::ReLateParam(_) | RegionKind::ReStatic => {
-                    self.signature_region(region, depth).unwrap_or_else(|| self.fresh())
-                }
-                _ => self.fresh(),
-            }
-        }))
+        Some(self.written(ty))
     }
 
     fn category_of_assignment(&self, local: LocalId, projection: &[PlaceElem]) -> Category {
@@ -957,6 +962,15 @@ impl<'db> Builder<'_, '_, 'db> {
         let projection = place.projection.as_slice();
         let dest = self.place_ty(place.local, projection).ty;
         let at = At { category: self.category_of_assignment(place.local, projection), span };
+        if let MirSpan::ExprId(expr) = span
+            && let hir_def::hir::Expr::Cast { .. } = self.ctx.store[expr]
+            && matches!(rvalue, Rvalue::Use(_) | Rvalue::Cast(..))
+            && let Some(written) = self.ctx.infer.type_of_expr.get(expr)
+        {
+            let written = self.written(written.as_ref());
+            let at = At { category: Category::TypeAnnotation, span };
+            self.relate(dest, written, Variance::Invariant, at);
+        }
         match rvalue {
             Rvalue::Repeat(operand, _) => {
                 if let (Some(ty), TyKind::Array(element, _)) =
@@ -1033,22 +1047,18 @@ impl<'db> Builder<'_, '_, 'db> {
                     }
                     _ => (),
                 }
-                if let MirSpan::ExprId(expr) = span
-                    && let hir_def::hir::Expr::Cast { .. } = self.ctx.store[expr]
-                    && let Some(written) = self.ctx.infer.type_of_expr.get(expr)
-                {
-                    let written = written.as_ref();
-                    let written =
-                        rustc_type_ir::fold_regions(self.interner(), written, |r, depth| {
-                            self.signature_region(r, depth).unwrap_or_else(|| self.fresh())
-                        });
-                    let at = At { category: Category::TypeAnnotation, span };
-                    self.relate(target, written, Variance::Invariant, at);
-                }
                 Some(target)
             }
             Rvalue::Aggregate(AggregateKind::Adt(variant, args), operands) => {
-                let args = self.renumber(args.as_ref());
+                let args = match span {
+                    MirSpan::ExprId(expr)
+                        if matches!(&self.ctx.store[expr],
+                            hir_def::hir::Expr::RecordLit { path, .. } if spells_generics(path)) =>
+                    {
+                        self.written(args.as_ref())
+                    }
+                    _ => self.renumber(args.as_ref()),
+                };
                 let fields = self.ctx.db.field_types(*variant);
                 for ((_, field), operand) in fields.iter().zip(operands.iter()) {
                     let field = field.ty().instantiate(self.interner(), args).skip_norm_wip();
@@ -1377,6 +1387,37 @@ impl<'db> Builder<'_, '_, 'db> {
             _ => rv_of(region),
         }
     }
+}
+
+/// The lifetime of `&'r dyn Trait` written without one is `'r`, where rust-analyzer gives
+/// `'static`.
+struct ObjectDefaults<'db>(crate::next_solver::DbInterner<'db>);
+
+impl<'db> rustc_type_ir::TypeFolder<crate::next_solver::DbInterner<'db>> for ObjectDefaults<'db> {
+    fn cx(&self) -> crate::next_solver::DbInterner<'db> {
+        self.0
+    }
+
+    fn fold_ty(&mut self, ty: Ty<'db>) -> Ty<'db> {
+        use rustc_type_ir::TypeSuperFoldable;
+        let ty = ty.super_fold_with(self);
+        if let TyKind::Ref(region, inner, mutability) = ty.kind()
+            && let TyKind::Dynamic(predicates, object) = inner.kind()
+            && matches!(object.kind(), RegionKind::ReStatic)
+            && !matches!(region.kind(), RegionKind::ReStatic)
+        {
+            let inner = Ty::new_dynamic(self.0, predicates, region);
+            return Ty::new_ref(self.0, region, inner, mutability);
+        }
+        ty
+    }
+}
+
+/// Whether `path` writes generic arguments, `f::<T>` or `<T as Trait>::f`: a user type
+/// annotation, whose lifetimes bind.
+fn spells_generics(path: &hir_def::expr_store::path::Path) -> bool {
+    path.type_anchor().is_some()
+        || path.generic_args().is_some_and(|args| args.iter().any(Option::is_some))
 }
 
 fn adt_variants(db: &dyn crate::db::HirDatabase, adt: AdtId) -> Vec<hir_def::VariantId> {
