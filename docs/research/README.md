@@ -9,3 +9,6 @@ back them is under [docs/upstream/](../upstream/), each with a `SOURCE.md`. Sear
   does about each. 2026-10-20.
 - [mir-gap.md](mir-gap.md): ra-jit's MIR against rustc's optimized MIR, match rates, the
   passes ported and not, and the production gaps ranked. 2026-10-20.
+- [borrowck.md](borrowck.md): rustc's NLL borrow checker and Polonius (the nightly-default
+  alpha, the legacy datalog analysis, stabilization status, the UI tests that tell them apart),
+  rust-analyzer's removed borrowck, and what ra-jit builds. 2026-10-20.

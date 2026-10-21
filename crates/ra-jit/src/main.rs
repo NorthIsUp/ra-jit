@@ -3,6 +3,7 @@
 
 #![allow(clippy::print_stderr, reason = "a command line program: stderr is where it speaks")]
 
+mod borrowck;
 mod cargo;
 mod content;
 mod dep_info;
@@ -4454,6 +4455,9 @@ fn main() -> anyhow::Result<()> {
     }
     if std::env::args().nth(1).as_deref() == Some("deps") {
         return deps::command(std::env::args().skip(2));
+    }
+    if std::env::args().nth(1).as_deref() == Some("borrowck") {
+        return borrowck::command(std::env::args().skip(2));
     }
     if std::env::args().nth(1).as_deref() == Some("weaken") {
         return weaken::command(std::env::args().skip(2));
