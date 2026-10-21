@@ -156,53 +156,22 @@ pub(crate) fn compiled_from_what_is_there(out_dir: &Path, workspace: &Path) -> b
         return false;
     };
     let Ok(compiled) = compiled else { return false };
-    let mut sources = Vec::new();
-    for line in read.lines() {
-        if let Some(read) = line.strip_prefix("# env-dep:") {
-            // Cargo sets its own from the manifest, which a change of has the checkout loaded
-            // again; whoever runs cargo sets the others.
-            let (name, value) = read.split_once('=').map_or((read, None), |(n, v)| (n, Some(v)));
-            let set = ran.env.iter().find(|it| it.0 == name).map(|it| dep_info_escaped(&it.1));
-            if !name.starts_with("CARGO_") || set.as_deref() != value {
-                return false;
-            }
-            continue;
-        }
-        if let Some((_, deps)) = line.split_once(": ") {
-            sources.extend(dep_info_paths(deps).into_iter().map(|it| workspace.join(it)));
-        }
+    let read = crate::dep_info::DepInfo::parse(&read);
+    // Cargo sets its own from the manifest, which a change of has the checkout loaded again;
+    // whoever runs cargo sets the others.
+    let set = |name: &str| ran.env.iter().find(|it| it.0 == name).map(|it| it.1.as_str());
+    if read
+        .env
+        .iter()
+        .any(|(name, value)| !name.starts_with("CARGO_") || set(name) != value.as_deref())
+    {
+        return false;
     }
-    !sources.is_empty()
-        && sources.iter().all(|it| {
-            std::fs::metadata(it).and_then(|it| it.modified()).is_ok_and(|it| it <= compiled)
+    !read.files.is_empty()
+        && read.files.iter().all(|it| {
+            let written = std::fs::metadata(workspace.join(it)).and_then(|it| it.modified());
+            written.is_ok_and(|it| it <= compiled)
         })
-}
-
-/// A value as rustc writes it into a `.d` file.
-fn dep_info_escaped(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('\n', "\\n").replace('\r', "\\r")
-}
-
-/// The paths of a rule of a `.d` file, which a backslash escapes spaces in.
-fn dep_info_paths(deps: &str) -> Vec<PathBuf> {
-    let (mut paths, mut path, mut escaped) = (Vec::new(), String::new(), false);
-    for c in deps.chars() {
-        match c {
-            '\\' if !escaped => escaped = true,
-            ' ' if !escaped => {
-                paths.extend((!path.is_empty()).then(|| PathBuf::from(std::mem::take(&mut path))))
-            }
-            c => {
-                if escaped && c != ' ' {
-                    path.push('\\');
-                }
-                path.push(c);
-                escaped = false;
-            }
-        }
-    }
-    paths.extend((!path.is_empty()).then(|| PathBuf::from(path)));
-    paths
 }
 
 /// Runs the script that wrote `out_dir` again, as cargo ran it but into a directory of its
