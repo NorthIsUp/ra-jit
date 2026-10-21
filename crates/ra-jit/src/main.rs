@@ -1517,7 +1517,7 @@ fn root_file_ends_with(db: &RootDatabase, krate: Crate, end: &str) -> bool {
     let source_root = db.file_source_root(file).source_root_id(db);
     let source_root = db.source_root(source_root).source_root(db);
     let path = source_root.path_for_file(&file).and_then(|it| it.as_path());
-    path.is_some_and(|it| it.as_str().ends_with(end))
+    path.is_some_and(|it| Path::new(it.as_str()).ends_with(end))
 }
 
 fn crate_root_file(db: &RootDatabase, krate: Crate) -> Option<PathBuf> {
