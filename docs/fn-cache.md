@@ -116,6 +116,8 @@ taken back.
 - `crates/hir-ty-codegen/fncache.rs`: ra-jit compiles a call of `__ra_jit_cache_code` into the
   hash (or why the function can't be cached) as a constant. The function asking is compiled
   again after any edit, since its constant can change with code in any file
-  (`patch.rs`, `cached_roots`).
+  (`patch.rs`, `cached_roots`). Only crates with `ra_jit` as a dependency are looked through
+  for such functions, and nothing is hashed or compiled for the hash unless one is called, so
+  a workspace without the attribute builds and patches as it did before.
 
 `harness/fncache.py` checks it end to end, and `fncache.py --live` the live edit on macOS.

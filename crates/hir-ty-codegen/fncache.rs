@@ -72,7 +72,22 @@ fn is_codec(db: &dyn HirDatabase, func: FunctionId) -> bool {
 /// The closure that `#[ra_jit::cache]` put the body of `func` in, when it is a cached
 /// function: the one it asks for the code of.
 pub(super) fn cached_closure(db: &dyn HirDatabase, func: FunctionId) -> Option<salsa::Id> {
+    if !uses_cache(db, func.krate(db)) {
+        return None;
+    }
     cached_closure_of(db, func).map(|it| it.as_id())
+}
+
+/// Whether `krate` can have cached functions: the attribute calls into the `ra_jit` crate, so
+/// a crate without it as a dependency has none, and costs nothing to look through.
+pub(super) fn uses_cache(db: &dyn HirDatabase, krate: Crate) -> bool {
+    krate.data(db).dependencies.iter().any(|dep| {
+        dep.crate_id
+            .extra_data(db)
+            .display_name
+            .as_ref()
+            .is_some_and(|name| name.crate_name().symbol().as_str() == "ra_jit")
+    })
 }
 
 #[salsa::tracked]
@@ -80,9 +95,6 @@ fn cached_closure_of<'db>(
     db: &'db dyn HirDatabase,
     func: FunctionId,
 ) -> Option<InternedClosureId<'db>> {
-    if func.krate(db).data(db).origin.is_lang() {
-        return None;
-    }
     let body = db.mir_body(func.into()).ok()?;
     body.basic_blocks.iter().find_map(|(_, block)| {
         let TerminatorKind::Call { func: callee, .. } = &block.terminator.as_ref()?.kind else {
