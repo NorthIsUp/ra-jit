@@ -136,7 +136,7 @@ jobs:
           git sparse-checkout set tests/ui
           git fetch -q --depth 1 --filter=blob:none origin a30aa9064df6a504b6a323c6884a2f4cfbfff666
           git checkout -q FETCH_HEAD
-      - run: python3 harness/borrowck_ui.py "$RUNNER_TEMP/rust" --bin target/release/ra-jit --jobs 4 --mode both --min-pass 1020
+      - run: python3 harness/borrowck_ui.py "$RUNNER_TEMP/rust" --bin target/release/ra-jit --jobs 4 --mode both --min-pass 1030
 
   ci:
     name: ci
