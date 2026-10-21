@@ -151,9 +151,13 @@ Dioxus's subsecond against `cargo ra-jit build` and `cargo build` with a restart
 is `harness/hotpatch`. `benchhistory.py` appends a run to `docs/benchmarks/history/` (what the
 site's /bench page charts) and, with `check`, fails when a median moved past its noise band.
 `live_latency.py` times live edits on macOS on AArch64, per keystroke under typing (`replay`,
-`burst`) as well as one edit at a time (`socket`), and the restarts of a session against `cargo
-run` (`restart`); its JSON goes to `benchhistory.py live`, and the numbers measured on a
-MacBook are in [live.md](live.md#latency-under-typing).
+`burst`) as well as one edit at a time (`socket`, or `cargo` through `cargo ra-jit build`), and
+the restarts of a session against `cargo run` (`restart`); its JSON goes to `benchhistory.py
+live`, and the numbers measured on a MacBook are in [live.md](live.md#latency-under-typing).
+`nix develop .#bench` has everything `bench.py` and `hotpatch.py` need (the nightly, mold, wild,
+`dx`, the libraries of bevy and zed); run `live_latency.py` with rustup's 1.99.0 instead, as the
+workflow does: under the shell's toolchain the daemon links the running program again instead
+of patching it.
 
 ## The fuzzer
 

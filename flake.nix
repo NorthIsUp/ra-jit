@@ -141,14 +141,15 @@
             pkgs.libxml2
             pkgs.zlib
             pkgs.ncurses
+            pkgs.cmake
+            pkgs.protobuf
+          ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
             # bevy's audio, input and windowing crates link these.
             pkgs.alsa-lib
             pkgs.udev
             pkgs.wayland
             pkgs.libxkbcommon
             # zed's (its own nix/build.nix lists the same).
-            pkgs.cmake
-            pkgs.protobuf
             pkgs.curl
             pkgs.fontconfig
             pkgs.freetype
@@ -170,18 +171,20 @@
             pkgs.libxrandr
             pkgs.mold
             pkgs.wild
+          ] ++ [
             # dx, for harness/hotpatch.py's subsecond (Dioxus hot-patching).
             pkgs.dioxus-cli
           ];
-          # zed's build script looks for glib's headers under /usr/include.
-          CXXFLAGS = "-I${pkgs.glib.dev}/include/glib-2.0 -I${pkgs.glib.out}/lib/glib-2.0/include";
           PROTOC = "${pkgs.protobuf}/bin/protoc";
-          ZSTD_SYS_USE_PKG_CONFIG = "1";
           RA_JIT_NIGHTLY = "${nightly}";
           LLVM_SYS_201_PREFIX = "${pkgs.llvmPackages_20.llvm.dev}";
           # A C compiler as a distribution ships it: the wrapper's _FORTIFY_SOURCE warns at the
           # -O0 of a debug build, which fails configure probes (jemalloc's, in fd).
           hardeningDisable = [ "all" ];
+        } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          # zed's build script looks for glib's headers under /usr/include.
+          CXXFLAGS = "-I${pkgs.glib.dev}/include/glib-2.0 -I${pkgs.glib.out}/lib/glib-2.0/include";
+          ZSTD_SYS_USE_PKG_CONFIG = "1";
         } // pkgs.lib.optionalAttrs (system == "x86_64-linux") {
           # The WebRTC zed links statically, the build its build script would download into
           # every cold target directory.

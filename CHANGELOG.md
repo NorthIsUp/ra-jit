@@ -37,8 +37,12 @@ All notable changes to ra-jit are written here. The format follows
   `-Zthreads=8`, rustc_codegen_cranelift on a pinned nightly, all three at once, and
   `cargo check`, each into its own target directory; `harness/hotpatch.py` times an edit of
   a running program under Dioxus's subsecond (`dx serve --hotpatch`) against `cargo ra-jit
-  build` and `cargo build` with a restart. The bench shell has mold, wild, `dx` and the
-  nightly.
+  build` and `cargo build` with a restart, stopping the program before the build as `cargo
+  watch` does. The bench shell has mold, wild, `dx` and the nightly, on Linux and on macOS.
+  Measured on a MacBook (`docs/benchmarks/hotpatch/macbook.json`): subsecond 346 ms
+  median, `cargo ra-jit build` with a restart 469 ms, `cargo build` with a restart 520 ms; a
+  live patch through `cargo ra-jit build` 12.5 ms and through the editor's socket 4.0 ms
+  (`docs/benchmarks/live/macbook-probe-cargo.json`).
 - Benchmark history and regression alerts
   ([#10](https://github.com/indexable-inc/ra-jit/issues/10)): `harness/benchhistory.py`
   appends each run's medians to `docs/benchmarks/history/*.jsonl` and checks the last against
