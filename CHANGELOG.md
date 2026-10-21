@@ -43,10 +43,9 @@ All notable changes to ra-jit are written here. The format follows
   while cargo builds ([#11](https://github.com/indexable-inc/ra-jit/issues/11)): a spare
   worker reads the workspace and compiles what it can while cargo runs, hears what the
   build scripts said and where the proc macros are, and is the worker the build is handed
-  to. Its threads give way to cargo's rustc while cargo runs (nice 10 on Linux, the utility
-  QoS class on macOS). On nushell, Linux (32 cores): ready for edits
-  58 s after a cold build from an empty store instead of 71 s; cargo's own build takes
-  about 3 s longer, 40 s instead of 37 s, while the worker loads beside it.
+  to. On nushell, Linux (32 cores): ready for edits 58 s after a cold build from an empty
+  store instead of 71 s; cargo's own build takes about 3 s longer, 40 s instead of 37 s,
+  while the worker loads beside it.
 - A build through cargo asks the toolchain's `rustc` beside `cargo` for its version and
   sysroot, not the rustup proxy: 16.6 ms to 7.3 ms each of its three calls on Linux.
 - An edit to function bodies only lists no functions again and finds the program's tests

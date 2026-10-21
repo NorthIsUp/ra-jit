@@ -2267,29 +2267,6 @@ fn resolve_names(db: &RootDatabase, crates: &[ide_db::base_db::Crate]) {
     });
 }
 
-/// Whether the worker compiles ahead of a build cargo is running, whose compilers are what
-/// the person waits for: until cargo says what it built, which is after it has said all the
-/// worker waits for of its build scripts and proc macros.
-static BESIDE_CARGO: AtomicBool = AtomicBool::new(false);
-
-/// Has the calling thread, one of those that work on every core, leave the cores to cargo's
-/// compilers while [`BESIDE_CARGO`]. Such a thread ends with the work it was started for:
-/// the threads of the builds after cargo's start as the worker does.
-fn give_way() {
-    if !BESIDE_CARGO.load(Ordering::Relaxed) {
-        return;
-    }
-    // SAFETY: the calls take plain values. On Linux the nice value is the calling thread's.
-    #[cfg(target_os = "linux")]
-    unsafe {
-        libc::setpriority(libc::PRIO_PROCESS, libc::gettid() as libc::id_t, 10);
-    }
-    #[cfg(target_vendor = "apple")]
-    unsafe {
-        libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_UTILITY, 0);
-    }
-}
-
 /// Resolves the names and finds the impls of `crates`, on every core.
 fn resolve_all(db: &RootDatabase, crates: &[ide_db::base_db::Crate]) {
     // A crate comes after its dependencies in the list: a thread that starts on one whose
@@ -2302,7 +2279,6 @@ fn resolve_all(db: &RootDatabase, crates: &[ide_db::base_db::Crate]) {
             let db = db.clone();
             let (next, helping) = (&next, &helping);
             scope.spawn(move || {
-                give_way();
                 while let Some(&krate) =
                     crates.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
                 {
@@ -4525,7 +4501,6 @@ fn lower_until(
         for _ in 0..threads {
             let (db, unnamed) = (db.clone(), &unnamed);
             scope.spawn(move || {
-                give_way();
                 hir::attach_db(&db, || hir_ty::mir::codegen::compile_unnamed(&db, unnamed, done))
             });
         }
@@ -4537,7 +4512,6 @@ fn lower_until(
             for _ in 0..threads {
                 let (db, next) = (db.clone(), &next);
                 scope.spawn(move || {
-                    give_way();
                     hir::attach_db(&db, || {
                         while let Some(&body) = bodies.get(next.fetch_add(1, Ordering::Relaxed))
                             && !done()
@@ -4742,7 +4716,6 @@ impl Said {
         let said = Arc::new(Said::default());
         let (built, whole) = std::sync::mpsc::channel();
         let read = said.clone();
-        BESIDE_CARGO.store(true, Ordering::Relaxed);
         std::thread::spawn(move || {
             let tell = |told: &dyn Fn(&mut Lines)| {
                 told(&mut read.lines.lock().unwrap_or_else(|e| e.into_inner()));
@@ -4753,7 +4726,6 @@ impl Said {
                 match line {
                     Some(Line::Said { said: line }) => tell(&|it| it.said.push(line.clone())),
                     Some(Line::Whole(told)) => {
-                        BESIDE_CARGO.store(false, Ordering::Relaxed);
                         tell(&|it| it.ended = true);
                         _ = built.send(Args::parse(told.args.into_iter()));
                         return end_with_input();
