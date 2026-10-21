@@ -125,6 +125,13 @@ impl Backend {
             Backend::Llvm(_) if context.func.dfg.num_insts() > LLVM_LIMIT => {
                 tally.fell_back(Duration::ZERO, "a body larger than LLVM is given in a build");
             }
+            // A handler of several, or one that takes more than the exception, costs LLVM a
+            // landing pad for each call: a generic edit of nushell waited on 177 such bodies,
+            // 17 ms each in LLVM. A tier, which does not come through here, lowers them.
+            #[cfg(feature = "llvm")]
+            Backend::Llvm(_) if !super::llvm::plain_handlers(&context.func) => {
+                tally.fell_back(Duration::ZERO, "a handler LLVM lowers only for a tier");
+            }
             #[cfg(feature = "llvm")]
             Backend::Llvm(optimization) => {
                 let start = Instant::now();

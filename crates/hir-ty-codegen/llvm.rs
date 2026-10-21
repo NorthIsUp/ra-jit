@@ -44,6 +44,24 @@ use lower::{Defined, Lowering};
 const OWN: &str = "ra-jit.own";
 const PERSONALITY: &str = "rust_eh_personality";
 
+/// Whether every call of `func` that unwinds has one handler, which takes the exception alone.
+/// A call of a body Cranelift built in has handlers of its own and of the caller's, which
+/// may take the caller's values; LLVM lowers those too, each with a landing pad of its own.
+pub(super) fn plain_handlers(func: &ir::Function) -> bool {
+    let dfg = &func.dfg;
+    dfg.exception_tables.values().all(|table| {
+        let mut items = table.items();
+        match (items.next(), items.next()) {
+            (Some(ir::ExceptionTableItem::Tag(_, handler)), None) => {
+                matches!(handler.args(&dfg.value_lists).collect::<Vec<_>>()[..], [
+                    ir::BlockArg::TryCallExn(0)
+                ])
+            }
+            _ => false,
+        }
+    })
+}
+
 /// `named` are the slots of the locals with a name. `weights`, from what code of the function
 /// counted while it ran, become its `!prof`.
 pub(super) fn emit(
