@@ -170,6 +170,21 @@ did about it in one line.
 When you report what you did, separate what you ran from what you inferred. The reports
 under `docs/reports/` do this and it is the reason they can be used.
 
+## Credit
+
+A commit or pull request that carries someone else's idea, diagnosis, workaround or patch
+(from an issue, a review, a discussion or another pull request) names them with a
+`Co-authored-by:` trailer, one line per person, after a blank line at the end of the
+message, so GitHub shows them as an author:
+
+```
+Co-authored-by: Name <id+login@users.noreply.github.com>
+```
+
+Use the address their own commits use, or GitHub's private one built from
+`gh api users/<login> -q .id` and their login. Name the issue or comment the idea came
+from in the message too. When a squash or a merge rewrites commits, keep every trailer.
+
 ## Licence
 
 ra-jit is MIT or Apache-2.0, like rust-analyzer. Contributions are accepted under the same
