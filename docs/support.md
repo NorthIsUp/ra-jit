@@ -123,8 +123,9 @@ default there, off with `RA_JIT_TIER=off`.
 | Levels 2 and 3, output identical to cargo's | yes, `harness/tiers.py` (local) | no |
 | An edit demotes a tiered function in the same build | yes, `harness/tiers.py` (local) | no |
 | An edit does not wait for a compile at a higher level | yes (local, with LLVM's part stretched to a second) | no |
+| Code no patch can hold stays out, the program is not started over | yes (local, 12 runs of the Life benchmark under one daemon, [tiers.md](tiers.md#code-no-patch-can-hold)) | no |
 | `RA_JIT_TIER=off` changes nothing | yes, `harness/tiers.py` (local) | does not apply |
-| Within 10% of a release build | no: 68% of it on the Life benchmark, and 79% of a release build that checks overflow as the dev profile does, which is as far as the tiered code may go | no |
+| Within 10% of a release build | within 6% of a release build that checks overflow as the dev profile does, which is as far as the tiered code may go, and 88% of release, on the Life benchmark under load | no |
 
 ## Debug info
 
