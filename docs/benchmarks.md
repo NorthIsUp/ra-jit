@@ -57,6 +57,14 @@ or the run stops.
 | nushell | 0.108.0 | `da141be11b3a` | `nu -n -c "[3 1 2] \| sort \| str join ','"` |
 | helix | 25.07.1 | `a05c151bb6e8` | `hx --version` (grammars are not built: `HELIX_DISABLE_AUTO_GRAMMAR_BUILD=1`) |
 | bevy | v0.20.0 | `b3bdd75becaf` | built (`--example breakout`), not run: it opens a window |
+| zed | v1.24.4 | `aed37547d854` | `zed --help`; not in the CI run, see below |
+
+zed (1.7 million lines in 249 crates, 1,291 crates with its dependencies) is in `PROJECTS` and
+every edit of it builds, but it is not measured yet: ra-jit's daemon does not fit it in 123 GB.
+On a c8i.16xlarge (2026-10-21, ra-jit `2b2f2dcd5b`) the daemon loaded the workspace (20 s),
+its 1,756,350 symbols (26 s) and resolved the crates (25 s), then went from 20 GB to more
+than 111 GB in 40 seconds and was stopped at a 112 GB limit before it was ready; cargo alone
+builds it in a few minutes on the same machine.
 
 `cargo` 0.92.0 is in `PROJECTS` too but not in the CI run (it doubles the run's length).
 
