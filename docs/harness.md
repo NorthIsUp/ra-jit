@@ -133,6 +133,10 @@ three kinds of edit); the numbers are in [results.md](results.md#11-real-project
 [benchmarks.md](benchmarks.md). `bench.py --runtime` runs `runbench.py`, which times programs
 ra-jit builds whole with LLVM against `cargo build --release`, and `benchreport.py` writes that
 result to the README's runtime table, refusing it when any program's output differs from cargo's.
+`abbench.py` runs two or more builds of ra-jit against each other on `bench.py`'s edits, in
+interleaved rounds: an edit's wall time, the daemon's own time and (macOS) its workers' cycles,
+the cold start, and the workers' peak memory. It is how the release build's profile was chosen
+([reports/RELEASE-BUILD.md](reports/RELEASE-BUILD.md)), and with `--train` it is the training of its PGO.
 
 ## The fuzzer
 
@@ -242,4 +246,5 @@ machine and commits the README's numbers to main. It runs only while the reposit
 `claims.yaml` (rustc's `tests/ui`) run on pull requests and pushes too, `nix-live.yaml` and
 `fork-sync.yaml` on pushes to main that touch what they cover, `fuzz.yaml` nightly, and
 `live-*.yaml` on their own branches. None of them is part of `ci`. `site.yaml` deploys the
-site, and `release.yaml` builds releases from tags.
+site, and `release.yaml` builds releases from tags, each target through
+`.github/scripts/build_release.py` (the `dist` profile with PGO, [reports/RELEASE-BUILD.md](reports/RELEASE-BUILD.md)).

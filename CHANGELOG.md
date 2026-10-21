@@ -16,6 +16,9 @@ All notable changes to ra-jit are written here. The format follows
   change, thread-locals or the system (I/O, time, randomness) are refused with where that is
   written. Under plain cargo it does nothing. `cargo ra-jit cache clear` forgets what was kept
   ([docs/fn-cache.md](docs/fn-cache.md), `harness/fncache.py`).
+- `harness/abbench.py` runs builds of ra-jit against each other on `bench.py`'s edits, in
+  interleaved rounds: edit and cold-start times, the workers' cycles on macOS and their peak
+  memory. With `--train` it is the training of the release build's PGO.
 - rustc's MIR optimizations, optionally: `RA_JIT_MIR_OPT=1` runs what rustc runs on a debug
   build's MIR (copy propagation, removing unused locals, storage markers and drops of what
   needs none, folding constant branches, simplifying the control flow and instructions),
@@ -72,6 +75,15 @@ All notable changes to ra-jit are written here. The format follows
   `cargo ra-jit` ran again for the same build, with nothing it reads written since, is not
   run a second time. On Linux x86-64 an edit of ripgrep's `search` goes from 72 to 48 ms,
   fd's `run` from 78 to 42 ms and hyperfine's `run` from 80 to 35 ms.
+- Release binaries are built with thin LTO (the new `dist` profile) and optimized with a
+  profile of ra-jit's own work (PGO), trained on edits of fd, bat, just and hyperfine, by
+  `.github/scripts/build_release.py`, which the release workflow now runs for every target.
+  Against the plain `release` build, on Linux: the cold start 14% shorter on nushell and on
+  ripgrep, an edit of a function 8% shorter on nushell, the same peak memory. mimalloc v3
+  stays the allocator: jemalloc, mimalloc v2 and snmalloc start colder and edit no faster
+  (an edit spends 1.8% of its time allocating, 73% revalidating salsa's memos). `release`
+  itself is unchanged, so rebuilding ra-jit after a change takes as long as before
+  ([docs/reports/RELEASE-BUILD.md](docs/reports/RELEASE-BUILD.md)).
 - `vendor/rust-analyzer` and `vendor/rustc_abi` are git subtrees instead of submodules: a
   plain `git clone` builds, and the flake builds from its own tree with no second pin of the
   forks.
@@ -99,6 +111,13 @@ All notable changes to ra-jit are written here. The format follows
 
 ### Fixed
 
+- A worker that loaded its workspace beside cargo's first build
+  ([#11](https://github.com/indexable-inc/ra-jit/issues/11)) ends when its daemon does, as
+  every other worker does: once told what cargo built, it waited for a lock on its standard
+  input that it held itself, so a daemon that crashed or was killed left the worker running,
+  holding its memory (2 GB on fd) and its socket, and the next daemon's first build fell
+  back to cargo ("another daemon serves"). `cargo_ra_jit.py`'s "workers of the killed
+  daemon are gone" fails without this.
 - Before the 2024 edition, a panic in a block's tail drops the tail's temporaries after the
   block's locals, as rustc does; ra-jit dropped them first, so a `Drop` that printed or
   locked saw the other order (`breakers.py unwind_tail_after_local`).
