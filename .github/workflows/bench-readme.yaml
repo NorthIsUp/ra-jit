@@ -69,12 +69,32 @@ jobs:
         run: |
           nix develop .#bench -c python3 harness/benchreport.py "$RUNNER_TEMP/bench.json" \
             ${{ inputs.force && '--force' || '' }}
+      # How fast the built programs run: harness/runbench.py, ra-jit's LLVM against
+      # `cargo build --release`, into the README's second table.
+      - name: Runtime bench
+        continue-on-error: true
+        run: |
+          export RA_JIT_BIN="$BENCH_HOME/target/release/ra-jit" APPS_DIR="$BENCH_HOME/apps"
+          nix develop .#bench -c env -u CARGO_INCREMENTAL -u RUSTC_WRAPPER python3 harness/bench.py --runtime \
+            --runs 5 --out "$RUNNER_TEMP/runtime.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: runtime
+          path: ${{ runner.temp }}/runtime.json
+      - name: README runtime table
+        id: runtime
+        # A refused result (a program that did something else) fails this step, not the job.
+        continue-on-error: true
+        run: |
+          nix develop .#bench -c python3 harness/benchreport.py "$RUNNER_TEMP/runtime.json" \
+            ${{ inputs.force && '--force' || '' }}
       - name: Commit to main
-        if: steps.report.outputs.changed == 'true'
+        if: steps.report.outputs.changed == 'true' || steps.runtime.outputs.changed == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add README.md docs/benchmarks.md docs/benchmarks/linux-x86_64.json
+          git add README.md docs/benchmarks.md docs/benchmarks/
           git commit -q -m "bench: README numbers for ${GITHUB_SHA::10} [skip ci]"
           # Main may have moved during the run: put the commit on top and try again.
           for attempt in 1 2 3 4 5; do

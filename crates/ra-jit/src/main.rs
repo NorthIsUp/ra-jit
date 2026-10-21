@@ -11,6 +11,7 @@ mod doctest;
 mod inputs;
 mod live;
 mod memory;
+mod mirdump;
 mod outline;
 mod plan;
 mod process;
@@ -4341,6 +4342,8 @@ usage: ra-jit <command>
   stop              ends the daemon; the next build starts one
   cargo <command>   what `cargo ra-jit <command>` runs: build, run, test, check
   cache <verb>      the disk store: stats, gc, verify, push, pull, keygen
+  mir <dir> --crate <name> [--level 0|1|2] [--time]
+                    a crate's MIR as ra-jit compiles it, written as rustc's -Zunpretty=mir
   --help, --version
 
 `cargo ra-jit build|run|test|check` takes cargo's flags. CARGO.md is the guide.";
@@ -4418,6 +4421,9 @@ fn main() -> anyhow::Result<()> {
     }
     if std::env::args().nth(1).as_deref() == Some("weaken") {
         return weaken::command(std::env::args().skip(2));
+    }
+    if std::env::args().nth(1).as_deref() == Some("mir") {
+        return mirdump::command(std::env::args().skip(2));
     }
     if let Some((request, socket)) =
         std::env::args().nth(1).and_then(|it| Request::parse(&it)).zip(std::env::args().nth(2))

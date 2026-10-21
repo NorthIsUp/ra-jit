@@ -8,6 +8,25 @@ All notable changes to ra-jit are written here. The format follows
 
 ### Added
 
+- rustc's MIR optimizations, optionally: `RA_JIT_MIR_OPT=1` runs what rustc runs on a debug
+  build's MIR (copy propagation, removing unused locals, storage markers and drops of what
+  needs none, folding constant branches, simplifying the control flow and instructions),
+  `RA_JIT_MIR_OPT=2` what it runs above `-Copt-level=0` that is ported (also dead stores and
+  unreachable blocks). Off by default. The interpreter's tests run every program at all three
+  levels and require the same result ([docs/research/mir-gap.md](docs/research/mir-gap.md)).
+- `ra-jit mir <dir> --crate <name> [--level N]` prints a crate's MIR as ra-jit compiles it,
+  in rustc's `-Zunpretty=mir` format, and `harness/mirparity.py` compares it with rustc's
+  function by function: at level 1, 21.5% of functions are identical to rustc's, against 4.0%
+  without the passes.
+- The README has a table of how fast programs ra-jit builds with LLVM run against
+  `cargo build --release`, written by `bench.py --runtime` and `benchreport.py` and kept current
+  by the `bench-readme` workflow on the Linux benchmark machine. A run in which any program's
+  output differs from cargo's is never published; none is yet, since on macOS a program ra-jit
+  builds every crate of, with its own `main`, does not run (docs/research/mir-gap.md).
+- [docs/research/](docs/research/README.md): what 2026's Rust compiler work means for ra-jit,
+  and the MIR gap with rustc with the production gaps ranked; rustc's pass sources in
+  [docs/upstream/rustc-mir-transform/](docs/upstream/rustc-mir-transform/SOURCE.md).
+
 - Tiers ([#6](https://github.com/indexable-inc/ra-jit/issues/6)): a program that takes
   edits with `ra-jit-live` is sampled while it runs, and the functions it spends its time in
   are compiled again with LLVM, at `-O3` with what they call built in (level 2) and then with
@@ -50,6 +69,9 @@ All notable changes to ra-jit are written here. The format follows
 
 - On macOS, signing a splice reuses the hash of each appended page that is the same as the
   last splice's: 21 ms to 5 ms of each edit of nushell.
+- The value of a `match` arm's guard was marked dead before the branch that reads it; with
+  storage markers kept, as rustc's optimized MIR keeps them above `-Copt-level=0`, the guard
+  could take the wrong arm.
 - The code of a function grows in a straight line with the arms of a match that leave
   through `?`, as `#[derive(Serialize, Deserialize)]` writes for an enum: it grew with
   their square, 329 MB for one function of 285 arms, which an AArch64 branch cannot reach
