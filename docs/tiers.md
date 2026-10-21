@@ -203,30 +203,35 @@ worker print the IR of each tiered function and why a body was not built in.
 ## Measured
 
 `demo/lifebench` (the Game of Life of `demo/life` on a 512 × 512 grid, run flat out) on an
-M-series Mac under load from other builds, 2026-10-20, with `harness/tierbench.py`: runs of
-25 seconds, steady state the mean of the half-second rates from 15 s on, each build the
-median of three rounds that take turns (the `outline` and all-LLVM rows: of two).
+M-series Mac, 2026-10-20, with `harness/tierbench.py --together --rounds 3`: runs of 25
+seconds, steady state the mean of the half-second rates from 15 s on. The machine was
+loaded by other builds (a load average of about 40 on 18 cores), which swings a rate by
+three times from one minute to the next; with `--together` the builds of a round run at the
+same time, so that the load slows them alike, and only the ratios mean anything. The table
+has the round at the least load of each of two runs; the main branch before this round of
+work was run the same way.
 
-| Build | Generations per second | vs release | Before this round of work |
-|---|---|---|---|
-| level 1, Cranelift (`RA_JIT_TIER=off`) | 23 | 2.0% | 21 |
-| every function LLVM `-O3`, nothing built in (`RA_JIT_BACKEND=llvm RA_JIT_OPT=3`) | 57 | 5.0% | 50 |
-| level 2, LLVM -O3 (`RA_JIT_TIER=2`) | 772 | 68% | 482 |
-| level 3, LLVM -O3 + PGO (default) | 763 | 68% | 528 |
-| rustc `-O3` with `overflow-checks` and `debug-assertions`, `step` kept out of `main` | 951 | 84% | |
-| rustc `-O3` with `overflow-checks` and `debug-assertions`, the semantics of the dev profile | 965 | 85% | 890 |
-| rustc release (`cargo build --release`) | 1129 | 100% | 1130 |
+| Build | Generations per second | vs release | vs the checked build | Before this round |
+|---|---|---|---|---|
+| level 1, Cranelift (`RA_JIT_TIER=off`) | 18, 18 | 3% | 3% | 3% |
+| level 2, LLVM -O3 (`RA_JIT_TIER=2`) | 581, 568 | 86%, 86% | 94%, 93% | 69%, 73% |
+| level 3, LLVM -O3 + PGO (default) | 595, 576 | 88%, 88% | 96%, 94% | 71%, 74% |
+| rustc `-O3` with `overflow-checks` and `debug-assertions`, the semantics of the dev profile | 619, 612 | 91%, 93% | 100% | 93%, 91% |
+| rustc release (`cargo build --release`) | 679, 657 | 100% | | 100% |
 
-rustc debug (`cargo build`) ran at 20 in the earlier measurement and was not run again.
+Under more load the builds draw together, as they share the memory system: level 3 measured
+91 to 109% of release and 101 to 116% of the checked build in the other rounds. Measured one
+after another on a quieter machine earlier the same day, before this round, release ran at
+1129, the checked build at 965 and level 3 at 763; per-function LLVM `-O3` with nothing
+built in at 57, and rustc debug at 20.
 
-- **Against the fair ceiling:** level 3 is at 79% of the build that keeps the dev profile's
-  overflow checks and debug assertions, which the tiered code has to keep, and at 68% of a
-  release build. Before, 59% and 47%. A tier compiles `step` alone and cannot build it into
-  the `main` that runs it; rustc's own code does as well with `step` kept out of `main`
-  (951) as with it built in, so that is not where the gap is.
-- **Level 3 against level 2:** about the same now (763 and 772, within the noise of the
-  machine). The branch counts helped LLVM lay out code it could not see through; with the
-  addresses and the aliasing told it, they add nothing here.
+- **Against the fair ceiling:** level 3 is at 94 to 96% of the build that keeps the dev
+  profile's overflow checks and debug assertions, which the tiered code has to keep, and at
+  88% of a release build; before, at 77 to 81% and 71 to 74%. A tier compiles `step` alone
+  and cannot build it into the `main` that runs it; rustc's own code does as well with
+  `step` kept out of `main` as with it built in, so that is not where the gap is.
+- **Level 3 against level 2:** 2 points ahead (595 and 581, 576 and 568), within the noise
+  of the machine.
 - **Time to each level:** `neighbours` at level 2 at 0.6 s and `step` at 0.9 s; level 3 at
   1.6 s and 2.0 s. A compile at level 2 or 3 takes 1 to 60 ms (`step` with 166 functions
   built in or shown: 56 ms, then 28 ms), of which `step` spends 20 ms building its IR with
@@ -235,7 +240,8 @@ rustc debug (`cargo build`) ran at 20 in the earlier measurement and was not run
   measurement the rate was 50 to 80 generations per second then.
 - **Edits:** from the save to the new executable, 6.4 ms (median of 24, 6.1 to 7.8) with
   tiering off and 6.9 ms (4.9 to 8.7) while functions are tiered, demoted by the edits and
-  tiered again; the program applies a patch in 0.25 ms (0.22 to 0.42). An edit that arrives
+  tiered again; after this round, 6.6 ms (median of 11, 4.7 to 8.0) at a load average of
+  40. The program applies a patch in 0.25 ms (0.22 to 0.42). An edit that arrives
   while a function is compiled at a higher level does not wait for LLVM: with LLVM's part of
   each compile stretched to a second, every edit took 4.7 to 10 ms, where holding the
   database through LLVM, as before, made the edits that came meanwhile wait 0.9 to 3.9 s.
@@ -249,18 +255,19 @@ rustc debug (`cargo build`) ran at 20 in the earlier measurement and was not run
 
 The issue's mark is within 10% of a release build. A release build does not check overflow,
 and code that panics on overflow cannot be swapped for code that wraps, so the tiered code
-can reach the checked build at most: 85% of release here. Level 3 is at 79% of that. What
-is left, as far as it was looked at:
+can reach the checked build at most: 91 to 93% of release here (85% measured one after
+another). Level 3 is at 94 to 96% of that, and 88% of release. What is left, as far as it was
+looked at:
 
-- `next`, the new grid, is a local `Vec` whose pointer and length are read again for every
-  cell. Its drop on the way out of a panic is a call of drop glue requested from a body
-  Cranelift built in, which LLVM is not shown, so its address escapes for the whole
-  function and the call of `next_age` in the loop may write it. rustc's drop glue is in the
-  same module, and LLVM sees it keeps no pointer. Showing drop glue at every depth did not
-  reach this call and was dropped.
-- An access says no alignment unless Cranelift's IR flags it, so LLVM takes every load of
-  the grid to be unaligned (`align 1`). It costs little on AArch64; it was not measured.
-- The branch counts of level 3 no longer help (above).
+- The branch counts of level 3 add little: the layout they give LLVM is about the one it
+  picks without them. What else level 3 could use the profile for, the divisors, cost more
+  than it gave (above).
+- A tier compiles `step` with its callees built in, rustc compiles the crate: the remaining
+  gap to the checked build is LLVM's choices on a function of about 680 lines of IR, 115
+  blocks, which were not looked at one by one.
+- Fixed in this round: `next`'s pointer and length read again for every cell (a body built in
+  now shows its callees' bodies, above), and alignment, measured and found not to matter on
+  AArch64.
 
 ## Linux
 

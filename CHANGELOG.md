@@ -27,11 +27,14 @@ All notable changes to ra-jit are written here. The format follows
   numbers to main when they moved beyond noise.
 - LLVM is given what rustc gives it: reference parameters marked `noalias`, `readonly`,
   `dereferenceable`, `align`, `nonnull` and `noundef` as rustc marks them, addresses as
-  pointers rather than integers, branches threaded before `-O3`, and, at a level above 1, the
-  bodies of the callees it keeps calling. Level 3 of `demo/lifebench` goes from 528 to 763
-  generations per second: 68% of a release build, and 79% of one that checks overflow as
-  the dev profile does ([docs/tiers.md](docs/tiers.md)).
-- `harness/tierbench.py`, the benchmark table of docs/tiers.md.
+  pointers rather than integers, branches threaded before `-O3`, unsigned overflow checked as
+  rustc checks it, a second round of cleanup after `-O3`, and, at a level above 1, the bodies
+  of the callees it keeps calling and of what those call. Level 3 of `demo/lifebench` runs
+  at 88% of a release build and 94 to 96% of one that checks overflow as the dev profile
+  does, from 71 to 74% and 77 to 81%, measured side by side on a loaded machine
+  ([docs/tiers.md](docs/tiers.md)).
+- `harness/tierbench.py`, the benchmark table of docs/tiers.md; `--together` runs the builds
+  of a round at once, so that a loaded machine slows them alike.
 - `RA_JIT_DUMP_LLVM=after` prints the LLVM IR as the passes left it.
 
 ### Changed
