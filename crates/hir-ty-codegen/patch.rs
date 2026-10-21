@@ -697,6 +697,14 @@ impl Base {
             && base_db::relevant_crates(db, file).iter().any(|it| self.crates.contains(it));
     }
 
+    /// Makes the next build compile what this one has of the checkout from the store, as the
+    /// first edit of it would. Whether there was any, that no edit had made the next build do.
+    pub(super) fn dehydrate(&mut self) -> bool {
+        let fresh = self.hydrated && !self.outdated;
+        self.outdated |= self.hydrated;
+        fresh
+    }
+
     /// Takes what every part of [`Base::stale`] found as where the next edit starts from.
     pub(super) fn settle(&mut self, db: &dyn HirDatabase, found: &mut [Stale]) {
         self.their_statics(db, found);
