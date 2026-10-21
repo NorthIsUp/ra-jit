@@ -8,6 +8,14 @@ All notable changes to ra-jit are written here. The format follows
 
 ### Added
 
+- `#[ra_jit::cache]` ([#17](https://github.com/indexable-inc/ra-jit/issues/17)): the
+  `ra-jit-cache` crate's attribute keeps what a pure function returns, in memory and under
+  `target/ra-jit/fn-cache`, by its arguments and a hash of the code ra-jit compiled for it and
+  for everything it reaches. Comments, formatting and edits elsewhere keep the results; an
+  edit to anything it reaches drops them, live edits too. Functions that read statics that
+  change, thread-locals or the system (I/O, time, randomness) are refused with where that is
+  written. Under plain cargo it does nothing. `cargo ra-jit cache clear` forgets what was kept
+  ([docs/fn-cache.md](docs/fn-cache.md), `harness/fncache.py`).
 - rustc's MIR optimizations, optionally: `RA_JIT_MIR_OPT=1` runs what rustc runs on a debug
   build's MIR (copy propagation, removing unused locals, storage markers and drops of what
   needs none, folding constant branches, simplifying the control flow and instructions),
