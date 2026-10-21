@@ -918,7 +918,10 @@ def stranger(home, check):
     sock = os.path.join(home, "daemon.sock")
     version = re.search(r"version (\S+),", subprocess.run(["cargo", "ra-jit", "status"], env=dict(os.environ, RA_JIT_HOME=home, PATH=os.path.dirname(RA_JIT) + os.pathsep + os.environ["PATH"]), capture_output=True, text=True).stdout)[1]
     request = json.dumps({"version": version, "replaces": False, "request": "Status"})
-    knock = lambda user: subprocess.run([*(["sudo", "-n", "-u", user] if user else []), sys.executable, "-c", CONNECT, sock, request], capture_output=True, text=True, cwd="/").stdout.strip()
+    def knock(user):
+        run = subprocess.run([*(["sudo", "-n", "-u", user] if user else []), sys.executable, "-c", CONNECT, sock, request], capture_output=True, text=True, cwd="/")
+        # What went wrong before the request was made, where nothing was printed.
+        return run.stdout.strip() or run.stderr.strip()[-300:]
     try:
         mine = knock(None)
         check("the user's own raw request is answered", made.returncode == 0 and '"Status"' in mine, mine[:60])
