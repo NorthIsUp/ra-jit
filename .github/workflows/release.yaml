@@ -28,12 +28,12 @@ jobs:
     outputs:
       version: ${{ steps.notes.outputs.version }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       # On a tag: the tag is the workspace version and CHANGELOG.md has its section.
       # By hand: the workspace version needs a section.
       - id: notes
         run: python3 -I .github/scripts/release_notes.py --tag "${{ github.ref_type == 'tag' && github.ref_name || '' }}" --out "$RUNNER_TEMP/notes.md"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: notes
           path: ${{ runner.temp }}/notes.md
@@ -55,7 +55,7 @@ jobs:
     env:
       NAME: ra-jit-v${{ needs.notes.outputs.version }}-${{ matrix.target }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: rustup toolchain install 1.99.0 --profile minimal && rustup default 1.99.0
       # `ra-jit --version` names the commit, as the flake's build does.
       - run: echo "RA_JIT_GIT_SHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
@@ -72,7 +72,7 @@ jobs:
           "$NAME/ra-jit" --version | tee /dev/stderr | grep -F "ra-jit ${{ needs.notes.outputs.version }} "
           tar czf "$NAME.tar.gz" "$NAME"
           shasum -a 256 "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ env.NAME }}
           path: ${{ env.NAME }}.tar.gz*
@@ -88,7 +88,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 340
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: rustup toolchain install 1.99.0 --profile minimal && rustup default 1.99.0
       - run: python3 -I .github/scripts/publish_crates.py --publish --max-hours 5
         env:
@@ -103,7 +103,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: out
           merge-multiple: true

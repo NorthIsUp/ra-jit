@@ -32,7 +32,7 @@ jobs:
       run:
         working-directory: site
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
       - run: bun run build
@@ -48,7 +48,7 @@ jobs:
           echo "::warning::site not deployed: the secret CLOUDFLARE_API_TOKEN is not set in indexable-inc/ra-jit's Actions secrets"
       - name: Deploy
         if: steps.credentials.outputs.present == 'true'
-        uses: cloudflare/wrangler-action@v3
+        uses: cloudflare/wrangler-action@v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
