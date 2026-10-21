@@ -100,11 +100,14 @@ def machine_line(result):
     return f"{host.get('name') or 'one machine'} ({', '.join(details)})"
 
 
-def provenance(result):
-    """Who ran it: the CI run, or a person with the same harness."""
+def provenance(result, which=True):
+    """Who ran it: the CI run, or a person with the same harness; with `which`, which build of
+    ra-jit it timed."""
+    built = (f" The ra-jit measured is `cargo build --release`; the binaries a release ships are the `dist` "
+             f"profile with PGO, which start and edit faster ([how]({REPO}/blob/main/docs/reports/RELEASE-BUILD.md)).") if which else ""
     if result.get("run_url"):
-        return f"Measured by [CI]({result['run_url']}) on the dedicated benchmark machine, which re-runs it after pushes to main."
-    return "Measured by hand with `harness/bench.py`; the `bench-readme` workflow re-runs it on the dedicated benchmark machine."
+        return f"Measured by [CI]({result['run_url']}) on the dedicated benchmark machine, which re-runs it after pushes to main." + built
+    return "Measured by hand with `harness/bench.py`; the `bench-readme` workflow re-runs it on the dedicated benchmark machine." + built
 
 
 def readme_section(result):
@@ -257,7 +260,7 @@ def runtime_section(result):
         lines.append(f"| **Geometric mean** | | | **{times(geomean['ra-jit'])}** |" +
                      (f" {times(geomean['checked'])} |" if checked and geomean.get("checked") else (" |" if checked else "")))
     lines += ["", "Release with dev checks: `cargo build --release` with `-C overflow-checks=on -C debug-assertions=on`. "
-              + (provenance(result).replace("`harness/bench.py`", "`harness/bench.py --runtime`") if result.get("run_url") else
+              + (provenance(result, which=False).replace("`harness/bench.py`", "`harness/bench.py --runtime`") if result.get("run_url") else
                  "Measured by hand with `harness/bench.py --runtime` (harness/runbench.py); the `bench-readme` workflow "
                  "re-runs it on the dedicated benchmark machine."), RUN_END]
     return "\n".join(lines)

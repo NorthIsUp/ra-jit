@@ -57,7 +57,7 @@ Edit, then build, on real projects at pinned commits. Each cell is incremental `
 | axum 0.8.6 | 350 ms → **50 ms** (7.0x) | 814 ms → **43 ms** (19x) |  | 71 ms → **16 ms** (4.4x) |
 | nushell 0.108.0 | 1.44 s → **261 ms** (5.5x) | 4.80 s → **231 ms** (21x) | 4.85 s → **308 ms** (16x) | 178 ms → **26 ms** (6.8x) |
 
-Measured by hand with `harness/bench.py`; the `bench-readme` workflow re-runs it on the dedicated benchmark machine. Cold builds, the spread of every number, the LLVM tier and how fast the built programs run: [docs/benchmarks.md](docs/benchmarks.md) ([raw JSON](docs/benchmarks/linux-x86_64.json)).
+Measured by hand with `harness/bench.py`; the `bench-readme` workflow re-runs it on the dedicated benchmark machine. The ra-jit measured is `cargo build --release`; the binaries a release ships are the `dist` profile with PGO, which start and edit faster ([how](https://github.com/indexable-inc/ra-jit/blob/main/docs/reports/RELEASE-BUILD.md)). Cold builds, the spread of every number, the LLVM tier and how fast the built programs run: [docs/benchmarks.md](docs/benchmarks.md) ([raw JSON](docs/benchmarks/linux-x86_64.json)).
 <!-- bench:end -->
 
 <!-- runbench:start -->
