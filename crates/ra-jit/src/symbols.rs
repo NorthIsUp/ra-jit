@@ -181,6 +181,12 @@ fn names_of_object(data: &[u8], names: &mut Vec<Named>) {
             continue;
         }
         let Ok(name) = symbol.name() else { continue };
+        // `<name>.llvm.<hash>` is a function LLVM made local and promoted for ThinLTO: its
+        // signature may no longer be the Rust ABI (dead arguments removed), so it is no copy
+        // to call.
+        if name.contains(".llvm.") {
+            continue;
+        }
         // Mach-O spells every name of C and Rust with an underscore in front, which the
         // writer of an object adds back.
         let name = match object.format() {
@@ -833,7 +839,39 @@ mod tests {
 
     use rustc_hash::FxHashMap;
 
-    use super::{SymbolTable, V0, crate_sources, function_name};
+    use object::{
+        Architecture, BinaryFormat, Endianness, SymbolFlags, SymbolKind, SymbolScope,
+        write::{Object, Symbol, SymbolSection},
+    };
+
+    use super::{SymbolTable, V0, crate_sources, function_name, names_of_object};
+
+    #[test]
+    fn thin_lto_promoted_names_are_no_copies() {
+        let mut object = Object::new(BinaryFormat::Elf, Architecture::X86_64, Endianness::Little);
+        let text = object.section_id(object::write::StandardSection::Text);
+        let at = object.append_section_data(text, &[0xc3; 2], 1);
+        // The same function as rustc emits it, and as ThinLTO promotes it from another unit.
+        let name = "_ZN3dep4cell5World3get17h0123456789abcdefE";
+        for (nth, name) in
+            [name.to_owned(), format!("{name}.llvm.1234567890")].into_iter().enumerate()
+        {
+            object.add_symbol(Symbol {
+                name: name.into_bytes(),
+                value: at + nth as u64,
+                size: 1,
+                kind: SymbolKind::Text,
+                scope: SymbolScope::Linkage,
+                weak: false,
+                section: SymbolSection::Section(text),
+                flags: SymbolFlags::None,
+            });
+        }
+        let mut names = Vec::new();
+        names_of_object(&object.write().unwrap(), &mut names);
+        let names: Vec<&str> = names.iter().map(|it| it.name.as_str()).collect();
+        assert_eq!(names, [name]);
+    }
 
     #[test]
     fn crate_sources_of_a_path_with_a_space() {
