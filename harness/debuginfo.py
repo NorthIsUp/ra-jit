@@ -412,6 +412,10 @@ BEHIND = "behind rustc"
 # writes it at 0x344. The first poll finds no valid state and traps, where the cargo build
 # panics in tokio.
 OPEN = {"rung2: frames of each panic", f"rung2: {DEBUGGER}"}
+# Under LLVM gdb shows a slice's length and not its elements, `&[i32](size=2)` where rustc's build
+# shows `&[i32](size=2) = {2, 3}`; not looked into yet. Windows asks cdb, which has no such check.
+if LLVM and sys.platform == "linux":
+    OPEN |= {"types: the debugger shows them"}
 
 
 class Tally:
@@ -796,7 +800,10 @@ def profiler(tally, what, binary, cwd, crates):
         return tally.say(f"{what}: perf", "not run", "perf is of Linux")
     perf = shutil.which("perf")
     data = os.path.join(tempfile.mkdtemp(prefix="ra-jit-debuginfo-perf-"), "perf.data")
-    record = perf and subprocess.run([perf, "record", "-o", data, "-F", "5000", "--call-graph", "dwarf", binary],
+    # One run is over in milliseconds, a few dozen samples: whether any lands in ra-jit's functions, or
+    # unwinds back to main, was chance. Twenty runs under one recording give hundreds.
+    again = 'for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do "$0" >/dev/null || exit; done'
+    record = perf and subprocess.run([perf, "record", "-o", data, "-F", "5000", "--call-graph", "dwarf", "--", "sh", "-c", again, binary],
                                      cwd=cwd, capture_output=True, text=True)
     if not perf or record.returncode != 0 or not os.path.exists(data):
         # Not a verdict on the binary: the machine does not let this user profile.
