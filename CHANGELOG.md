@@ -39,6 +39,22 @@ All notable changes to ra-jit are written here. The format follows
 - `vendor/rust-analyzer` and `vendor/rustc_abi` are git subtrees instead of submodules: a
   plain `git clone` builds, and the flake builds from its own tree with no second pin of the
   forks.
+- The first build of a workspace through cargo has the daemon load it and compile ahead
+  while cargo builds ([#11](https://github.com/indexable-inc/ra-jit/issues/11)): a spare
+  worker reads the workspace and compiles what it can while cargo runs, hears what the
+  build scripts said and where the proc macros are, and is the worker the build is handed
+  to. Its threads give way to cargo's rustc while cargo runs (nice 10 on Linux, the utility
+  QoS class on macOS). On nushell, Linux (32 cores): ready for edits
+  58 s after a cold build from an empty store instead of 71 s; cargo's own build takes
+  about 3 s longer, 40 s instead of 37 s, while the worker loads beside it.
+- A build through cargo asks the toolchain's `rustc` beside `cargo` for its version and
+  sysroot, not the rustup proxy: 16.6 ms to 7.3 ms each of its three calls on Linux.
+- An edit to function bodies only lists no functions again and finds the program's tests
+  as they were: 5.5 ms to 0.5 ms of an edit of nushell's `main`.
+- `RA_JIT_STATS` shows where a splice and the refusals before a link spend their time
+  (`splice-us`, `link-us`, `refuse-us`).
+- `harness/realbench.py --pause S` waits once the daemon is ready, as a person would before
+  the first edit.
 - `vendor/subtree.py` replaces `vendor/subtree.sh`. `push` sends what main changed under
   `vendor/` to the fork, one fork commit per commit of main, and only fast-forwards the fork;
   the `fork sync` workflow runs it on every push to main, so the forks no longer fall behind
@@ -75,6 +91,23 @@ All notable changes to ra-jit are written here. The format follows
   the table needs and a quarter more, which the links after start from, in later daemons
   too. nushell's edit of `main` went from 878 ms to 276 ms on an M5 Max, and a library edit
   from 693 ms to 166 ms. `harness/headerpad.py` checks it.
+- The first edit after the daemon is ready is as fast as the ones after it
+  ([#12](https://github.com/indexable-inc/ra-jit/issues/12)). Two things made it slow.
+  On Linux the first splice after a full link took 2.5 s of nushell's: it copied every
+  debug section it added to, about 500 MB, behind the code it appended, and it cut the
+  file to size, which on XFS writes out at the close all of the file the linker had not
+  yet written. The sections now go where splices write them right after the link, and a
+  splice only lengthens the file, so the first splice's link takes 7 ms, as those after it
+  do. And code the daemon took from the store does not say where in the checkout it is
+  from, so the first edit of a crate it came from compiled all of it and wrote the whole
+  object again: 71,661 functions of nushell. The worker now compiles that code again
+  by itself after its first build, and the daemon says the checkout is ready once it has.
+  nushell's first edit of `main` after a cold build from a warm store went from 9.1 s to
+  0.37 s on Linux and from 7-8 s to 0.3-0.4 s on an M5 Max. `harness/storefirst.py`
+  checks it.
+- On macOS a spliced executable lists its sections in the order of their addresses, and
+  each segment a splice adds has a section, as `dyld_info` requires: it read none of the
+  spliced executables on macOS 27 (`harness/splices.py`: 11 of 71 right, now 71).
 
 ## [0.1.0] - 2026-10-20
 
