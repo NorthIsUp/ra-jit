@@ -785,6 +785,9 @@ impl<'a, 'db> MirLowerCtx<'a, 'db> {
                     Expr::Let { pat, expr } => {
                         Some(self.lower_if_let(*condition, pat, expr, current)?)
                     }
+                    Expr::BinaryOp { .. } if self.has_let(*condition) => {
+                        Some(self.lower_let_chain(*condition, current)?)
+                    }
                     _ => None,
                 };
                 let condition_value = if let Some(branches) = branches {
@@ -2166,6 +2169,60 @@ impl<'a, 'db> MirLowerCtx<'a, 'db> {
         let (matched, unmatched) = self.pattern_match(current, None, place, pat)?;
         self.resolver.reset_to_guard(resolver_guard);
         Ok(Some((matched, unmatched.unwrap_or_else(|| self.new_basic_block()))))
+    }
+
+    /// Lowers a condition that binds names, `a && let P = e && ..`, to the blocks where it
+    /// holds and where it does not, as rustc's `then_else_break`: each operand branches on its
+    /// own, so what a `let` binds is initialized where the condition holds.
+    fn lower_let_chain(
+        &mut self,
+        condition: ExprId,
+        current: BasicBlockId,
+    ) -> Result<'db, Option<(BasicBlockId, BasicBlockId)>> {
+        match self.store[condition] {
+            Expr::Let { pat, expr } => self.lower_if_let(condition, pat, expr, current),
+            Expr::BinaryOp {
+                lhs,
+                rhs,
+                op: Some(hir_def::hir::BinaryOp::LogicOp(syntax::ast::LogicOp::And)),
+            } => {
+                let Some((holds, fails)) = self.lower_let_chain(lhs, current)? else {
+                    return Ok(None);
+                };
+                let (holds, also_fails) = match self.lower_let_chain(rhs, holds)? {
+                    Some((holds, fails)) => (holds, Some(fails)),
+                    None => (self.new_basic_block(), None),
+                };
+                let Some(also_fails) = also_fails else { return Ok(Some((holds, fails))) };
+                let joined = self.new_basic_block();
+                self.set_goto(fails, joined, condition.into());
+                self.set_goto(also_fails, joined, condition.into());
+                Ok(Some((holds, joined)))
+            }
+            _ => {
+                // The operand's temporaries are dropped before the next one runs.
+                let ty = Ty::new_bool(self.interner());
+                let result: Place<'db> = self.temp(ty, current, MirSpan::Unknown)?.into();
+                let scope = self.push_drop_scope();
+                let Some(end) = self.lower_expr_to_place(condition, result, current)? else {
+                    scope.pop_assume_dropped(self);
+                    return Ok(None);
+                };
+                let end = scope.pop_and_drop(self, end, condition.into());
+                let discr =
+                    Operand { kind: OperandKind::Copy(result.store()), span: Some(condition.into()) };
+                let (holds, fails) = (self.new_basic_block(), self.new_basic_block());
+                self.set_terminator(
+                    end,
+                    TerminatorKind::SwitchInt {
+                        discr,
+                        targets: SwitchTargets::static_if(1, holds, fails),
+                    },
+                    condition.into(),
+                );
+                Ok(Some((holds, fails)))
+            }
+        }
     }
 
     /// Hands what the innermost scope has declared to the scope around it. Before the 2024

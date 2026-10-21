@@ -278,3 +278,15 @@ fn closure_kind_of(
         _ => None,
     }
 }
+
+/// Whether `rvalue` compares, which takes its operands by reference whatever their type:
+/// rust-analyzer lowers a constant pattern of a type that is not `Copy` to `==` on the value.
+pub(super) fn compares(rvalue: &crate::mir::Rvalue) -> bool {
+    use crate::mir::{BinOp, Rvalue};
+    match rvalue {
+        Rvalue::BinaryOp(op, ..) | Rvalue::CheckedBinaryOp(op, ..) => {
+            matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge)
+        }
+        _ => false,
+    }
+}

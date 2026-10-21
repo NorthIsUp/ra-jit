@@ -113,6 +113,15 @@ fn is_call(ctx: &Ctx<'_, '_>, expr: hir_def::hir::ExprId) -> bool {
     }
 }
 
+/// Whether `expr` is a unit struct or variant of a type with no `Drop` impl: what rustc
+/// promotes whatever the rest of the type holds, as it asks that of the value.
+fn is_unit_value(ctx: &Ctx<'_, '_>, expr: hir_def::hir::ExprId) -> bool {
+    matches!(ctx.store[expr], Expr::Path(_))
+        && ctx.infer.variant_resolution_for_expr(expr).is_some()
+        && matches!(ctx.infer.expr_ty(expr).kind(),
+            TyKind::Adt(def, _) if crate::drop::destructor(ctx.db, def.def_id()).is_none())
+}
+
 /// The locals a `static` is read through.
 pub(super) fn static_locals(body: &MirBody<'_>) -> FxHashSet<LocalId> {
     let mut found = FxHashSet::default();
@@ -184,7 +193,9 @@ impl Loans {
                 .iter()
                 .filter(|&&(local, expr)| {
                     // rustc promotes no call, not even of a `const fn` in a `const` block.
-                    item || (!is_call(ctx, expr) && ctx.is_plain(body.locals[local].ty.as_ref()))
+                    item || (!is_call(ctx, expr)
+                        && (ctx.is_plain(body.locals[local].ty.as_ref())
+                            || is_unit_value(ctx, expr)))
                 })
                 .map(|&(local, _)| local),
         );

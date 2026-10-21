@@ -119,8 +119,10 @@ impl MoveData {
             let data_block = &body.basic_blocks[block];
             for (statement, it) in data_block.statements.iter().enumerate() {
                 let location = Location { block, statement };
+                let compares =
+                    matches!(&it.kind, StatementKind::Assign(_, rvalue) if super::compares(rvalue));
                 it.kind.for_each_operand(&mut |operand| {
-                    if let Some(place) = ctx.moved_place(body, operand) {
+                    if !compares && let Some(place) = ctx.moved_place(body, operand) {
                         data.gather_move(ctx, body, place, location);
                     }
                 });

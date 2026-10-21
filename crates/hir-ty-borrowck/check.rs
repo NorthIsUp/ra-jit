@@ -479,6 +479,21 @@ impl<'a, 'db> Checker<'a, '_, 'db> {
                 self.access_place(location, place, span, Access::Read, Allowed::No, depth);
                 self.check_if_path_or_subpath_is_moved(location, InitAction::Use, place, span);
             }
+            _ if super::compares(rvalue) => rvalue.for_each_operand(&mut |operand| {
+                if let OperandKind::Copy(place) | OperandKind::Move(place) = &operand.kind {
+                    let span = operand.span.unwrap_or(span);
+                    let place = PlaceRef::of(place);
+                    self.access_place(
+                        location,
+                        place,
+                        span,
+                        Access::Read,
+                        Allowed::No,
+                        Depth::Deep,
+                    );
+                    self.check_if_path_or_subpath_is_moved(location, InitAction::Use, place, span);
+                }
+            }),
             _ => rvalue
                 .for_each_operand(&mut |operand| self.consume_operand(location, operand, span)),
         }
