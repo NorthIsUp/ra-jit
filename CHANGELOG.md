@@ -33,6 +33,17 @@ All notable changes to ra-jit are written here. The format follows
   the dev profile does ([docs/tiers.md](docs/tiers.md)).
 - `harness/tierbench.py`, the benchmark table of docs/tiers.md.
 - `RA_JIT_DUMP_LLVM=after` prints the LLVM IR as the passes left it.
+- Live-edit latency under real typing ([#9](https://github.com/indexable-inc/ra-jit/issues/9)):
+  `harness/live_latency.py replay` types scripted edits one key at a time at 30 to 100 ms a
+  key, with pauses at word ends, typos and backspaces, sends the whole file on each key as an
+  editor does, and times every key whose text compiles to the program running it, by patch or
+  by a restart as a launcher would do one; it counts the keys that do not compile, the
+  superseded edits and the restarts. `restart` times a session's struct changes against
+  `cargo run`. Every table has p95 and p99, and `LATENCY_JSON` carries the machine, its
+  battery, the commit and the run, which `benchhistory.py live` reads. `harness/live-bevy`
+  (bevy 0.20, generic systems) and `harness/live-egui` (egui 0.37, generic widgets) are real
+  programs that take edits. Measured on a MacBook Pro in
+  [docs/live.md](docs/live.md#latency-under-typing).
 
 ### Changed
 

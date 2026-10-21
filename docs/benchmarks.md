@@ -134,8 +134,10 @@ and 30 GB of disk.
 
 ## Caveats
 
-- Live edits (the patch applied to a running program) are not measured here: they work on macOS
-  on Apple silicon only. `harness/live_latency.py` measures them there.
+- Live edits (the patch applied to a running program) work on macOS on Apple silicon only and are
+  measured there by `harness/live_latency.py`, per keystroke under typing as well as one edit at
+  a time: [live.md](live.md#latency-under-typing) has the numbers from a MacBook, and
+  `history/macos-arm64-live.jsonl` the runs.
 - One machine, one OS. The numbers on a laptop will differ; the ratios are what carries over.
 - Cold is one run, so it is the least precise number here.
 - An edit is a small, fixed change. A larger change (many functions, a new type) costs more;
