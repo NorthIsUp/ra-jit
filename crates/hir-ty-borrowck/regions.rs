@@ -87,6 +87,8 @@ pub(super) struct Regions<'db> {
     pub(super) universals: Vec<(Rv, UniversalKind)>,
     universal_index: FxHashMap<Rv, usize>,
     pub(super) static_rv: Rv,
+    /// The universal region of each early-bound lifetime parameter, by its index.
+    pub(super) early: FxHashMap<u32, Rv>,
     /// Per universal region, the universal regions it is known to outlive.
     known: Vec<BitSet>,
     /// The type parameters known to outlive a region.
@@ -128,6 +130,25 @@ pub(super) fn rv_of(region: Region<'_>) -> Option<Rv> {
 }
 
 /// Each region in `ty`, in order, those under a binder aside.
+/// The associated types `ty` names, with their arguments.
+fn projections<'db>(ty: Ty<'db>) -> Vec<(crate::next_solver::SolverDefId<'db>, GenericArgs<'db>)> {
+    struct Find<'db>(Vec<(crate::next_solver::SolverDefId<'db>, GenericArgs<'db>)>);
+    impl<'db> rustc_type_ir::TypeVisitor<crate::next_solver::DbInterner<'db>> for Find<'db> {
+        type Result = ();
+        fn visit_ty(&mut self, ty: Ty<'db>) {
+            if let TyKind::Alias(alias) = ty.kind()
+                && let rustc_type_ir::AliasTyKind::Projection { .. } = alias.kind
+            {
+                self.0.push((alias.kind.def_id(), alias.args));
+            }
+            rustc_type_ir::TypeSuperVisitable::super_visit_with(&ty, self)
+        }
+    }
+    let mut find = Find(Vec::new());
+    rustc_type_ir::TypeVisitable::visit_with(&ty, &mut find);
+    find.0
+}
+
 /// Whether `ty` has an `impl Trait` in it.
 fn has_opaque(ty: Ty<'_>) -> bool {
     struct Find;
@@ -168,6 +189,7 @@ pub(super) fn build<'db>(ctx: &Ctx<'_, 'db>, body: &MirBody<'db>, cfg: &Cfg) -> 
             static_rv: 0,
             known: Vec::new(),
             type_bounds: Vec::new(),
+            early: FxHashMap::default(),
             local_tys: Vec::new(),
             loan_regions: FxHashMap::default(),
             outlives: Vec::new(),
@@ -253,6 +275,7 @@ impl<'db> Builder<'_, '_, 'db> {
         }
         let region = self.new_universal(UniversalKind::Named);
         self.early.insert(index, region);
+        self.regions.early.insert(index, rv_of(region).unwrap());
         region
     }
 
@@ -631,6 +654,9 @@ impl<'db> Builder<'_, '_, 'db> {
                     }
                 }
             }
+            (TyKind::Alias(x), TyKind::Alias(y)) if x.kind == y.kind => {
+                self.relate_args(x.args, y.args, None, Variance::Invariant, at)
+            }
             (TyKind::Closure(_, aa), TyKind::Closure(_, ab))
             | (TyKind::FnDef(_, aa), TyKind::FnDef(_, ab)) => {
                 self.relate_args(aa, ab, None, Variance::Invariant, at)
@@ -929,7 +955,22 @@ impl<'db> Builder<'_, '_, 'db> {
                             }
                             _ => false,
                         };
-                        self.elide(sig.inputs().iter().copied().collect(), sig.output(), self_param)
+                        let (inputs, output) = self.elide(
+                            sig.inputs().iter().copied().collect(),
+                            sig.output(),
+                            self_param,
+                        );
+                        // The where clauses of the associated types in the signature hold
+                        // for it to be well-formed.
+                        let at = At { category: Category::Predicate, span };
+                        for ty in inputs.iter().copied().chain([output]) {
+                            for (def, args) in projections(ty) {
+                                if let Ok(def) = GenericDefId::try_from(def) {
+                                    self.predicates(def, args, at, false);
+                                }
+                            }
+                        }
+                        (inputs, output)
                     }
                     TyKind::FnPtr(sig_tys, header) => {
                         let sig = sig_tys.with(header);
@@ -1024,7 +1065,19 @@ impl<'db> Builder<'_, '_, 'db> {
             CallableDefId::EnumVariantId(it) => it.lookup(self.ctx.db).parent.into(),
         };
         let at = At { category: Category::Predicate, span };
-        let clauses: Vec<_> = GenericPredicates::query_all(self.ctx.db, generic_def)
+        self.predicates(generic_def, args, at, true);
+    }
+
+    /// The where clauses of `def` with `args`, which hold where it is used. Without
+    /// `type_outlives`, only those between regions.
+    fn predicates(
+        &mut self,
+        def: GenericDefId,
+        args: GenericArgs<'db>,
+        at: At,
+        type_outlives: bool,
+    ) {
+        let clauses: Vec<_> = GenericPredicates::query_all(self.ctx.db, def)
             .iter_instantiated(self.interner(), args.as_slice())
             .map(|it| it.skip_norm_wip())
             .collect();
@@ -1037,7 +1090,7 @@ impl<'db> Builder<'_, '_, 'db> {
                         self.outlives(longer, shorter, at);
                     }
                 }
-                ClauseKind::TypeOutlives(OutlivesPredicate(ty, region)) => {
+                ClauseKind::TypeOutlives(OutlivesPredicate(ty, region)) if type_outlives => {
                     let region = match region.kind() {
                         RegionKind::ReStatic => self.static_region(),
                         _ => region,

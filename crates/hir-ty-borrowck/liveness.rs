@@ -4,13 +4,18 @@
 
 use hir_def::{AdtId, attrs::AttrFlags};
 use rustc_hash::FxHashMap;
-use rustc_type_ir::inherent::{AdtDef as _, GenericArgs as _, IntoKind};
+use rustc_type_ir::{
+    ClauseKind, OutlivesPredicate, RegionKind,
+    inherent::{
+        AdtDef as _, GenericArgs as _, IntoKind, ParamEnv as _, Region as _, SliceLike as _,
+    },
+};
 
 use crate::{
     mir::{
         LocalId, MirBody, Operand, OperandKind, PlaceElem, Rvalue, StatementKind, TerminatorKind,
     },
-    next_solver::{GenericArgKind, Ty, TyKind},
+    next_solver::{Clause, DbInterner, GenericArgKind, Region, Ty, TyKind},
 };
 
 use super::{
@@ -18,7 +23,7 @@ use super::{
     bitset::BitSet,
     cfg::{Cfg, Location, index},
     moves::{InitKind, MoveData},
-    regions::{Regions, Rv, regions_of},
+    regions::{Regions, Rv, regions_of, rv_of},
 };
 
 #[derive(Default)]
@@ -197,7 +202,7 @@ pub(super) fn region_liveness<'db>(
         .iter()
         .map(|&ty| {
             let mut out = Vec::new();
-            regions_of(ty, &mut out);
+            live_regions_of(ctx, regions, ty, &mut out);
             out
         })
         .collect();
@@ -432,4 +437,86 @@ fn may_dangle(ctx: &Ctx<'_, '_>, drop_impl: hir_def::ImplId, count: usize) -> Ve
             GenericArgKind::Const(_) => false,
         })
         .collect()
+}
+
+/// The regions of `ty` a value of it can hold on to, as rustc's liveness `FreeRegionsVisitor`
+/// has them: an alias known to outlive a region holds only that one, and none when it
+/// outlives `'static`.
+fn live_regions_of<'db>(
+    ctx: &Ctx<'_, 'db>,
+    regions: &Regions<'db>,
+    ty: Ty<'db>,
+    out: &mut Vec<Rv>,
+) {
+    struct Visit<'c, 'a, 'db> {
+        ctx: &'c Ctx<'a, 'db>,
+        regions: &'c Regions<'db>,
+        out: &'c mut Vec<Rv>,
+    }
+    impl<'db> rustc_type_ir::TypeVisitor<DbInterner<'db>> for Visit<'_, '_, 'db> {
+        type Result = ();
+        fn visit_region(&mut self, region: Region<'db>) {
+            if let Some(rv) = rv_of(region) {
+                self.out.push(rv);
+            }
+        }
+        fn visit_ty(&mut self, ty: Ty<'db>) {
+            if let TyKind::Alias(alias) = ty.kind() {
+                match alias_bound(self.ctx, self.regions, ty, alias) {
+                    Some(None) => return,
+                    Some(Some(rv)) => {
+                        self.out.push(rv);
+                        return;
+                    }
+                    None => (),
+                }
+            }
+            rustc_type_ir::TypeSuperVisitable::super_visit_with(&ty, self)
+        }
+    }
+    rustc_type_ir::TypeVisitable::visit_with(&ty, &mut Visit { ctx, regions, out });
+}
+
+/// The one region the bounds of the alias `ty` say it outlives: `Some(None)` for `'static`,
+/// `None` when they name none or several.
+fn alias_bound<'db>(
+    ctx: &Ctx<'_, 'db>,
+    regions: &Regions<'db>,
+    ty: Ty<'db>,
+    alias: rustc_type_ir::AliasTy<DbInterner<'db>>,
+) -> Option<Option<Rv>> {
+    let interner = ctx.infcx.interner;
+    let erase = |ty: Ty<'db>| {
+        rustc_type_ir::fold_regions(interner, ty, |_, _| Region::new_static(interner))
+    };
+    let erased = erase(ty);
+    let item_bounds: Vec<Clause<'db>> =
+        rustc_type_ir::Interner::item_bounds(interner, alias.kind.def_id())
+            .iter_instantiated(interner, alias.args)
+            .map(|it| it.skip_norm_wip())
+            .collect();
+    let mut found: Option<Option<Rv>> = None;
+    for clause in item_bounds.into_iter().chain(ctx.env.caller_bounds().iter()) {
+        let ClauseKind::TypeOutlives(OutlivesPredicate(bounded, region)) =
+            clause.kind().skip_binder()
+        else {
+            continue;
+        };
+        if erase(bounded) != erased {
+            continue;
+        }
+        let bound = match region.kind() {
+            RegionKind::ReStatic => return Some(None),
+            RegionKind::ReVar(_) => rv_of(region),
+            RegionKind::ReEarlyParam(early) => regions.early.get(&early.index).copied(),
+            _ => None,
+        };
+        let Some(bound) = bound else { continue };
+        match found {
+            None => found = Some(Some(bound)),
+            Some(Some(it)) if it == bound => (),
+            Some(_) => return None,
+        }
+    }
+    found
 }

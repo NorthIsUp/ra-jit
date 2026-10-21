@@ -3,6 +3,7 @@
 //! where its region stops holding, or the reference to it is overwritten, or the place it
 //! borrows goes away.
 
+use hir_def::hir::Expr;
 use rustc_hash::{FxHashMap, FxHashSet};
 use rustc_type_ir::inherent::IntoKind;
 
@@ -94,6 +95,20 @@ fn ignored<'db>(
     false
 }
 
+/// Whether `expr` calls a function, which rustc does not promote, not even a `const fn` in a
+/// `const` block; a tuple struct's or variant's constructor is not one.
+fn is_call(ctx: &Ctx<'_, '_>, expr: hir_def::hir::ExprId) -> bool {
+    match ctx.store[expr] {
+        Expr::MethodCall { .. } => true,
+        Expr::Call { callee, .. } => !matches!(
+            ctx.infer.expr_ty(callee).kind(),
+            TyKind::FnDef(def, _)
+                if matches!(def.0, hir_def::CallableDefId::StructId(_) | hir_def::CallableDefId::EnumVariantId(_))
+        ),
+        _ => false,
+    }
+}
+
 /// The locals a `static` is read through.
 pub(super) fn static_locals(body: &MirBody<'_>) -> FxHashSet<LocalId> {
     let mut found = FxHashSet::default();
@@ -118,7 +133,17 @@ impl Loans {
         regions: &Regions<'_>,
         unique: impl Fn(LocalId, LocalId, &[PlaceElem]) -> bool,
     ) -> Self {
-        let statics = static_locals(body);
+        let mut statics = static_locals(body);
+        // A promoted constant is `'static`, as a `static` is.
+        statics.extend(
+            body.promoted_locals
+                .iter()
+                .filter(|&&(local, expr)| {
+                    // rustc promotes no call, not even of a `const fn` in a `const` block.
+                    !is_call(ctx, expr) && ctx.is_plain(body.locals[local].ty.as_ref())
+                })
+                .map(|&(local, _)| local),
+        );
         let mut loans = Loans {
             loans: Vec::new(),
             at: FxHashMap::default(),

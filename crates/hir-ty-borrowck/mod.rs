@@ -221,6 +221,13 @@ impl<'a, 'db> Ctx<'a, 'db> {
         ty.projection_ty(&self.infcx, elem, self.env)
     }
 
+    /// Whether a value of `ty` neither needs dropping nor has interior mutability, which a
+    /// constant must to be promoted.
+    pub(super) fn is_plain(&self, ty: Ty<'db>) -> bool {
+        crate::drop::has_drop_glue(&self.infcx, ty, self.env) == crate::drop::DropGlue::None
+            && crate::drop::is_freeze(self.db, self.infcx.interner, ty)
+    }
+
     pub(super) fn has_destructor(&self, adt: hir_def::AdtId) -> bool {
         crate::drop::destructor(self.db, adt).is_some()
     }
