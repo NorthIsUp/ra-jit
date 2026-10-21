@@ -172,7 +172,7 @@ this page existed; not updated by CI.
 <!-- bench:start -->
 ### Latest run
 
-ra-jit [`6a7d245e47`](https://github.com/indexable-inc/ra-jit/commit/6a7d245e47830f26475e98db6e01905f117a2971), 2026-10-20T16:53:46Z, Rust 1.99.0, 5 runs of each edit. Raw: [benchmarks/linux-x86_64.json](benchmarks/linux-x86_64.json). Measured by hand with `harness/bench.py`; the `bench-readme` workflow re-runs it on the dedicated benchmark machine.
+ra-jit [`c8f58ac7d9`](https://github.com/indexable-inc/ra-jit/commit/c8f58ac7d9fb8c970b36f57f39ed34332b03bcef), 2026-10-20T23:50:27Z, Rust 1.99.0, 5 runs of each edit. Raw: [benchmarks/linux-x86_64.json](benchmarks/linux-x86_64.json). Measured by hand with `harness/bench.py`; the `bench-readme` workflow re-runs it on the dedicated benchmark machine.
 
 | Machine | |
 |---|---|
@@ -194,35 +194,35 @@ Median, then the fastest and slowest run. Built: who built the edit (daemon, or 
 
 | Project | Edit | cargo | ra-jit | | cargo runs | ra-jit runs | Built | Link |
 |---|---|---:|---:|---:|---|---|---|---|
-| ripgrep 15.1.0 | Edit a function | 447 ms | 90 ms | 5.0x | 441 ms to 452 ms | 88 ms to 116 ms | daemon | spliced |
-| ripgrep 15.1.0 | Edit a widely used function | 713 ms | 50 ms | 14x | 712 ms to 1.08 s | 48 ms to 69 ms | daemon | spliced |
-| ripgrep 15.1.0 | Change a signature | 556 ms | 86 ms | 6.5x | 552 ms to 558 ms | 82 ms to 100 ms | daemon | spliced |
-| ripgrep 15.1.0 | Edit a generic function | 692 ms | 50 ms | 14x | 690 ms to 1.08 s | 49 ms to 54 ms | daemon | spliced |
-| ripgrep 15.1.0 | Nothing changed | 382 ms | 28 ms | 14x | 377 ms to 386 ms | 27 ms to 71 ms | daemon |  |
-| fd 10.3.0 | Edit a function | 433 ms | 99 ms | 4.4x | 427 ms to 613 ms | 98 ms to 137 ms | daemon | spliced |
-| fd 10.3.0 | Edit a widely used function | 403 ms | 86 ms | 4.7x | 397 ms to 405 ms | 84 ms to 89 ms | daemon | spliced |
-| fd 10.3.0 | Change a signature | 651 ms | 122 ms | 5.3x | 434 ms to 660 ms | 109 ms to 179 ms | daemon | spliced |
-| fd 10.3.0 | Nothing changed | 381 ms | 31 ms | 12x | 377 ms to 386 ms | 31 ms to 79 ms | daemon |  |
-| bat 0.26.0 | Edit a function | 428 ms | 60 ms | 7.1x | 421 ms to 432 ms | 58 ms to 245 ms | daemon | spliced |
-| bat 0.26.0 | Edit a widely used function | 667 ms | 54 ms | 12x | 665 ms to 1.30 s | 53 ms to 82 ms | daemon | spliced |
-| bat 0.26.0 | Change a signature | 951 ms | 67 ms | 14x | 621 ms to 967 ms | 57 ms to 85 ms | daemon | spliced |
-| bat 0.26.0 | Nothing changed | 58 ms | 26 ms | 2.2x | 57 ms to 59 ms | 25 ms to 162 ms | daemon |  |
-| hyperfine 1.19.0 | Edit a function | 315 ms | 92 ms | 3.4x | 312 ms to 317 ms | 91 ms to 98 ms | daemon | spliced |
-| hyperfine 1.19.0 | Edit a widely used function | 349 ms | 98 ms | 3.6x | 343 ms to 351 ms | 97 ms to 99 ms | daemon | spliced |
-| hyperfine 1.19.0 | Change a signature | 352 ms | 140 ms | 2.5x | 349 ms to 354 ms | 139 ms to 142 ms | daemon | spliced |
-| hyperfine 1.19.0 | Nothing changed | 298 ms | 30 ms | 9.9x | 297 ms to 301 ms | 30 ms to 54 ms | daemon |  |
-| just 1.43.0 | Edit a function | 656 ms | 48 ms | 14x | 650 ms to 669 ms | 47 ms to 88 ms | daemon | spliced |
-| just 1.43.0 | Edit a widely used function | 687 ms | 52 ms | 13x | 672 ms to 1.23 s | 51 ms to 73 ms | daemon | spliced |
-| just 1.43.0 | Change a signature | 664 ms | 76 ms | 8.7x | 653 ms to 670 ms | 74 ms to 80 ms | daemon | spliced |
-| just 1.43.0 | Nothing changed | 41 ms | 24 ms | 1.7x | 40 ms to 41 ms | 23 ms to 138 ms | daemon |  |
-| axum 0.8.6 | Edit a function | 350 ms | 57 ms | 6.1x | 346 ms to 351 ms | 55 ms to 63 ms | daemon | spliced |
-| axum 0.8.6 | Edit a widely used function | 798 ms | 52 ms | 15x | 791 ms to 803 ms | 51 ms to 53 ms | daemon | spliced |
-| axum 0.8.6 | Nothing changed | 71 ms | 26 ms | 2.7x | 70 ms to 72 ms | 26 ms to 97 ms | daemon |  |
-| nushell 0.108.0 | Edit a function | 1.44 s | 325 ms | 4.4x | 1.40 s to 1.45 s | 316 ms to 984 ms | daemon | spliced |
-| nushell 0.108.0 | Edit a widely used function | 4.75 s | 221 ms | 22x | 4.73 s to 4.84 s | 218 ms to 224 ms | daemon | spliced |
-| nushell 0.108.0 | Change a signature | 4.84 s | 288 ms | 17x | 4.78 s to 6.79 s | 271 ms to 380 ms | daemon | spliced |
-| nushell 0.108.0 | Edit a generic function | 6.48 s | 294 ms | 22x | 6.45 s to 6.54 s | 287 ms to 335 ms | daemon | spliced |
-| nushell 0.108.0 | Nothing changed | 179 ms | 43 ms | 4.2x | 174 ms to 182 ms | 38 ms to 10.04 s | daemon |  |
+| ripgrep 15.1.0 | Edit a function | 453 ms | 50 ms | 9.1x | 450 ms to 456 ms | 49 ms to 85 ms | daemon | spliced |
+| ripgrep 15.1.0 | Edit a widely used function | 724 ms | 37 ms | 20x | 723 ms to 727 ms | 37 ms to 64 ms | daemon | spliced |
+| ripgrep 15.1.0 | Change a signature | 562 ms | 68 ms | 8.3x | 557 ms to 564 ms | 68 ms to 72 ms | daemon | spliced |
+| ripgrep 15.1.0 | Edit a generic function | 704 ms | 40 ms | 18x | 696 ms to 1.19 s | 39 ms to 58 ms | daemon | spliced |
+| ripgrep 15.1.0 | Nothing changed | 386 ms | 19 ms | 20x | 381 ms to 390 ms | 18 ms to 66 ms | daemon |  |
+| fd 10.3.0 | Edit a function | 434 ms | 43 ms | 10x | 431 ms to 435 ms | 43 ms to 54 ms | daemon | spliced |
+| fd 10.3.0 | Edit a widely used function | 400 ms | 32 ms | 12x | 396 ms to 403 ms | 32 ms to 37 ms | daemon | spliced |
+| fd 10.3.0 | Change a signature | 638 ms | 71 ms | 9.0x | 440 ms to 803 ms | 66 ms to 107 ms | daemon | spliced |
+| fd 10.3.0 | Nothing changed | 385 ms | 22 ms | 18x | 379 ms to 391 ms | 22 ms to 75 ms | daemon |  |
+| bat 0.26.0 | Edit a function | 435 ms | 45 ms | 9.7x | 433 ms to 438 ms | 45 ms to 247 ms | daemon | spliced |
+| bat 0.26.0 | Edit a widely used function | 678 ms | 45 ms | 15x | 675 ms to 1.03 s | 34 ms to 78 ms | daemon | spliced |
+| bat 0.26.0 | Change a signature | 948 ms | 53 ms | 18x | 629 ms to 1.08 s | 52 ms to 57 ms | daemon | spliced |
+| bat 0.26.0 | Nothing changed | 58 ms | 16 ms | 3.6x | 57 ms to 59 ms | 15 ms to 162 ms | daemon |  |
+| hyperfine 1.19.0 | Edit a function | 318 ms | 34 ms | 9.4x | 314 ms to 319 ms | 34 ms to 42 ms | daemon | spliced |
+| hyperfine 1.19.0 | Edit a widely used function | 350 ms | 34 ms | 10x | 348 ms to 353 ms | 33 ms to 35 ms | daemon | spliced |
+| hyperfine 1.19.0 | Change a signature | 355 ms | 71 ms | 5.0x | 354 ms to 359 ms | 70 ms to 74 ms | daemon | spliced |
+| hyperfine 1.19.0 | Nothing changed | 300 ms | 21 ms | 14x | 297 ms to 308 ms | 20 ms to 45 ms | daemon |  |
+| just 1.43.0 | Edit a function | 662 ms | 38 ms | 17x | 656 ms to 676 ms | 38 ms to 83 ms | daemon | spliced |
+| just 1.43.0 | Edit a widely used function | 700 ms | 37 ms | 19x | 686 ms to 1.22 s | 37 ms to 47 ms | daemon | spliced |
+| just 1.43.0 | Change a signature | 677 ms | 62 ms | 11x | 660 ms to 1.25 s | 61 ms to 63 ms | daemon | spliced |
+| just 1.43.0 | Nothing changed | 40 ms | 14 ms | 2.9x | 40 ms to 42 ms | 14 ms to 76 ms | daemon |  |
+| axum 0.8.6 | Edit a function | 350 ms | 50 ms | 7.0x | 348 ms to 354 ms | 48 ms to 56 ms | daemon | spliced |
+| axum 0.8.6 | Edit a widely used function | 814 ms | 43 ms | 19x | 805 ms to 817 ms | 43 ms to 44 ms | daemon | spliced |
+| axum 0.8.6 | Nothing changed | 71 ms | 16 ms | 4.4x | 71 ms to 73 ms | 16 ms to 88 ms | daemon |  |
+| nushell 0.108.0 | Edit a function | 1.44 s | 261 ms | 5.5x | 1.39 s to 1.58 s | 245 ms to 530 ms | daemon | spliced |
+| nushell 0.108.0 | Edit a widely used function | 4.80 s | 231 ms | 21x | 4.79 s to 4.85 s | 228 ms to 233 ms | daemon | spliced |
+| nushell 0.108.0 | Change a signature | 4.85 s | 308 ms | 16x | 4.80 s to 7.97 s | 273 ms to 375 ms | daemon | spliced |
+| nushell 0.108.0 | Edit a generic function | 6.53 s | 186 ms | 35x | 6.51 s to 6.71 s | 177 ms to 233 ms | daemon | spliced |
+| nushell 0.108.0 | Nothing changed | 178 ms | 26 ms | 6.8x | 178 ms to 186 ms | 22 ms to 9.37 s | daemon |  |
 
 #### Cold, Cranelift
 
@@ -230,13 +230,13 @@ From an empty target directory and an empty store, crates already downloaded. On
 
 | Project | `cargo build` | `cargo ra-jit build` | Daemon ready after | Functions compiled | Daemon memory |
 |---|---:|---:|---:|---:|---:|
-| ripgrep 15.1.0 | 4.45 s | 4.50 s | 4.44 s | 17,103 | 2,487 MB |
-| fd 10.3.0 | 20.44 s | 20.36 s | 4.13 s | 8,157 | 2,112 MB |
-| bat 0.26.0 | 9.18 s | 9.13 s | 7.73 s | 11,353 | 2,728 MB |
-| hyperfine 1.19.0 | 4.38 s | 4.45 s | 5.50 s | 5,762 | 2,041 MB |
-| just 1.43.0 | 6.10 s | 6.13 s | 5.79 s | 21,033 | 2,796 MB |
-| axum 0.8.6 | 6.68 s | 6.76 s | 4.97 s | 5,515 | 2,415 MB |
-| nushell 0.108.0 | 28.02 s | 28.21 s | 28.33 s | 160,177 | 15,282 MB |
+| ripgrep 15.1.0 | 4.45 s | 4.49 s | 4.81 s | 17,103 | 2,623 MB |
+| fd 10.3.0 | 20.52 s | 20.49 s | 4.27 s | 8,157 | 2,235 MB |
+| bat 0.26.0 | 9.29 s | 9.04 s | 7.97 s | 11,353 | 2,827 MB |
+| hyperfine 1.19.0 | 4.42 s | 4.40 s | 5.83 s | 5,762 | 2,131 MB |
+| just 1.43.0 | 6.20 s | 6.10 s | 6.14 s | 21,033 | 2,950 MB |
+| axum 0.8.6 | 6.71 s | 6.75 s | 5.32 s | 5,515 | 2,490 MB |
+| nushell 0.108.0 | 28.50 s | 28.18 s | 24.67 s | 160,178 | 16,743 MB |
 
 #### How fast the program runs, Cranelift
 
@@ -244,7 +244,7 @@ The same command run by the program ra-jit linked and by cargo's debug and relea
 
 | Project | Command | ra-jit | cargo debug | cargo release |
 |---|---|---:|---:|---:|
-| ripgrep 15.1.0 | `rg -uuu --sort path -c \w+_unchecked\(\|unsafe \{ <the toolchain's library source>` | 35 ms (35 ms to 41 ms) | 33 ms (33 ms to 35 ms) | 10 ms (10 ms to 10 ms) |
+| ripgrep 15.1.0 | `rg -uuu --sort path -c \w+_unchecked\(\|unsafe \{ <the toolchain's library source>` | 34 ms (34 ms to 35 ms) | 33 ms (33 ms to 33 ms) | 10 ms (10 ms to 10 ms) |
 
 #### Edits, LLVM
 
@@ -252,35 +252,35 @@ Median, then the fastest and slowest run. Built: who built the edit (daemon, or 
 
 | Project | Edit | cargo | ra-jit | | cargo runs | ra-jit runs | Built | Link |
 |---|---|---:|---:|---:|---|---|---|---|
-| ripgrep 15.1.0 | Edit a function | 449 ms | 94 ms | 4.8x | 446 ms to 455 ms | 93 ms to 117 ms | daemon | spliced |
-| ripgrep 15.1.0 | Edit a widely used function | 722 ms | 53 ms | 14x | 720 ms to 1.06 s | 50 ms to 69 ms | daemon | spliced |
-| ripgrep 15.1.0 | Change a signature | 553 ms | 107 ms | 5.2x | 550 ms to 559 ms | 105 ms to 111 ms | daemon | spliced |
-| ripgrep 15.1.0 | Edit a generic function | 698 ms | 63 ms | 11x | 685 ms to 1.13 s | 63 ms to 65 ms | daemon | spliced |
-| ripgrep 15.1.0 | Nothing changed | 382 ms | 28 ms | 14x | 380 ms to 385 ms | 28 ms to 73 ms | daemon |  |
-| fd 10.3.0 | Edit a function | 432 ms | 100 ms | 4.3x | 428 ms to 434 ms | 100 ms to 108 ms | daemon | spliced |
-| fd 10.3.0 | Edit a widely used function | 401 ms | 87 ms | 4.6x | 400 ms to 403 ms | 86 ms to 91 ms | daemon | spliced |
-| fd 10.3.0 | Change a signature | 644 ms | 135 ms | 4.8x | 439 ms to 751 ms | 110 ms to 155 ms | daemon | spliced |
-| fd 10.3.0 | Nothing changed | 379 ms | 31 ms | 12x | 378 ms to 381 ms | 30 ms to 79 ms | daemon |  |
-| bat 0.26.0 | Edit a function | 430 ms | 60 ms | 7.2x | 424 ms to 436 ms | 60 ms to 243 ms | daemon | spliced |
-| bat 0.26.0 | Edit a widely used function | 673 ms | 56 ms | 12x | 670 ms to 1.19 s | 54 ms to 106 ms | daemon | spliced |
-| bat 0.26.0 | Change a signature | 934 ms | 65 ms | 14x | 625 ms to 1.01 s | 57 ms to 104 ms | daemon | spliced |
-| bat 0.26.0 | Nothing changed | 57 ms | 26 ms | 2.2x | 56 ms to 57 ms | 25 ms to 162 ms | daemon |  |
-| hyperfine 1.19.0 | Edit a function | 317 ms | 99 ms | 3.2x | 316 ms to 320 ms | 99 ms to 104 ms | daemon | spliced |
-| hyperfine 1.19.0 | Edit a widely used function | 350 ms | 99 ms | 3.5x | 348 ms to 351 ms | 98 ms to 99 ms | daemon | spliced |
-| hyperfine 1.19.0 | Change a signature | 352 ms | 144 ms | 2.4x | 348 ms to 354 ms | 141 ms to 156 ms | daemon | spliced |
-| hyperfine 1.19.0 | Nothing changed | 300 ms | 30 ms | 10x | 297 ms to 307 ms | 30 ms to 53 ms | daemon |  |
-| just 1.43.0 | Edit a function | 652 ms | 48 ms | 14x | 649 ms to 668 ms | 47 ms to 87 ms | daemon | spliced |
-| just 1.43.0 | Edit a widely used function | 684 ms | 52 ms | 13x | 675 ms to 1.23 s | 51 ms to 66 ms | daemon | spliced |
-| just 1.43.0 | Change a signature | 660 ms | 100 ms | 6.6x | 659 ms to 666 ms | 98 ms to 108 ms | daemon | spliced |
-| just 1.43.0 | Nothing changed | 40 ms | 24 ms | 1.7x | 40 ms to 41 ms | 23 ms to 135 ms | daemon |  |
-| axum 0.8.6 | Edit a function | 347 ms | 60 ms | 5.8x | 345 ms to 352 ms | 58 ms to 61 ms | daemon | spliced |
-| axum 0.8.6 | Edit a widely used function | 796 ms | 53 ms | 15x | 794 ms to 803 ms | 51 ms to 53 ms | daemon | spliced |
-| axum 0.8.6 | Nothing changed | 71 ms | 26 ms | 2.7x | 69 ms to 74 ms | 25 ms to 57 ms | daemon |  |
-| nushell 0.108.0 | Edit a function | 1.44 s | 338 ms | 4.3x | 1.42 s to 1.63 s | 323 ms to 756 ms | daemon | spliced |
-| nushell 0.108.0 | Edit a widely used function | 4.79 s | 213 ms | 22x | 4.75 s to 4.82 s | 211 ms to 218 ms | daemon | spliced |
-| nushell 0.108.0 | Change a signature | 4.89 s | 279 ms | 18x | 4.83 s to 7.38 s | 269 ms to 429 ms | daemon | spliced |
-| nushell 0.108.0 | Edit a generic function | 6.50 s | 299 ms | 22x | 6.42 s to 6.77 s | 293 ms to 338 ms | daemon | spliced |
-| nushell 0.108.0 | Nothing changed | 177 ms | 39 ms | 4.5x | 175 ms to 182 ms | 35 ms to 4.24 s | daemon |  |
+| ripgrep 15.1.0 | Edit a function | 450 ms | 78 ms | 5.8x | 447 ms to 453 ms | 77 ms to 93 ms | daemon | spliced |
+| ripgrep 15.1.0 | Edit a widely used function | 726 ms | 48 ms | 15x | 720 ms to 1.05 s | 47 ms to 71 ms | daemon | spliced |
+| ripgrep 15.1.0 | Change a signature | 559 ms | 105 ms | 5.3x | 555 ms to 563 ms | 103 ms to 110 ms | daemon | spliced |
+| ripgrep 15.1.0 | Edit a generic function | 697 ms | 57 ms | 12x | 693 ms to 1.00 s | 57 ms to 62 ms | daemon | spliced |
+| ripgrep 15.1.0 | Nothing changed | 384 ms | 28 ms | 14x | 383 ms to 387 ms | 28 ms to 71 ms | daemon |  |
+| fd 10.3.0 | Edit a function | 440 ms | 66 ms | 6.7x | 439 ms to 833 ms | 63 ms to 77 ms | daemon | spliced |
+| fd 10.3.0 | Edit a widely used function | 405 ms | 44 ms | 9.2x | 400 ms to 407 ms | 44 ms to 48 ms | daemon | spliced |
+| fd 10.3.0 | Change a signature | 565 ms | 82 ms | 6.9x | 440 ms to 618 ms | 79 ms to 126 ms | daemon | spliced |
+| fd 10.3.0 | Nothing changed | 389 ms | 31 ms | 13x | 379 ms to 390 ms | 31 ms to 81 ms | daemon |  |
+| bat 0.26.0 | Edit a function | 431 ms | 83 ms | 5.2x | 425 ms to 433 ms | 82 ms to 250 ms | daemon | spliced |
+| bat 0.26.0 | Edit a widely used function | 678 ms | 47 ms | 14x | 672 ms to 1.11 s | 45 ms to 90 ms | daemon | spliced |
+| bat 0.26.0 | Change a signature | 1.07 s | 62 ms | 17x | 635 ms to 1.08 s | 55 ms to 65 ms | daemon | spliced |
+| bat 0.26.0 | Nothing changed | 58 ms | 25 ms | 2.3x | 58 ms to 59 ms | 25 ms to 158 ms | daemon |  |
+| hyperfine 1.19.0 | Edit a function | 316 ms | 51 ms | 6.2x | 312 ms to 318 ms | 50 ms to 60 ms | daemon | spliced |
+| hyperfine 1.19.0 | Edit a widely used function | 351 ms | 44 ms | 8.0x | 348 ms to 353 ms | 44 ms to 46 ms | daemon | spliced |
+| hyperfine 1.19.0 | Change a signature | 353 ms | 138 ms | 2.6x | 351 ms to 356 ms | 136 ms to 140 ms | daemon | spliced |
+| hyperfine 1.19.0 | Nothing changed | 300 ms | 30 ms | 10x | 298 ms to 302 ms | 30 ms to 56 ms | daemon |  |
+| just 1.43.0 | Edit a function | 662 ms | 53 ms | 12x | 655 ms to 672 ms | 52 ms to 90 ms | daemon | spliced |
+| just 1.43.0 | Edit a widely used function | 686 ms | 49 ms | 14x | 682 ms to 1.19 s | 45 ms to 89 ms | daemon | spliced |
+| just 1.43.0 | Change a signature | 677 ms | 88 ms | 7.7x | 667 ms to 1.16 s | 88 ms to 98 ms | daemon | spliced |
+| just 1.43.0 | Nothing changed | 41 ms | 24 ms | 1.7x | 40 ms to 41 ms | 23 ms to 137 ms | daemon |  |
+| axum 0.8.6 | Edit a function | 349 ms | 57 ms | 6.1x | 346 ms to 351 ms | 56 ms to 62 ms | daemon | spliced |
+| axum 0.8.6 | Edit a widely used function | 807 ms | 53 ms | 15x | 806 ms to 811 ms | 51 ms to 53 ms | daemon | spliced |
+| axum 0.8.6 | Nothing changed | 73 ms | 26 ms | 2.8x | 70 ms to 79 ms | 25 ms to 96 ms | daemon |  |
+| nushell 0.108.0 | Edit a function | 1.46 s | 478 ms | 3.1x | 1.42 s to 1.48 s | 461 ms to 558 ms | daemon | spliced |
+| nushell 0.108.0 | Edit a widely used function | 4.80 s | 218 ms | 22x | 4.76 s to 4.84 s | 218 ms to 222 ms | daemon | spliced |
+| nushell 0.108.0 | Change a signature | 4.89 s | 297 ms | 16x | 4.85 s to 7.15 s | 257 ms to 373 ms | daemon | spliced |
+| nushell 0.108.0 | Edit a generic function | 6.49 s | 414 ms | 16x | 6.42 s to 8.79 s | 410 ms to 463 ms | daemon | spliced |
+| nushell 0.108.0 | Nothing changed | 183 ms | 44 ms | 4.2x | 180 ms to 185 ms | 34 ms to 4.52 s | daemon |  |
 
 #### Cold, LLVM
 
@@ -288,13 +288,13 @@ From an empty target directory and an empty store, crates already downloaded. On
 
 | Project | `cargo build` | `cargo ra-jit build` | Daemon ready after | Functions compiled | Daemon memory |
 |---|---:|---:|---:|---:|---:|
-| ripgrep 15.1.0 | 4.44 s | 4.53 s | 5.93 s | 17,103 | 2,554 MB |
-| fd 10.3.0 | 20.59 s | 20.44 s | 4.44 s | 8,157 | 2,132 MB |
-| bat 0.26.0 | 9.13 s | 9.00 s | 8.88 s | 11,353 | 2,798 MB |
-| hyperfine 1.19.0 | 4.41 s | 4.45 s | 5.79 s | 5,762 | 2,084 MB |
-| just 1.43.0 | 6.14 s | 6.21 s | 7.28 s | 21,033 | 2,805 MB |
-| axum 0.8.6 | 6.66 s | 6.73 s | 5.28 s | 5,515 | 2,434 MB |
-| nushell 0.108.0 | 27.99 s | 28.17 s | 36.86 s | 160,177 | 15,240 MB |
+| ripgrep 15.1.0 | 4.49 s | 4.54 s | 6.23 s | 17,103 | 2,682 MB |
+| fd 10.3.0 | 20.65 s | 20.58 s | 4.75 s | 8,157 | 2,270 MB |
+| bat 0.26.0 | 9.26 s | 9.09 s | 8.93 s | 11,353 | 2,912 MB |
+| hyperfine 1.19.0 | 4.45 s | 4.45 s | 6.09 s | 5,762 | 2,206 MB |
+| just 1.43.0 | 6.14 s | 6.19 s | 7.62 s | 21,033 | 3,091 MB |
+| axum 0.8.6 | 6.75 s | 6.78 s | 5.55 s | 5,515 | 2,481 MB |
+| nushell 0.108.0 | 27.85 s | 28.31 s | 41.44 s | 160,181 | 15,412 MB |
 
 #### How fast the program runs, LLVM
 
@@ -302,6 +302,6 @@ The same command run by the program ra-jit linked and by cargo's debug and relea
 
 | Project | Command | ra-jit | cargo debug | cargo release |
 |---|---|---:|---:|---:|
-| ripgrep 15.1.0 | `rg -uuu --sort path -c \w+_unchecked\(\|unsafe \{ <the toolchain's library source>` | 34 ms (34 ms to 41 ms) | 36 ms (36 ms to 37 ms) | 10 ms (10 ms to 10 ms) |
+| ripgrep 15.1.0 | `rg -uuu --sort path -c \w+_unchecked\(\|unsafe \{ <the toolchain's library source>` | 33 ms (33 ms to 33 ms) | 34 ms (34 ms to 34 ms) | 10 ms (10 ms to 10 ms) |
 
 <!-- bench:end -->
