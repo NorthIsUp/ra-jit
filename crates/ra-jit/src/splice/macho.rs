@@ -15,12 +15,14 @@
 //!
 //! The unwinder gets `__unwind_info` and `__eh_frame` from dyld, which on some versions of
 //! macOS finds them only in the segment named `__TEXT`, by the name of the segment's load
-//! command. So the patch's frames go there too: `__unwind_info`, which the linker puts right
-//! in front of `__eh_frame`, moves into the room the header leaves, and the patch's frames
-//! take its place, so `__eh_frame` starts with them and no section overlaps another, which
-//! `strip` would refuse. The table is told the program's frames are that much further from
-//! where the section starts. It has nothing for the patch's functions, which are past its
-//! last entry, so the unwinder looks for them in `__eh_frame`.
+//! command. So the patch's frames go there too: behind the program's when `__TEXT` has room
+//! after `__eh_frame`, so the section only grows and no offset of `__unwind_info` moves.
+//! Otherwise `__unwind_info`, which the linker puts right in front of `__eh_frame`, moves
+//! into the room the header leaves, and the patch's frames take its place, so `__eh_frame`
+//! starts with them and no section overlaps another, which `strip` would refuse; the table
+//! is told the program's frames are that much further from where the section starts, which
+//! its 24-bit offsets can't say past 16 MB. Either way the table has nothing for the patch's
+//! functions, which are past its last entry, so the unwinder looks for them in `__eh_frame`.
 //!
 //! The kernel remembers the signature of a file it has run, so the executable is not
 //! written where it is: a copy is, which the file system makes without copying where it
@@ -114,6 +116,9 @@ pub(super) struct Image {
     /// How much is in front of `__eh_frame` that only `__unwind_info` takes: the room the
     /// patch's frames get when the table moves into the header's.
     in_front: u64,
+    /// How much of `__TEXT` is behind `__eh_frame` and no section's: the room the patch's
+    /// frames get behind the program's, where no offset of the table moves.
+    behind: u64,
     /// The addresses the loader adds where the program is loaded to, in order.
     rebases: Vec<u64>,
     /// `__LINKEDIT` up to the signature.
@@ -539,6 +544,16 @@ impl Image {
             Some(gap) if alone && gap >= unwind.bytes.len() as u64 => gap,
             _ => 0,
         };
+        let frames_end = frames.address + frames.bytes.len() as u64;
+        let text_end = (segments.iter())
+            .find(|it| (it.address..it.address + it.file_size).contains(&frames.address))
+            .map_or(frames_end, |it| it.address + it.file_size);
+        let next = (sections.iter())
+            .filter(|&&(address, len, ..)| len != 0 && address >= frames_end)
+            .map(|&(address, ..)| address)
+            .min()
+            .unwrap_or(text_end);
+        let behind = next.min(text_end).saturating_sub(frames_end);
 
         let linkedit = segments.last().context("no segments")?;
         ensure!(linkedit.offset.is_multiple_of(PAGE), "`__LINKEDIT` is not at a page of the file");
@@ -648,6 +663,7 @@ impl Image {
             unwind,
             frames,
             in_front,
+            behind,
             rebases,
             linkedit: content,
             signature,
@@ -818,17 +834,9 @@ impl Pointer {
     }
 }
 
-/// The tables of the unwinder once the patch's frames `ours`, laid out at `from`, are in
-/// front of the program's: `__unwind_info` moves into the room the header leaves, from `at`
-/// of the file, and the frames go where it was. Gives what that writes where in the file
-/// and where the two sections then start, `__unwind_info` first; or nothing when the patch
-/// has no frames.
-fn frames_in_front(
-    image: &Image,
-    ours: &[u8],
-    from: u64,
-    at: usize,
-) -> anyhow::Result<Option<(Vec<(u64, Vec<u8>)>, [u64; 2])>> {
+/// The patch's frames `ours`, laid out at `from`, moved where they will be in `__eh_frame`
+/// starting at `start`: the addresses in them are relative to where they are.
+fn frames_moved(ours: &[u8], from: u64, start: u64) -> anyhow::Result<Option<Vec<u8>>> {
     let (mut used, mut last) = (0, 0);
     while used + 4 <= ours.len() && u32_at(ours, used)? != 0 {
         last = used;
@@ -839,19 +847,12 @@ fn frames_in_front(
         return Ok(None);
     }
     let mut block = ours[..used].to_vec();
-    // The unwinder stops at an entry of no length, so the last is what is longer for the
-    // program's to start at a multiple of eight, by instructions that do nothing.
+    // The unwinder stops at an entry of no length, so the last is what is longer for what
+    // follows to start at a multiple of eight, by instructions that do nothing.
     let padded = used.next_multiple_of(8);
     let len = u32_at(&block, last)? + (padded - used) as u32;
     put32(&mut block, last, len);
     block.resize(padded, 0);
-    ensure!(image.in_front != 0, "something is between `__unwind_info` and `__eh_frame`");
-    ensure!(
-        padded as u64 <= image.in_front,
-        "the patch's frames are larger than the program's unwind table: {padded} bytes after {}",
-        image.in_front
-    );
-    let start = image.frames.address - padded as u64;
     let moved = start.wrapping_sub(from) as i64;
     for pointer in Pointer::all(&block)? {
         ensure!(pointer.relative, "frames with an address that is not relative to them");
@@ -865,6 +866,55 @@ fn frames_in_front(
             _ => put64(&mut block, pointer.at, value as u64),
         }
     }
+    Ok(Some(block))
+}
+
+/// The patch's frames `ours`, laid out at `from`, behind the program's in the room `__TEXT`
+/// has there: `__eh_frame` grows, its start and `__unwind_info` stay as they are, so no
+/// offset of the table moves (they are 24 bits, which a program of more than 16 MB of
+/// frames fills). The patch's functions are past the table's last entry, which sends the
+/// unwinder through `__eh_frame` to the end. Gives where they start, the frames, and the new
+/// size of `__eh_frame`; or nothing when the patch has no frames or they don't fit.
+fn frames_behind(
+    frames: &Table,
+    behind: u64,
+    ours: &[u8],
+    from: u64,
+) -> anyhow::Result<Option<(u64, Vec<u8>, u64)>> {
+    // Right behind the program's last entry: anything of no length between would stop the
+    // unwinder.
+    let start = frames.address + frames.bytes.len() as u64;
+    ensure!(start.is_multiple_of(4), "`__eh_frame` that ends off a word");
+    let Some(block) = frames_moved(ours, from, start)? else { return Ok(None) };
+    if block.len() as u64 > behind {
+        return Ok(None);
+    }
+    let size = start + block.len() as u64 - frames.address;
+    Ok(Some((start, block, size)))
+}
+
+/// The tables of the unwinder once the patch's frames `ours`, laid out at `from`, are in
+/// front of the program's: `__unwind_info` moves into the room the header leaves, from `at`
+/// of the file, and the frames go where it was. Gives what that writes where in the file
+/// and where the two sections then start, `__unwind_info` first; or nothing when the patch
+/// has no frames.
+fn frames_in_front(
+    image: &Image,
+    ours: &[u8],
+    from: u64,
+    at: usize,
+) -> anyhow::Result<Option<(Vec<(u64, Vec<u8>)>, [u64; 2])>> {
+    // Its length, then laid out where it goes.
+    let Some(len) = frames_moved(ours, from, from)?.map(|it| it.len()) else { return Ok(None) };
+    ensure!(image.in_front != 0, "something is between `__unwind_info` and `__eh_frame`");
+    ensure!(
+        len as u64 <= image.in_front,
+        "the patch's frames are larger than the program's unwind table: {len} bytes after {}",
+        image.in_front
+    );
+    let start = image.frames.address - len as u64;
+    let block = frames_moved(ours, from, start)?.context("frames that went away")?;
+    let padded = block.len();
     let mut table = image.unwind.bytes.clone();
     shifted(&mut table, padded as u64)?;
     ensure!(
@@ -1389,7 +1439,13 @@ impl<'a> Patch<'a> {
             let (at, len) = (placed[&index], self.file.section_by_index(index)?.size());
             let ours = &appended[at as usize..(at + len) as usize];
             let front = commands.len().next_multiple_of(16);
-            if let Some((written, starts)) = frames_in_front(image, ours, base + at, front)? {
+            if let Some((start, block, size)) =
+                frames_behind(&image.frames, image.behind, ours, base + at)?
+            {
+                put64(&mut commands, image.frames.header + 40, size);
+                tables = vec![(image.offset_of(start)?, block)];
+            } else if let Some((written, starts)) = frames_in_front(image, ours, base + at, front)?
+            {
                 let end = image.frames.address + image.frames.bytes.len() as u64;
                 let sizes = [image.unwind.bytes.len() as u64, end - starts[1]];
                 for ((table, start), size) in
@@ -2033,7 +2089,10 @@ pub(super) fn splice(
 mod tests {
     use object::macho;
 
-    use super::{HEADER, PAGE, SECTION, SEGMENT, headerpad_short, put32, put64};
+    use super::{
+        HEADER, PAGE, Pointer, SECTION, SEGMENT, Table, frames_behind, headerpad_short, put32,
+        put64, shifted, u32_at,
+    };
 
     /// The header and load commands of an executable of one segment, whose code starts
     /// `room` bytes into the file and whose unwind table is `unwind` bytes.
@@ -2076,5 +2135,62 @@ mod tests {
         let mut library = commands(0x100, 0x1000);
         put32(&mut library, 12, macho::MH_DYLIB);
         assert_eq!(headerpad_short(&library).unwrap(), None);
+    }
+
+    /// One common entry (`zR`, addresses relative and 4 bytes) and one frame of the function
+    /// at `function`, as laid out at `from`.
+    fn frames_of(function: u64, from: u64) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        // Common entry: length, id 0, version 1, "zR", code and data alignment, return
+        // register, augmentation length 1, R = pcrel | sdata4, then nothing to do.
+        let common = [0, 0, 0, 0, 1, b'z', b'R', 0, 1, 0x78, 30, 1, 0x1b, 0, 0, 0];
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&common);
+        // Frame: length, back to the common entry, start, length of code, augmentation 0.
+        let frame = bytes.len();
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&((frame + 4) as u32).to_le_bytes());
+        let start = from + bytes.len() as u64;
+        bytes.extend_from_slice(&(function.wrapping_sub(start) as i32).to_le_bytes());
+        bytes.extend_from_slice(&64u32.to_le_bytes());
+        bytes.extend_from_slice(&[0, 0, 0, 0]);
+        bytes
+    }
+
+    /// A table of no pages whose one common encoding says "in `__eh_frame`, `offset` in".
+    fn table_of(offset: u32) -> Vec<u8> {
+        let mut table = vec![0; 40];
+        for (at, value) in [(0, 1), (4, 28), (8, 1), (20, 32), (24, 1)] {
+            put32(&mut table, at, value);
+        }
+        put32(&mut table, 28, 0x0300_0000 | offset);
+        table
+    }
+
+    #[test]
+    fn frames_in_front_overflow_the_table_of_a_large_program() {
+        let mut table = table_of(0x00ff_ff00);
+        let error = shifted(&mut table, 0x200).unwrap_err().to_string();
+        assert!(error.contains("too large for frames"), "{error}");
+    }
+
+    #[test]
+    fn frames_behind_leave_the_table_of_a_large_program_alone() {
+        let table = table_of(0x00ff_ff00);
+        let frames =
+            Table { header: 0, nth: 0, first: 0, address: 0x1_0000_0000, bytes: vec![0; 0x100] };
+        let (from, function) = (0x1_1000_0000, 0x1_1000_4000);
+        let ours = frames_of(function, from);
+        let (start, block, size) = frames_behind(&frames, 0x1000, &ours, from).unwrap().unwrap();
+        assert_eq!(start, 0x1_0000_0100);
+        assert_eq!(size, 0x100 + block.len() as u64);
+        // The frame still names the function from where it now is.
+        let pointer = Pointer::all(&block).unwrap().into_iter().find(|it| it.at > 20).unwrap();
+        let at = start as i64 + pointer.at as i64;
+        assert_eq!((at + pointer.value(&block).unwrap()) as u64, function);
+        // Nothing of the table changes, so its offsets near 16 MB are fine.
+        assert_eq!(u32_at(&table, 28).unwrap(), 0x0300_0000 | 0x00ff_ff00);
+        // No room: the caller falls back to frames in front.
+        assert!(frames_behind(&frames, 8, &ours, from).unwrap().is_none());
     }
 }
