@@ -67,6 +67,12 @@ All notable changes to ra-jit are written here. The format follows
   `cargo ra-jit` ran again for the same build, with nothing it reads written since, is not
   run a second time. On Linux x86-64 an edit of ripgrep's `search` goes from 72 to 48 ms,
   fd's `run` from 78 to 42 ms and hyperfine's `run` from 80 to 35 ms.
+- Under `RA_JIT_BACKEND=llvm`, a body of more than 10 000 Cranelift instructions is compiled
+  by Cranelift. Since LLVM lowers a handler that takes more than the exception (tiers), it
+  compiled every function, and an edit of nushell's `main` (35 778 instructions) waited
+  229 ms for LLVM: on Linux x86-64 the edit went from 343 ms to 472 ms, and is 280 ms now.
+  65 of nushell's 160 177 functions are over the limit, none of ripgrep's or of
+  `demo/lifebench`'s. A tier still compiles such a body with LLVM.
 - `vendor/rust-analyzer` and `vendor/rustc_abi` are git subtrees instead of submodules: a
   plain `git clone` builds, and the flake builds from its own tree with no second pin of the
   forks.

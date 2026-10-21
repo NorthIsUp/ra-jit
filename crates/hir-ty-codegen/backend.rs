@@ -29,6 +29,14 @@ const OPTIMIZATION: &str = "RA_JIT_OPT";
 /// function is here, not in the passes before it.
 const SELECTION: &str = "RA_JIT_EMIT";
 
+/// The most instructions of Cranelift IR a body has that LLVM compiles in a build. LLVM takes
+/// 5 to 7 µs for each at `-O2` (16 Zen 5 cores, nushell 0.108.0, 2026-10-20), Cranelift about
+/// 1, and an edit waits for the body edited: nushell's `main`, 35 778 instructions, held its
+/// edit up by 229 ms in LLVM, against 28 in Cranelift. A larger body is Cranelift's. A hot one
+/// is still compiled by LLVM as a tier, which does not come through here.
+#[cfg(feature = "llvm")]
+const LLVM_LIMIT: usize = 10_000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
     Cranelift,
@@ -113,6 +121,10 @@ impl Backend {
         let tally = Tally::global();
         match Self::from_env().map_err(CodegenError::Backend)? {
             Backend::Cranelift => {}
+            #[cfg(feature = "llvm")]
+            Backend::Llvm(_) if context.func.dfg.num_insts() > LLVM_LIMIT => {
+                tally.fell_back(Duration::ZERO, "a body larger than LLVM is given in a build");
+            }
             #[cfg(feature = "llvm")]
             Backend::Llvm(optimization) => {
                 let start = Instant::now();
