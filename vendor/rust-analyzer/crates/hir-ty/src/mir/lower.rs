@@ -36,7 +36,7 @@ use crate::{
     db::{GeneralConstId, HirDatabase, InternedClosure, InternedClosureId, InternedCoroutineId},
     generics::generics,
     infer::{
-        CaptureSourceStack, CapturedPlace, UpvarCapture,
+        AllowTwoPhase, AutoBorrowMutability, CaptureSourceStack, CapturedPlace, UpvarCapture,
         cast::CastTy,
         closure::analysis::expr_use_visitor::{
             Place as HirPlace, PlaceBase as HirPlaceBase, ProjectionKind as HirProjectionKind,
@@ -405,15 +405,18 @@ impl<'a, 'db> MirLowerCtx<'a, 'db> {
                     );
                     Ok(Some(current))
                 }
-                Adjust::Borrow(AutoBorrow::Ref(m)) => self.lower_expr_to_place_with_borrow_adjust(
-                    expr_id,
-                    place,
-                    current,
-                    rest,
-                    (*m).into(),
-                ),
+                Adjust::Borrow(AutoBorrow::Ref(m)) => {
+                    let bk = match m {
+                        AutoBorrowMutability::Mut { allow_two_phase_borrow: AllowTwoPhase::Yes } => {
+                            BorrowKind::Mut { kind: super::MutBorrowKind::TwoPhasedBorrow }
+                        }
+                        _ => BorrowKind::from_rustc_mutability((*m).into()),
+                    };
+                    self.lower_expr_to_place_with_borrow_adjust(expr_id, place, current, rest, bk)
+                }
                 Adjust::Borrow(AutoBorrow::RawPtr(m)) => {
-                    self.lower_expr_to_place_with_borrow_adjust(expr_id, place, current, rest, *m)
+                    let bk = BorrowKind::from_rustc_mutability(*m);
+                    self.lower_expr_to_place_with_borrow_adjust(expr_id, place, current, rest, bk)
                 }
                 Adjust::Pointer(cast) => {
                     let Some((p, current)) =
@@ -444,7 +447,7 @@ impl<'a, 'db> MirLowerCtx<'a, 'db> {
         place: Place<'db>,
         current: BasicBlockId,
         rest: &[Adjustment],
-        m: Mutability,
+        bk: BorrowKind,
     ) -> Result<'db, Option<BasicBlockId>> {
         let locals = self.result.locals.len();
         let Some((p, current)) =
@@ -453,7 +456,7 @@ impl<'a, 'db> MirLowerCtx<'a, 'db> {
             return Ok(None);
         };
         // `CONST.len()` borrows a promoted constant just as `(&CONST).len()` does.
-        if m.is_not()
+        if bk == BorrowKind::Shared
             && rest.is_empty()
             && p.local.into_raw().into_u32() as usize >= locals
             && p.projection.as_slice().is_empty()
@@ -461,7 +464,6 @@ impl<'a, 'db> MirLowerCtx<'a, 'db> {
         {
             self.result.promoted_locals.push((p.local, expr_id));
         }
-        let bk = BorrowKind::from_rustc_mutability(m);
         self.push_assignment(current, place, Rvalue::Ref(bk, p.store()), expr_id.into());
         Ok(Some(current))
     }

@@ -10,9 +10,14 @@ pub(crate) fn borrowck_error(
     ctx: &DiagnosticsContext<'_, '_>,
     d: &hir::BorrowckError,
 ) -> Diagnostic {
+    // rustc gives some errors no code, as "lifetime may not live long enough".
+    let code = match d.code {
+        "" => DiagnosticCode::Ra("borrowck", crate::Severity::Error),
+        code => DiagnosticCode::RustcHardError(code),
+    };
     let mut diagnostic = Diagnostic::new_with_syntax_node_ptr(
         ctx,
-        DiagnosticCode::RustcHardError(d.code),
+        code,
         d.message.clone(),
         d.node,
     );

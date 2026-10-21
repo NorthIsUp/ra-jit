@@ -8,8 +8,11 @@
 mod bitset;
 mod cfg;
 mod check;
+mod liveness;
+mod loans;
 mod moves;
 mod names;
+mod regions;
 
 use std::sync::LazyLock;
 

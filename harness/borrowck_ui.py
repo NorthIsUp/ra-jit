@@ -347,6 +347,9 @@ def score(units, expected, actual, mode):
         if other and not want_b:
             verdicts[unit.label] = ("out", "rustc stops before borrow checking", None)
             continue
+        for d in diags:
+            # An error rustc gives no code rust-analyzer reports as `borrowck`.
+            d["code"] = key_of(None if d["code"] == "borrowck" else d["code"], d["message"]) or d["code"]
         got_b = {(d["code"], d["line"]) for d in diags if is_borrowck(d["code"])}
         stray = sorted({d["code"] for d in diags if d["severity"] == "Error" and not is_borrowck(d["code"])
                         and d["code"] not in rustc_keys})

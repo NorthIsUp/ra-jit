@@ -19,7 +19,10 @@ use super::{
     BorrowckDiagnostic, Ctx,
     bitset::BitSet,
     cfg::{Cfg, Dominators, Location, index},
+    liveness,
+    loans::{Activation, Bias, Depth, Loan, Loans, places_conflict},
     moves::{InitFlow, InitKind, Lookup, MoveData, Mpi, apply},
+    regions::{self, Category, RegionValues, Regions, UniversalKind},
 };
 
 pub(super) fn check<'db>(
@@ -31,6 +34,35 @@ pub(super) fn check<'db>(
     let moves = MoveData::gather(ctx, body, &cfg);
     let flow = InitFlow::compute(body, &cfg, &moves);
     let dominators = Dominators::new(&cfg);
+    let capture_temps = capture_temps(body);
+    let regions = regions::build(ctx, body, &cfg);
+    let count = ctx.infcx.num_region_vars();
+    let live = liveness::region_liveness(ctx, body, &cfg, &moves, &regions, count);
+    let values = regions::infer(&regions, count, cfg.points, live);
+    let unique = |assigned: LocalId, local: LocalId, projection: &[PlaceElem]| {
+        capture_temps.contains_key(&assigned)
+            && is_immutable_root(ctx, PlaceRef { local, projection })
+    };
+    let mut loans = Loans::gather(ctx, body, &cfg, &regions, unique);
+    loans.compute_scopes(body, &cfg, &values);
+    let borrows_entry = loans.entry_sets(ctx, body, &cfg);
+    if std::env::var_os("RA_JIT_BORROWCK_DEBUG").is_some() {
+        for (local, ty) in regions.local_tys.iter().enumerate() {
+            eprintln!("_{local}: {ty:?}");
+        }
+        eprintln!("universals {:?}", regions.universals);
+        for constraint in &regions.outlives {
+            eprintln!("{constraint:?}");
+        }
+        for loan in &loans.loans {
+            let points: Vec<usize> =
+                values.values[loan.region].iter().filter(|&it| it < cfg.points).collect();
+            eprintln!(
+                "loan {:?} {:?} at {:?} region {} points {points:?}",
+                loan.local, loan.projection, loan.location, loan.region
+            );
+        }
+    }
     let mut checker = Checker {
         ctx,
         body,
@@ -45,26 +77,40 @@ pub(super) fn check<'db>(
         move_reported: FxHashMap::default(),
         move_errors: Vec::new(),
         scrutinees: None,
-        capture_temps: capture_temps(body),
+        capture_temps,
         assigned_local: crate::mir::return_slot(),
+        regions: &regions,
+        region_count: count,
+        values: &values,
+        loans: &loans,
+        in_scope: BitSet::default(),
+        dead_reported: FxHashSet::default(),
+        reservation_reported: FxHashSet::default(),
         static_muts: static_muts(ctx, body),
         union_literals: union_literals(ctx),
     };
     for &block in &cfg.order {
         checker.uninit = flow.uninit_entry[index(block)].clone();
         checker.ever = flow.ever_entry[index(block)].clone();
+        checker.in_scope = borrows_entry[index(block)].clone();
         let data = &body.basic_blocks[block];
         for (statement, it) in data.statements.iter().enumerate() {
             let location = Location { block, statement };
+            loans.before(&cfg, location, &mut checker.in_scope);
+            checker.check_activations(location, it.span);
             checker.statement(location, &it.kind, it.span);
             apply(body, &moves, location, &mut checker.uninit, &mut checker.ever);
+            loans.after(ctx, body, location, &mut checker.in_scope);
         }
         if let Some(terminator) = &data.terminator {
             let location = Location { block, statement: data.statements.len() };
+            loans.before(&cfg, location, &mut checker.in_scope);
+            checker.check_activations(location, terminator.span);
             checker.terminator(location, &terminator.kind, terminator.span);
         }
     }
     checker.report_move_errors();
+    checker.report_region_errors();
     out.extend(checker.errors.into_iter().flatten());
     out.extend(checker.move_reported.into_values().map(|(_, _, error)| error));
 }
@@ -78,6 +124,15 @@ fn union_literals(ctx: &Ctx<'_, '_>) -> FxHashSet<ExprId> {
         }
     }
     found
+}
+
+/// Whether the variable `place` starts from is declared without `mut`: rustc's
+/// `limit_capture_mutability` makes a closure's mutable borrow of such a place a unique one.
+fn is_immutable_root(ctx: &Ctx<'_, '_>, place: PlaceRef<'_>) -> bool {
+    match ctx.upvar_of_local(place.local) {
+        Some(upvar) => !ctx.upvars[upvar].mutable,
+        None => ctx.is_immutable(place.local),
+    }
 }
 
 /// A place as the checks pass it around.
@@ -105,6 +160,13 @@ impl<'p> PlaceRef<'p> {
     }
 }
 
+fn mutability(kind: BorrowKind) -> &'static str {
+    match kind {
+        BorrowKind::Mut { .. } => "mutable",
+        _ => "immutable",
+    }
+}
+
 /// What `is_mutable` says of a capture the closure may not mutate that rustc reports where the
 /// closure is made.
 const REPORTED_BY_PARENT: usize = usize::MAX - 1;
@@ -119,10 +181,17 @@ enum Allowed {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Access {
     Read,
+    /// A shared or a fake borrow.
+    Borrow(BorrowKind),
     Mutate,
-    MutableBorrow { closure_capture: bool },
+    MutableBorrow {
+        closure_capture: bool,
+        two_phase: bool,
+    },
     Move,
     StorageDeadOrDrop,
+    /// What a two-phase borrow does where it is first used, with the loan.
+    Activation(usize),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -195,6 +264,17 @@ struct Checker<'a, 'b, 'db> {
     assigned_local: LocalId,
     /// The temporaries that point to a `static mut`.
     static_muts: FxHashSet<LocalId>,
+    regions: &'a Regions<'db>,
+    region_count: usize,
+    values: &'a RegionValues,
+    loans: &'a Loans,
+    /// The loans in scope where the checker is.
+    in_scope: BitSet,
+    /// The places a "does not live long enough" error was reported of, with the borrow.
+    dead_reported: FxHashSet<(LocalId, MirSpan)>,
+    /// The places a two-phase borrow's reservation was reported a conflict of, which its
+    /// activation does not report again.
+    reservation_reported: FxHashSet<(LocalId, Vec<PlaceElem>)>,
     /// Record literals and the values of their fields, whose lowering assigns a field of the
     /// literal where rustc assigns the whole of it (it matters for a union).
     union_literals: FxHashSet<ExprId>,
@@ -218,13 +298,7 @@ impl<'a, 'db> Checker<'a, '_, 'db> {
 
     /// Whether the variable `place` is in, not behind a reference, is declared without `mut`.
     fn is_immutable_root(&self, place: PlaceRef<'_>) -> bool {
-        if place.projection.contains(&ProjectionElem::Deref) {
-            return false;
-        }
-        match self.ctx.upvar_of_local(place.local) {
-            Some(upvar) => !self.ctx.upvars[upvar].mutable,
-            None => self.ctx.is_immutable(place.local),
-        }
+        is_immutable_root(self.ctx, place)
     }
 
     fn describe(&self, place: PlaceRef<'_>) -> Option<String> {
@@ -259,8 +333,8 @@ impl<'a, 'db> Checker<'a, '_, 'db> {
                     // rustc makes the mutable borrow of a variable without `mut` a closure
                     // captures a unique one, and reports the mutation in the closure.
                     let borrowed = PlaceRef::of(borrowed);
-                    let access = Access::MutableBorrow { closure_capture: true };
-                    self.access_place(location, borrowed, span, access, Allowed::No);
+                    let access = Access::MutableBorrow { closure_capture: true, two_phase: false };
+                    self.access_place(location, borrowed, span, access, Allowed::No, Depth::Deep);
                     self.check_if_path_or_subpath_is_moved(
                         location,
                         InitAction::Borrow,
@@ -296,7 +370,8 @@ impl<'a, 'db> Checker<'a, '_, 'db> {
             }
             StatementKind::StorageDead(local) => {
                 let place = PlaceRef { local: *local, projection: &[] };
-                self.access_place(location, place, span, Access::StorageDeadOrDrop, Allowed::Yes);
+                let access = Access::StorageDeadOrDrop;
+                self.access_place(location, place, span, access, Allowed::Yes, Depth::Shallow);
             }
             StatementKind::Deinit(_) | StatementKind::StorageLive(_) | StatementKind::Nop => (),
         }
@@ -307,8 +382,10 @@ impl<'a, 'db> Checker<'a, '_, 'db> {
             TerminatorKind::SwitchInt { discr, .. } => self.consume_operand(location, discr, span),
             TerminatorKind::Drop { place, .. } => {
                 let place = PlaceRef::of(place);
-                self.access_place(location, place, span, Access::StorageDeadOrDrop, Allowed::Yes);
+                let access = Access::StorageDeadOrDrop;
+                self.access_place(location, place, span, access, Allowed::Yes, Depth::Drop);
             }
+            TerminatorKind::Return => self.check_for_invalidation_at_exit(location, span),
             TerminatorKind::DropAndReplace { place, value, .. } => {
                 self.consume_operand(location, value, span);
                 self.mutate_place(location, PlaceRef::of(place), span);
@@ -340,7 +417,6 @@ impl<'a, 'db> Checker<'a, '_, 'db> {
             TerminatorKind::Goto { .. }
             | TerminatorKind::UnwindResume
             | TerminatorKind::Abort
-            | TerminatorKind::Return
             | TerminatorKind::Unreachable
             | TerminatorKind::CoroutineDrop
             | TerminatorKind::FalseEdge { .. }
@@ -362,23 +438,31 @@ impl<'a, 'db> Checker<'a, '_, 'db> {
         match rvalue {
             Rvalue::Ref(kind, place) => {
                 let place = PlaceRef::of(place);
-                let (access, allowed, action) = match kind {
-                    BorrowKind::Shared => (Access::Read, Allowed::No, InitAction::Borrow),
-                    BorrowKind::Shallow => (Access::Read, Allowed::No, InitAction::MatchOn),
+                let (access, depth, action) = match kind {
+                    BorrowKind::Shared => (Access::Borrow(*kind), Depth::Deep, InitAction::Borrow),
+                    BorrowKind::Shallow => {
+                        (Access::Borrow(*kind), Depth::ShallowArtificial, InitAction::MatchOn)
+                    }
                     BorrowKind::Mut { kind } => (
                         Access::MutableBorrow {
                             closure_capture: *kind == MutBorrowKind::ClosureCapture,
+                            two_phase: *kind == MutBorrowKind::TwoPhasedBorrow,
                         },
-                        Allowed::No,
+                        Depth::Deep,
                         InitAction::Borrow,
                     ),
                 };
-                self.access_place(location, place, span, access, allowed);
+                self.access_place(location, place, span, access, Allowed::No, depth);
                 self.check_if_path_or_subpath_is_moved(location, action, place, span);
             }
             Rvalue::Len(place) | Rvalue::Discriminant(place) | Rvalue::CopyForDeref(place) => {
                 let place = PlaceRef::of(place);
-                self.access_place(location, place, span, Access::Read, Allowed::No);
+                let depth = match rvalue {
+                    Rvalue::Len(_) => Depth::ShallowArtificial,
+                    Rvalue::Discriminant(_) => Depth::Shallow,
+                    _ => Depth::Deep,
+                };
+                self.access_place(location, place, span, Access::Read, Allowed::No, depth);
                 self.check_if_path_or_subpath_is_moved(location, InitAction::Use, place, span);
             }
             _ => rvalue
@@ -393,13 +477,13 @@ impl<'a, 'db> Checker<'a, '_, 'db> {
                 if self.ctx.moved_place(self.body, operand).is_none() =>
             {
                 let place = PlaceRef::of(place);
-                self.access_place(location, place, span, Access::Read, Allowed::No);
+                self.access_place(location, place, span, Access::Read, Allowed::No, Depth::Deep);
                 self.check_if_path_or_subpath_is_moved(location, InitAction::Use, place, span);
             }
             OperandKind::Copy(place) | OperandKind::Move(place) => {
                 let place = PlaceRef::of(place);
                 self.check_movable_place(location, place, span);
-                self.access_place(location, place, span, Access::Move, Allowed::Yes);
+                self.access_place(location, place, span, Access::Move, Allowed::Yes, Depth::Deep);
                 self.check_if_path_or_subpath_is_moved(location, InitAction::Use, place, span);
             }
             OperandKind::Constant { .. }
@@ -420,24 +504,332 @@ impl<'a, 'db> Checker<'a, '_, 'db> {
             }
             return;
         }
-        self.access_place(location, place, span, Access::Mutate, Allowed::No);
+        self.access_place(location, place, span, Access::Mutate, Allowed::No, Depth::Shallow);
     }
 
     fn access_place(
         &mut self,
-        _location: Location,
+        location: Location,
         place: PlaceRef<'_>,
         span: MirSpan,
         access: Access,
         allowed: Allowed,
+        depth: Depth,
     ) {
         let key = (place.key(), span);
         if self.access_reported.contains(&key) {
             return;
         }
         let mutability_error = self.check_access_permissions(place, span, access, allowed);
-        if mutability_error {
+        let conflict_error = self.check_access_for_conflict(location, place, span, access, depth);
+        if mutability_error || conflict_error {
             self.access_reported.insert(key);
+        }
+    }
+
+    /// rustc's `check_access_for_conflict`: the first loan in scope the access conflicts with,
+    /// reported.
+    fn check_access_for_conflict(
+        &mut self,
+        location: Location,
+        place: PlaceRef<'_>,
+        span: MirSpan,
+        access: Access,
+        depth: Depth,
+    ) -> bool {
+        let in_scope: Vec<usize> = self.in_scope.iter().collect();
+        for id in in_scope {
+            let loan = &self.loans.loans[id];
+            if !places_conflict(
+                self.ctx,
+                self.body,
+                loan,
+                place.local,
+                place.projection,
+                depth,
+                Bias::Overlap,
+            ) {
+                continue;
+            }
+            match (access, loan.kind) {
+                (Access::Read | Access::Borrow(_), BorrowKind::Shared | BorrowKind::Shallow)
+                | (Access::Borrow(BorrowKind::Shallow), BorrowKind::Mut { .. }) => continue,
+                (Access::Activation(activating), _) if activating == id => continue,
+                (Access::Activation(_), _) if self.reservation_reported.contains(&place.key()) => {
+                    return false;
+                }
+                // A two-phase borrow's reservation may share with shared borrows, rust-lang/rust#56254.
+                (
+                    Access::MutableBorrow { two_phase: true, .. },
+                    BorrowKind::Shared | BorrowKind::Shallow,
+                )
+                | (Access::Move, BorrowKind::Shallow) => continue,
+                (Access::Read | Access::Borrow(_), BorrowKind::Mut { .. }) => {
+                    if !self.is_active(loan, location) {
+                        continue;
+                    }
+                    match access {
+                        Access::Borrow(kind) => {
+                            self.report_conflicting_borrow(place, span, kind, id)
+                        }
+                        _ => {
+                            let what = self.quoted(place, "value");
+                            self.report(
+                                "E0503",
+                                span,
+                                format!("cannot use {what} because it was mutably borrowed"),
+                            );
+                        }
+                    }
+                }
+                (Access::MutableBorrow { closure_capture, two_phase }, _) => {
+                    if two_phase {
+                        self.reservation_reported.insert(place.key());
+                    }
+                    let kind = match (closure_capture, two_phase) {
+                        (true, _) => MutBorrowKind::ClosureCapture,
+                        (false, true) => MutBorrowKind::TwoPhasedBorrow,
+                        (false, false) => MutBorrowKind::Default,
+                    };
+                    self.report_conflicting_borrow(place, span, BorrowKind::Mut { kind }, id);
+                }
+                (Access::Activation(activating), _) => {
+                    let kind = self.loans.loans[activating].kind;
+                    self.report_conflicting_borrow(place, span, kind, id);
+                }
+                (Access::Mutate, _) => {
+                    let what = self.quoted(place, "value");
+                    self.report(
+                        "E0506",
+                        span,
+                        format!("cannot assign to {what} because it is borrowed"),
+                    );
+                }
+                (Access::Move, _) => {
+                    let what = self.quoted(place, "value");
+                    self.report(
+                        "E0505",
+                        span,
+                        format!("cannot move out of {what} because it is borrowed"),
+                    );
+                }
+                (Access::StorageDeadOrDrop, _) => self.report_does_not_live_long_enough(id),
+            }
+            return true;
+        }
+        false
+    }
+
+    /// rustc's `is_active`: a two-phase borrow acts as a shared one between where it is made
+    /// and where it is first used.
+    fn is_active(&self, loan: &Loan, location: Location) -> bool {
+        let activation = match loan.activation {
+            Activation::NotTwoPhase => return true,
+            Activation::NotActivated => return false,
+            Activation::At(it) => it,
+        };
+        if self.dominators.location_dominates(activation, location) {
+            return true;
+        }
+        let reserved =
+            Location { block: loan.location.block, statement: loan.location.statement + 1 };
+        !self.dominators.location_dominates(reserved, location)
+    }
+
+    fn check_activations(&mut self, location: Location, span: MirSpan) {
+        let Some(ids) = self.loans.activations.get(&location) else { return };
+        for &id in ids {
+            let loan = &self.loans.loans[id];
+            let projection = loan.projection.clone();
+            let place = PlaceRef { local: loan.local, projection: &projection };
+            self.access_place(
+                location,
+                place,
+                span,
+                Access::Activation(id),
+                Allowed::Yes,
+                Depth::Deep,
+            );
+        }
+    }
+
+    /// rustc's `check_for_invalidation_at_exit`: a loan of a local still in scope where the
+    /// body returns outlives it.
+    fn check_for_invalidation_at_exit(&mut self, _location: Location, _span: MirSpan) {
+        let in_scope: Vec<usize> = self.in_scope.iter().collect();
+        for id in in_scope {
+            if !self.loans.loans[id].projection.contains(&ProjectionElem::Deref) {
+                self.report_does_not_live_long_enough(id);
+            }
+        }
+    }
+
+    fn report_conflicting_borrow(
+        &mut self,
+        place: PlaceRef<'_>,
+        span: MirSpan,
+        new: BorrowKind,
+        issued: usize,
+    ) {
+        use MutBorrowKind::ClosureCapture;
+        let issued_kind = self.loans.loans[issued].kind;
+        let what = self.quoted(place, "value");
+        let (code, message) = match (new, issued_kind) {
+            (BorrowKind::Shared, BorrowKind::Mut { kind: ClosureCapture })
+            | (BorrowKind::Mut { .. }, BorrowKind::Mut { kind: ClosureCapture })
+                if !matches!(new, BorrowKind::Mut { kind: ClosureCapture }) =>
+            {
+                (
+                    "E0501",
+                    format!(
+                        "cannot borrow {what} as {} because previous closure requires unique access",
+                        mutability(new)
+                    ),
+                )
+            }
+            (
+                BorrowKind::Mut { kind: ClosureCapture },
+                BorrowKind::Mut { kind: ClosureCapture },
+            ) => {
+                ("E0524", format!("two closures require unique access to {what} at the same time"))
+            }
+            (BorrowKind::Mut { kind: ClosureCapture }, _) => (
+                "E0500",
+                format!("closure requires unique access to {what} but it is already borrowed"),
+            ),
+            (BorrowKind::Mut { .. }, BorrowKind::Mut { .. }) => {
+                ("E0499", format!("cannot borrow {what} as mutable more than once at a time"))
+            }
+            _ => (
+                "E0502",
+                format!(
+                    "cannot borrow {what} as {} because it is also borrowed as {}",
+                    mutability(new),
+                    mutability(issued_kind)
+                ),
+            ),
+        };
+        let span = match self.capture_temps.get(&self.assigned_local) {
+            Some(&closure) => closure,
+            None => span,
+        };
+        self.report(code, span, message);
+    }
+
+    /// rustc's `report_borrowed_value_does_not_live_long_enough`.
+    fn report_does_not_live_long_enough(&mut self, id: usize) {
+        let loan = &self.loans.loans[id];
+        if !self.dead_reported.insert((loan.local, loan.span)) {
+            return;
+        }
+        let projection = loan.projection.clone();
+        let place = PlaceRef { local: loan.local, projection: &projection };
+        let capture = self.capture_temps.get(&loan.assigned).copied();
+        // A loan whose region outlives a universal one must be valid for it, and the error
+        // says why: it is returned, or it goes to where a closure escapes to.
+        let universal = self
+            .values
+            .universals_of(loan.region)
+            .find(|&it| self.regions.universals[it].1 != UniversalKind::FnBody);
+        if let Some(universal) = universal {
+            let target = self.regions.universals[universal].0;
+            let path =
+                regions::constraint_path(self.regions, self.region_count, loan.region, target);
+            if let Some(blamed) = regions::blame(&path) {
+                match (capture, blamed.category) {
+                    (Some(closure), Category::Return | Category::CallArgument) => {
+                        let what = self.quoted(place, "value");
+                        self.report(
+                            "E0373",
+                            closure,
+                            format!("closure may outlive the current function, but it borrows {what}, which is owned by the current function"),
+                        );
+                        return;
+                    }
+                    (None, Category::Return) => {
+                        let span =
+                            if blamed.span == MirSpan::Unknown { loan.span } else { blamed.span };
+                        let message = match self.describe(place) {
+                            Some(_) if place.projection.is_empty() => {
+                                "cannot return reference to local variable".to_owned()
+                            }
+                            _ => "returns a value referencing data owned by the current function"
+                                .to_owned(),
+                        };
+                        self.report("E0515", span, message);
+                        return;
+                    }
+                    _ => (),
+                }
+            }
+        }
+        match self.describe(place) {
+            Some(name) => {
+                self.report("E0597", loan.span, format!("`{name}` does not live long enough"))
+            }
+            None => {
+                self.report("E0716", loan.span, "temporary value dropped while borrowed".to_owned())
+            }
+        }
+    }
+
+    /// The universal regions made to outlive what the signature does not say they outlive,
+    /// and the type parameters made to outlive what they are not known to.
+    fn report_region_errors(&mut self) {
+        if !self.regions.check_universals {
+            return;
+        }
+        let universals = &self.regions.universals;
+        for (longer, &(longer_rv, kind)) in universals.iter().enumerate() {
+            if matches!(kind, UniversalKind::Static | UniversalKind::FnBody) {
+                continue;
+            }
+            let shorter =
+                self.values.universals_of(longer_rv).find(|&it| !self.regions.knows(longer, it));
+            let Some(shorter) = shorter else { continue };
+            let (shorter_rv, shorter_kind) = universals[shorter];
+            let path =
+                regions::constraint_path(self.regions, self.region_count, longer_rv, shorter_rv);
+            let Some(blamed) = regions::blame(&path) else { continue };
+            let named_anon = |a: UniversalKind, b: UniversalKind| {
+                a == UniversalKind::Named && b == UniversalKind::AnonParam
+            };
+            let (code, message) = if !self.regions.is_impl_item
+                && (named_anon(kind, shorter_kind) || named_anon(shorter_kind, kind))
+            {
+                ("E0621", "explicit lifetime required in the type of a parameter".to_owned())
+            } else if blamed.category == Category::CallArgument
+                && shorter_kind == UniversalKind::Static
+            {
+                ("E0521", "borrowed data escapes outside of function".to_owned())
+            } else {
+                ("", "lifetime may not live long enough".to_owned())
+            };
+            self.report(code, blamed.span, message);
+        }
+        let mut reported = FxHashSet::default();
+        for test in &self.regions.type_tests {
+            for universal in self.values.universals_of(test.lower) {
+                let kind = universals[universal].1;
+                if kind == UniversalKind::FnBody
+                    || self.regions.type_outlives_known(test.ty, universal)
+                {
+                    continue;
+                }
+                if reported.insert((test.ty, test.span)) {
+                    let code = match kind {
+                        UniversalKind::Static => "E0310",
+                        UniversalKind::Named => "E0309",
+                        _ => "E0311",
+                    };
+                    self.errors.push(Some(BorrowckDiagnostic {
+                        code,
+                        span: test.span,
+                        message: "the parameter type may not live long enough".to_owned(),
+                    }));
+                }
+                break;
+            }
         }
     }
 
@@ -449,18 +841,22 @@ impl<'a, 'db> Checker<'a, '_, 'db> {
         allowed: Allowed,
     ) -> bool {
         let (error, root) = match access {
-            Access::MutableBorrow { closure_capture } => {
+            Access::MutableBorrow { closure_capture, two_phase } => {
                 let allowed = if closure_capture { Allowed::Yes } else { allowed };
                 match self.is_mutable(place, allowed) {
                     Ok(()) => return false,
-                    Err(root) => (Access::MutableBorrow { closure_capture }, root),
+                    Err(root) => (Access::MutableBorrow { closure_capture, two_phase }, root),
                 }
             }
             Access::Mutate => match self.is_mutable(place, allowed) {
                 Ok(()) => return false,
                 Err(root) => (Access::Mutate, root),
             },
-            Access::Read | Access::Move | Access::StorageDeadOrDrop => return false,
+            Access::Read
+            | Access::Borrow(_)
+            | Access::Move
+            | Access::StorageDeadOrDrop
+            | Access::Activation(_) => return false,
         };
         // Only a variable that has been initialized can be said to be mutated.
         if !self.ever.contains(place.local.into_raw().into_u32() as usize)
