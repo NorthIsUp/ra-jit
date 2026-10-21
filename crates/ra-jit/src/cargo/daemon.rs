@@ -494,7 +494,8 @@ impl Worker {
                         let start = Instant::now();
                         let asked = self.ask(checkout, plan);
                         let level = Some(crate::trace::ASKED);
-                        let span = crate::trace::span("daemon↔worker", level, start, Instant::now());
+                        let span =
+                            crate::trace::span("daemon↔worker", level, start, Instant::now());
                         lock(&spans).push(span);
                         asked
                     })
@@ -504,7 +505,9 @@ impl Worker {
             asking.into_iter().map(|it| it.join().unwrap_or_else(|_| panicked())).collect()
         });
         match asked.into_iter().collect::<anyhow::Result<Vec<_>>>() {
-            Ok(programs) => Reply::Synced { programs, spans: spans.into_inner().unwrap_or_default() },
+            Ok(programs) => {
+                Reply::Synced { programs, spans: spans.into_inner().unwrap_or_default() }
+            }
             // The worker is gone or stuck, which says nothing of the checkout: the next
             // build that has nothing to compile has it loaded again.
             Err(why) => {

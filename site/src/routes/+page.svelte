@@ -22,9 +22,7 @@ loop {
 
 	<Copy text="nix run github:indexable-inc/ra-jit" />
 
-	<video src="/demo.mp4" poster="/demo.webp" autoplay loop muted playsinline controls>
-		<img src="/demo.webp" alt="Editing the running Game of Life: rule, colours and speed change live" />
-	</video>
+	<img src="/demo.avif" width="2560" height="1440" alt="Editing the running Game of Life: rule, colours and speed change live" />
 
 	<h2>What you get</h2>
 	<ul>
@@ -70,9 +68,15 @@ loop {
 
 	<h2>Credits</h2>
 	<p class="dim">
-		ra-jit includes code from <a href="https://github.com/DioxusLabs/rustd">rustd</a> (DioxusLabs),
-		thanks to its authors. Built on
-		<a href="https://github.com/rust-lang/rust-analyzer">rust-analyzer</a>. Not endorsed by either project.
+		ra-jit stands on the shoulders of giants. Thank you to the people who built
+		<a href="https://github.com/rust-lang/rust-analyzer">rust-analyzer</a>,
+		<a href="https://cranelift.dev">Cranelift</a>,
+		<a href="https://llvm.org">LLVM</a> and <a href="https://github.com/TheDan64/inkwell">inkwell</a>,
+		<a href="https://github.com/salsa-rs/salsa">salsa</a>,
+		<a href="https://github.com/gimli-rs/object">object</a>,
+		<a href="https://github.com/rust-lang/rust">Rust</a>, and
+		<a href="https://github.com/DioxusLabs/rustd">rustd</a> (DioxusLabs), whose code ra-jit includes.
+		None of these projects endorses ra-jit.
 		Made at <a href="https://ix.dev">ix</a> for den's native app. MIT or Apache-2.0.
 	</p>
 </main>
@@ -81,5 +85,5 @@ loop {
 	main { max-width: 720px; margin: 0 auto; padding: 64px 20px 96px; }
 	h1 { margin: 0 0 0.2em; font-size: 44px; font-weight: 700; letter-spacing: -0.03em; color: var(--ink-1); }
 	.lede { font-size: 20px; line-height: 1.45; color: var(--ink-1); }
-	video, img { display: block; width: 100%; height: auto; margin: 0 0 1.5em; border-radius: 12px; box-shadow: inset 0 0 0 1px var(--line); background: var(--code-bg); }
+	img { display: block; width: 100%; height: auto; margin: 0 0 1.5em; border-radius: 12px; box-shadow: inset 0 0 0 1px var(--line); background: var(--code-bg); }
 </style>

@@ -16,13 +16,7 @@ CRATES = ["devdep", "blanket", "edition2015", "fragment", "procmacro"]
 # What is reduced and not fixed: these are expected to differ, and are told apart when they do.
 OPEN = {"assert_message", "raw_write_then_match", "future_unwind_flags", "fragment_edition_through_macro", "assert_long_expression"}
 # Frames that are larger than rustc's, where a program counts on rustc's: the answer is right and the room is not.
-OPEN |= {"frame_of_array", "frame_of_tables"}
-# On macOS std's backtrace finds a frame's file and line through the debug map: the N_OSO stabs ld64 writes
-# for each object with a __DWARF,__debug_info section, then that object's DWARF. Cranelift's objects carry
-# it; LLVM's line marks are off for Mach-O, so ld64 writes no stabs for its objects and the frame has a
-# name and no line.
-if sys.platform == "darwin" and os.environ.get("RA_JIT_BACKEND") == "llvm":
-    OPEN |= {"backtrace_line"}
+OPEN |= {"frame_of_array"}
 # What is reduced and not fixed either, where ra-jit says so: a function of these is left to rustc.
 LEFT = {"caller_in_constant", "empty_array_by_impl", "macro_reads_its_spelling", "fragment_ends_statement"}
 # Crates reduced and not fixed, where ra-jit says so: a function of these is left to rustc.
@@ -42,13 +36,14 @@ def main():
     for row in skipped:
         print(f"  skipped {row[1]}: {row[2][:300]}")
     names = sys.argv[1:] or subprocess.check_output([*RUNNER, fx.reference], text=True).split()
-    wrong = fixed = 0
+    wrong, fixed = 0, []
     for name in names:
         fx.run_args = [name]
         want, got = fx.behaviour(fx.reference), fx.behaviour(fx.binary)
         same = want == got
         wrong += not same and name not in OPEN
-        fixed += same and name in OPEN
+        if same and name in OPEN:
+            fixed.append(name)
         state = "left     " if name in left else "same     " if same else "open     " if name in OPEN else "DIFFERENT"
         print(f"{state} {name}", flush=True)
         if not same:
@@ -76,16 +71,16 @@ def main():
             if run.returncode == 0 and "skipped" in run.stdout:
                 left.add(crate)
             elif run.returncode == 0:
-                fixed += 1
+                fixed.append(crate)
             else:
                 wrong += 1
                 print("    " + "\n    ".join(run.stdout.strip().splitlines()[-8:]))
             print(f"{'left     ' if crate in left else 'same     ' if run.returncode == 0 else 'DIFFERENT'} {crate} (its tests)", flush=True)
     compiled = (LEFT & set(names)) - left
-    still = len(OPEN & set(names)) - fixed + len(left & set(names))
+    still = len(OPEN & set(names)) - len(fixed) + len(left & set(names))
     print(f"{len(names) - wrong - still} of {len(names) - still} right, {still} open, {len(skipped)} functions skipped")
     if fixed:
-        print(f"{fixed} of the open cases are the same now: take them out of OPEN or LEFT_CRATES")
+        print(f"the same now, take them out of OPEN or LEFT_CRATES: {' '.join(fixed)}")
     if compiled:
         print(f"compiled now, take them out of LEFT: {' '.join(sorted(compiled))}")
     sys.exit(1 if wrong or skipped or fixed or compiled else 0)

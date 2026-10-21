@@ -14,7 +14,7 @@ nix run github:indexable-inc/ra-jit
 
 That opens a Game of Life window you can edit while it runs (live on macOS Apple silicon).
 
-![Editing the running Game of Life: rule, colours and speed change live](docs/demo.webp)
+![Editing the running Game of Life: rule, colours and speed change live](docs/demo.avif)
 
 <p align="center">
   <a href="https://ra-jit.ix.dev/updates?src=readme">
@@ -114,8 +114,16 @@ More: [how it works](docs/architecture.md), [full results](docs/results.md),
 
 ## Credits
 
-ra-jit includes code from [rustd](https://github.com/DioxusLabs/rustd) (DioxusLabs), thanks to
-its authors. Built on
-[rust-analyzer](https://github.com/rust-lang/rust-analyzer). Not endorsed by either project.
+ra-jit stands on the shoulders of giants. Thank you to the people who built:
+
+- [rust-analyzer](https://github.com/rust-lang/rust-analyzer), whose analysis and MIR ra-jit compiles from
+- [Cranelift](https://cranelift.dev) (Bytecode Alliance), the fast code generator
+- [LLVM](https://llvm.org) and [inkwell](https://github.com/TheDan64/inkwell), for the optimised tiers
+- [salsa](https://github.com/salsa-rs/salsa), the incremental engine underneath
+- [object](https://github.com/gimli-rs/object), for reading and writing executables
+- [Rust](https://github.com/rust-lang/rust) and its compiler crates
+- [rustd](https://github.com/DioxusLabs/rustd) (DioxusLabs), whose code ra-jit includes
+
+None of these projects endorses ra-jit.
 
 Made at [ix](https://ix.dev) for den's native app. MIT or Apache-2.0.

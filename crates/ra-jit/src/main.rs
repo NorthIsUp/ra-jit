@@ -5,6 +5,7 @@
 
 mod cargo;
 mod content;
+mod dep_info;
 mod deps;
 mod doctest;
 mod inputs;
@@ -3025,17 +3026,41 @@ fn link(
             }
         }
     }
-    let linked = shell(cmd).output()?;
-    let status = linked.status;
-    let said = String::from_utf8_lossy(&linked.stderr);
-    eprint!("{}{said}", String::from_utf8_lossy(&linked.stdout));
-    eprintln!("link: {:.1?} ({status}{declined})", start.elapsed());
-    anyhow::ensure!(status.success(), "the link failed ({status}): {}", last_lines(&said, 6));
+    run_link(cmd, start, &declined)?;
+    if let Some(binary) = splice
+        && let Some(pad) = headerpad_short(binary)
+    {
+        cargo::plan::write_headerpad(binary, pad)?;
+        let again = format!("; again with -Wl,-headerpad,{pad:#x}, for the splices to fit");
+        run_link(cmd, Instant::now(), &again)?;
+    }
     if let (Some(binary), Some(patch)) = (splice, patch) {
         let linked = Executable::Linked(Linked::read(binary.to_owned(), patch, object));
         lock(&LINKED).insert(binary.to_owned(), linked);
     }
     Ok(())
+}
+
+/// Runs the link command `cmd` and says how long it took since `start` and how it ended, with
+/// `note` after.
+fn run_link(cmd: &str, start: Instant, note: &str) -> anyhow::Result<()> {
+    let linked = shell(cmd).output()?;
+    let status = linked.status;
+    let said = String::from_utf8_lossy(&linked.stderr);
+    eprint!("{}{said}", String::from_utf8_lossy(&linked.stdout));
+    eprintln!("link: {:.1?} ({status}{note})", start.elapsed());
+    anyhow::ensure!(status.success(), "the link failed ({status}): {}", last_lines(&said, 6));
+    Ok(())
+}
+
+/// The room after the load commands to link the executable at `binary` again with, when the
+/// link left too little for an edit to be spliced into it: a program whose unwind table is
+/// larger than the room the link was told to leave. Only a link that reads the room from
+/// [`cargo::plan::headerpad_file`] is told more; one given otherwise keeps what its line says.
+fn headerpad_short(binary: &Path) -> Option<u64> {
+    let kept = cargo::plan::headerpad_of(binary)?;
+    let pad = splice::headerpad_short(binary).ok()??;
+    (pad > kept).then_some(pad)
 }
 
 /// Whether the executable at `binary` runs, in which case Windows lets nothing write it, and

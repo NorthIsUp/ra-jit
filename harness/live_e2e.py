@@ -22,6 +22,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
+os.environ.setdefault("RUSTUP_TOOLCHAIN", (HERE / "toolchain").read_text().strip())
 BUILD_TIMEOUT = 900
 APPLY_TIMEOUT = 60
 # How many edits the running program takes one after another.
@@ -57,7 +58,13 @@ def edit(source: Path, old: int, new: int) -> None:
     source.write_text(text.replace(needle, f"fn answer() -> u64 {{\n    {new}\n}}"))
 
 
-async def wait_for(step: str, lines: asyncio.Queue[str], wanted: str, log: list[str]) -> str:
+async def wait_for(step: str, lines: asyncio.Queue[str], wanted: str, log: list[str], since: int | None = None) -> str:
+    """The first line with `wanted`. With `since`, a line already read into `log` from that
+    index on counts too: the program may print the new answer before it says the patch applied."""
+    if since is not None:
+        for line in log[since:]:
+            if wanted in line:
+                return line
     try:
         async with asyncio.timeout(APPLY_TIMEOUT):
             while True:
@@ -113,13 +120,14 @@ async def main() -> None:
         # program applies, none may link the program again.
         for new in range(3, 3 + LIVE_EDITS):
             edit(source, new - 1, new)
+            since = len(log)
             out = await build(f"edit {new - 2} while running", project, env)
             print("build:", out.strip().splitlines()[-1] if out.strip() else "")
             applied = await wait_for(f"patch {new - 2} applied", lines, "outcome:", log)
             print(applied)
             if "applied" not in applied:
                 raise StepError(f"patch {new - 2} applied: the program did not take the patch: {applied}")
-            await wait_for(f"new code of edit {new - 2} runs", lines, f"answer {new}", log)
+            await wait_for(f"new code of edit {new - 2} runs", lines, f"answer {new}", log, since)
         chain = " -> ".join(str(it) for it in range(1, 3 + LIVE_EDITS))
         print(f"live edits: answer {chain} in a running program, each applied by ra-jit-live")
         pumper.cancel()

@@ -11,6 +11,8 @@ use std::{
 use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
 
+use crate::dep_info::DepInfo;
+
 /// The directory of the records, in the directory cargo builds a profile in.
 const RECORDS: &str = ".ra-jit-units";
 
@@ -207,39 +209,13 @@ pub(crate) struct Inputs {
 }
 
 impl Inputs {
-    /// Reads a dep-info file: rules of make, `target: file file`, where a space in a name has
-    /// a backslash before it, and comments `# env-dep:NAME=value` for the variables. There is
-    /// no crate for the format: cargo has its own reader, which is not a library.
+    /// Reads a dep-info file, whose relative paths are from `cwd`.
     fn parse(text: &str, cwd: &Path) -> Inputs {
-        let mut inputs = Inputs::default();
-        for line in text.lines() {
-            if let Some(variable) = line.strip_prefix("# env-dep:") {
-                let (name, value) = match variable.split_once('=') {
-                    Some((name, value)) => (name, Some(value.to_owned())),
-                    None => (variable, None),
-                };
-                inputs.env.push((name.to_owned(), value));
-                continue;
-            }
-            let Some((_, files)) = line.split_once(": ") else { continue };
-            if line.starts_with('#') {
-                continue;
-            }
-            let mut file = String::new();
-            for part in files.split(' ') {
-                file.push_str(part);
-                if let Some(escaped) = file.strip_suffix('\\') {
-                    file = format!("{escaped} ");
-                    continue;
-                }
-                if !file.is_empty() {
-                    inputs.files.push(cwd.join(std::mem::take(&mut file)));
-                }
-            }
-        }
-        inputs.files.sort();
-        inputs.files.dedup();
-        inputs
+        let DepInfo { files, env } = DepInfo::parse(text);
+        let mut files: Vec<PathBuf> = files.into_iter().map(|it| cwd.join(it)).collect();
+        files.sort();
+        files.dedup();
+        Inputs { files, env }
     }
 }
 

@@ -13,9 +13,15 @@ use crate::weaken;
 /// What an ELF linker is told so that the first definition of a name is the one that stays.
 const FIRST_DEFINITION_STAYS: &str = "-Wl,--allow-multiple-definition";
 
-/// What Apple's linker is told so that a splice has room in the header for its two segments
-/// and for the unwind table, which makes way for the patch's frames in `__TEXT`.
-const ROOM_FOR_SEGMENTS: &str = "-Wl,-headerpad,0x100000";
+/// The room Apple's linker is told to leave after the load commands when nothing says more,
+/// so that a splice has room there for its two segments and for the unwind table, which
+/// makes way for the patch's frames in `__TEXT`: that of a program of some hundred thousand
+/// functions. A program that needs more is linked again with what it needs, which is kept in
+/// [`headerpad_file`].
+const HEADERPAD: u64 = 0x100000;
+
+/// How the room is asked for.
+const HEADERPAD_FLAG: &str = "-Wl,-headerpad,";
 
 /// The same for `link.exe`, which warns of every name it does so for unless told not to.
 const FIRST_DEFINITION_STAYS_MSVC: [&str; 2] = ["/FORCE:MULTIPLE", "/IGNORE:4006"];
@@ -359,11 +365,8 @@ impl LinkLine {
         binary: &Path,
         response: &Path,
     ) -> anyhow::Result<String> {
-        let flag = match self.flavor {
-            Flavor::Apple => ROOM_FOR_SEGMENTS,
-            _ => FIRST_DEFINITION_STAYS,
-        };
-        self.args.splice(first..first, ours.into_iter().chain([flag.to_owned()]));
+        let flag = (self.flavor != Flavor::Apple).then(|| FIRST_DEFINITION_STAYS.to_owned());
+        self.args.splice(first..first, ours.into_iter().chain(flag));
         let output =
             self.args.iter().position(|it| it == "-o").context("the link names no output")?;
         *self.args.get_mut(output + 1).context("the link names no output")? =
@@ -381,6 +384,17 @@ impl LinkLine {
         }
         command.push(shlex::try_quote(&self.linker)?.into_owned());
         command.push(shlex::try_quote(&format!("@{}", response.display()))?.into_owned());
+        if self.flavor == Flavor::Apple {
+            // Last, so that it is what the linker takes: it is at least what the line asks.
+            let asked = self.args.iter().filter_map(|it| headerpad_in(it)).last();
+            let kept = headerpad_of(binary);
+            let pad = asked.unwrap_or(HEADERPAD).max(kept.unwrap_or(0));
+            if kept != Some(pad) {
+                write_headerpad(binary, pad)?;
+            }
+            let file = headerpad_file(binary);
+            command.push(shlex::try_quote(&format!("@{}", file.display()))?.into_owned());
+        }
         Ok(command.join(" "))
     }
 
@@ -455,6 +469,31 @@ fn is_rustc_file(arg: &str) -> bool {
 /// which comes before the standard library that calls it.
 pub(crate) fn is_symbols(arg: &str) -> bool {
     arg.ends_with("symbols.o")
+}
+
+/// The file the link of the Apple executable at `binary` reads the room after its load
+/// commands from: a response file of the one argument that asks for it. The daemon makes it
+/// more when a link leaves a splice too little, and the links after start from it.
+pub(crate) fn headerpad_file(binary: &Path) -> PathBuf {
+    let mut file = binary.as_os_str().to_owned();
+    file.push(".headerpad");
+    PathBuf::from(file)
+}
+
+/// The room the link of the executable at `binary` asks for, when it reads it from a file.
+pub(crate) fn headerpad_of(binary: &Path) -> Option<u64> {
+    headerpad_in(std::fs::read_to_string(headerpad_file(binary)).ok()?.trim())
+}
+
+pub(crate) fn write_headerpad(binary: &Path, pad: u64) -> std::io::Result<()> {
+    std::fs::write(headerpad_file(binary), format!("{HEADERPAD_FLAG}{pad:#x}\n"))
+}
+
+/// The room an argument of the driver asks Apple's linker for, which reads it in hexadecimal.
+fn headerpad_in(arg: &str) -> Option<u64> {
+    let digits = arg.strip_prefix(HEADERPAD_FLAG)?;
+    let digits = digits.strip_prefix("0x").or_else(|| digits.strip_prefix("0X")).unwrap_or(digits);
+    u64::from_str_radix(digits, 16).ok()
 }
 
 #[cfg(test)]
@@ -542,9 +581,8 @@ mod tests {
         );
         let mut link = LinkLine::parse(&line).unwrap();
         link.give_way(std::slice::from_ref(&copy)).unwrap();
-        let response = dir.join("link.args");
-        let command =
-            link.command(&[Path::new("/p/ra-jit.o")], Path::new("/p/bin"), &response).unwrap();
+        let (response, binary) = (dir.join("link.args"), dir.join("bin"));
+        let command = link.command(&[Path::new("/p/ra-jit.o")], &binary, &response).unwrap();
         assert_eq!(
             shlex::split(&command).unwrap(),
             [
@@ -553,9 +591,12 @@ mod tests {
                 "IPHONEOS_DEPLOYMENT_TARGET",
                 "LC_ALL=C",
                 "cc",
-                &format!("@{}", response.display())
+                &format!("@{}", response.display()),
+                &format!("@{}", headerpad_file(&binary).display()),
             ]
         );
+        let pad = std::fs::read_to_string(headerpad_file(&binary)).unwrap();
+        assert_eq!(pad, "-Wl,-headerpad,0x100000\n");
         let weak = dir.join(weaken::DIR).join("a.1.rcgu.o");
         assert!(weak.exists());
         let args = std::fs::read_to_string(&response).unwrap();
@@ -564,15 +605,40 @@ mod tests {
             args,
             [
                 "/p/ra-jit.o",
-                ROOM_FOR_SEGMENTS,
                 &weak.display().to_string(),
                 "/t/libstd-3.rlib",
                 "-arch",
                 "arm64",
                 "-o",
-                "/p/bin"
+                &binary.display().to_string(),
             ]
         );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The room after the load commands is what the line asks for, or a default, and never
+    /// less than a link of the executable was found to need.
+    #[test]
+    fn headerpad_of_an_apple_link() {
+        let dir = std::env::temp_dir().join(format!("ra-jit-plan-pad-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (response, binary) = (dir.join("link.args"), dir.join("bin"));
+        let line =
+            |pad: &str| format!(r#""cc" "/t/a.1.rcgu.o" "-arch" "arm64" "-o" "/t/a-1" {pad}"#);
+        let pad = |line: &str| {
+            LinkLine::parse(line).unwrap().command(&[], &binary, &response).unwrap();
+            headerpad_of(&binary)
+        };
+        assert_eq!(pad(&line("")), Some(HEADERPAD));
+        std::fs::remove_file(headerpad_file(&binary)).unwrap();
+        assert_eq!(pad(&line(r#""-Wl,-headerpad,0x400000""#)), Some(0x400000));
+        std::fs::remove_file(headerpad_file(&binary)).unwrap();
+        // Hexadecimal, as ld64 reads it, with or without `0x`; the last one is the one.
+        assert_eq!(pad(&line(r#""-Wl,-headerpad,10" "-Wl,-headerpad,200""#)), Some(0x200));
+        // What was found to be needed stays, over a line that asks for less.
+        write_headerpad(&binary, 0x8000).unwrap();
+        assert_eq!(pad(&line(r#""-Wl,-headerpad,0x0""#)), Some(0x8000));
+        assert_eq!(pad(&line("")), Some(HEADERPAD));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

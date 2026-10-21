@@ -10,6 +10,8 @@ use anyhow::Context;
 use object::{Object, ObjectSymbol, SymbolKind, read::archive::ArchiveFile};
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::dep_info::DepInfo;
+
 #[derive(Default)]
 pub(crate) struct SymbolTable {
     /// More than one symbol for the items that print as one path: of two `const _` blocks of
@@ -525,10 +527,9 @@ fn crate_sources(rlib: &Path, root: &Path) -> Option<(String, Vec<PathBuf>)> {
     // A crate's name has no `-`. cargo gives the program of an MSVC or Apple target no hash:
     // the file of its symbols is named after it.
     let name = stem.rsplit_once('-').map_or(stem, |(name, _)| name);
-    let dep_info = std::fs::read_to_string(rlib.with_file_name(format!("{stem}.d"))).ok()?;
-    let (_, sources) = dep_info.lines().next()?.split_once(": ")?;
-    // FIXME: a path with a space in it is escaped.
-    let sources: Vec<PathBuf> = sources.split(' ').map(|it| root.join(it)).collect();
+    let text = std::fs::read_to_string(rlib.with_file_name(format!("{stem}.d"))).ok()?;
+    let sources: Vec<PathBuf> =
+        DepInfo::parse(&text).files.into_iter().map(|it| root.join(it)).collect();
     (!sources.is_empty()).then(|| (name.to_owned(), sources))
 }
 
@@ -832,7 +833,23 @@ mod tests {
 
     use rustc_hash::FxHashMap;
 
-    use super::{SymbolTable, V0, function_name};
+    use super::{SymbolTable, V0, crate_sources, function_name};
+
+    #[test]
+    fn crate_sources_of_a_path_with_a_space() {
+        let dir = std::env::temp_dir().join(format!("ra-jit symbols {}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rlib = dir.join("libapp-1.rlib");
+        // As the wrapper writes it beside its copy of the library, and as rustc writes it.
+        let root = dir.join("my app/src/lib.rs");
+        let escaped = crate::dep_info::escaped(&root.display().to_string());
+        std::fs::write(dir.join("app-1.d"), format!("app-1: {escaped} my\\ app/src/a.rs\n"))
+            .unwrap();
+        let (name, sources) = crate_sources(&rlib, std::path::Path::new("/ws")).unwrap();
+        assert_eq!(name, "app");
+        assert_eq!(sources, [root, PathBuf::from("/ws/my app/src/a.rs")]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     fn placed(crates: &[(&str, &[(u64, usize)])]) -> Vec<(String, u64)> {
         let mut table = SymbolTable::default();

@@ -75,7 +75,12 @@ fn tid() -> u64 {
 }
 
 /// The span from `start` to `end` on this thread.
-pub(crate) fn span(name: impl Into<String>, level: Option<u8>, start: Instant, end: Instant) -> Span {
+pub(crate) fn span(
+    name: impl Into<String>,
+    level: Option<u8>,
+    start: Instant,
+    end: Instant,
+) -> Span {
     let thread = std::thread::current().name().unwrap_or_default().to_owned();
     Span {
         name: name.into(),
@@ -241,7 +246,8 @@ impl tracing::Subscriber for Recorder {
         if site == 0 || end.saturating_duration_since(start).as_micros() < SHORTEST_US as u128 {
             return true;
         }
-        let Some(meta) = CALLSITES.lock().unwrap_or_else(|it| it.into_inner()).get(site - 1).copied()
+        let Some(meta) =
+            CALLSITES.lock().unwrap_or_else(|it| it.into_inner()).get(site - 1).copied()
         else {
             return true;
         };
@@ -306,7 +312,10 @@ pub(crate) fn finish() {
     if let Some(trace) = trace {
         let written = write_trace(Path::new(&trace), &spans, start, end);
         if let Err(why) = written {
-            eprintln!("ra-jit: the trace is not written to {}: {why:#}", Path::new(&trace).display());
+            eprintln!(
+                "ra-jit: the trace is not written to {}: {why:#}",
+                Path::new(&trace).display()
+            );
         }
     }
 }
@@ -368,7 +377,8 @@ fn chrome(spans: &[Span], start: u64, end: u64) -> String {
                 "args": {"name": format!("ra-jit {process} ({})", it.pid)}}));
         }
         if named.insert((it.pid, it.tid)) {
-            let thread = if it.thread.is_empty() { format!("thread {}", it.tid) } else { it.thread.clone() };
+            let thread =
+                if it.thread.is_empty() { format!("thread {}", it.tid) } else { it.thread.clone() };
             events.push(json!({"ph": "M", "name": "thread_name", "pid": it.pid, "tid": it.tid,
                 "args": {"name": thread}}));
         }
