@@ -118,7 +118,25 @@ Dioxus's `dx serve --hotpatch` (subsecond, which patches the running program on 
 again (ra-jit patches a running program on macOS only). Each edit is timed from writing the file
 to the program running the new code. It is a small program on purpose: subsecond needs the
 program to call through `subsecond::call` and to keep running, which a command-line tool like
-ripgrep does not.
+ripgrep does not. The restart flows stop the program before building, as `cargo watch` does.
+
+On a MacBook Pro (M5 Max, 18 cores, on AC, other work running: a load of 7 to 28), 30 edits each,
+milliseconds from the save to the new code running
+([raw JSON](benchmarks/hotpatch/macbook.json)):
+
+| Tool | median | p90 | min | max | of which the build |
+|---|---:|---:|---:|---:|---:|
+| subsecond (`dx serve --hotpatch`), patched, 0 restarts | 346 | 417 | 320 | 421 | |
+| `cargo ra-jit build`, then a restart (all 30 built by the daemon) | 469 | 527 | 410 | 841 | 299 |
+| `cargo build`, then a restart | 520 | 593 | 486 | 651 | 365 |
+
+On macOS ra-jit also patches a running program without a restart: a program that links
+`ra-jit-live` (`harness/live`, as small as this one) takes an edit in a median of 12.5 ms (p90
+28.0, p99 48.9) when it goes through `cargo ra-jit build`, and 4.0 ms (p90 11.6, p99 13.8) when an
+editor sends it over the daemon's socket (`harness/live_latency.py --program probe cargo socket`,
+30 edits each, same MacBook, [raw JSON](benchmarks/live/macbook-probe-cargo.json)). That is the
+flow to set against subsecond's; the restart flow above is what ra-jit does where it cannot
+patch, today Linux.
 
 ## The machine
 
