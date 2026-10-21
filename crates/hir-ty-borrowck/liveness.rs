@@ -10,6 +10,7 @@ use rustc_type_ir::{
         AdtDef as _, GenericArgs as _, IntoKind, ParamEnv as _, Region as _, SliceLike as _,
     },
 };
+use smallvec::SmallVec;
 
 use crate::{
     mir::{
@@ -164,13 +165,24 @@ fn live_points(
         let end = cfg.block_end(body, block);
         for point in (start..=end).rev() {
             let it = &effects[point];
+            // A local is live where it is assigned if it is live after, as rustc's
+            // `compute_use_live_points_for` has it.
+            let mut assigned: SmallVec<[usize; 2]> = SmallVec::new();
             for local in &it.defs {
-                live.remove(local.into_raw().into_u32() as usize);
+                let local = local.into_raw().into_u32() as usize;
+                if live.contains(local) {
+                    assigned.push(local);
+                }
+                live.remove(local);
             }
             for local in uses(it) {
                 live.insert(local.into_raw().into_u32() as usize);
             }
+            assigned.retain(|it| live.insert(*it));
             visit(point, &live);
+            for local in assigned {
+                live.remove(local);
+            }
         }
     }
 }

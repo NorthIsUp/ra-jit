@@ -264,6 +264,31 @@ impl Loans {
         }
     }
 
+    /// Polonius alpha's scopes: a loan goes out of scope at the first point after it is made
+    /// that it is not live at, as rustc's `PoloniusOutOfScopePrecomputer`.
+    pub(super) fn compute_polonius_scopes(
+        &mut self,
+        body: &MirBody<'_>,
+        cfg: &Cfg,
+        live: &[BitSet],
+    ) {
+        for (id, loan) in self.loans.iter().enumerate() {
+            let issued = cfg.point(loan.location);
+            let mut seen = BitSet::new(cfg.points);
+            let mut work = successors_of(body, cfg, loan.location);
+            while let Some(point) = work.pop() {
+                if !seen.insert(point) {
+                    continue;
+                }
+                if point != issued && !live[id].contains(point) {
+                    self.out_of_scope.entry(point).or_default().push(id);
+                    continue;
+                }
+                work.extend(successors_of(body, cfg, cfg.location(point)));
+            }
+        }
+    }
+
     /// The loans in scope at the start of each block.
     pub(super) fn entry_sets<'db>(
         &self,

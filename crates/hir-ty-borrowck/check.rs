@@ -16,12 +16,13 @@ use crate::{
 };
 
 use super::{
-    BorrowckDiagnostic, Ctx,
+    BorrowckDiagnostic, Ctx, Mode,
     bitset::BitSet,
     cfg::{Cfg, Dominators, Location, index},
     liveness,
     loans::{Activation, Bias, Depth, Loan, Loans, places_conflict},
     moves::{InitFlow, InitKind, Lookup, MoveData, Mpi, apply},
+    polonius,
     regions::{self, Category, RegionValues, Regions, UniversalKind},
 };
 
@@ -38,13 +39,20 @@ pub(super) fn check<'db>(
     let regions = regions::build(ctx, body, &cfg);
     let count = ctx.infcx.num_region_vars();
     let live = liveness::region_liveness(ctx, body, &cfg, &moves, &regions, count);
+    let live_loans_input = (ctx.mode == Mode::Polonius).then(|| live.clone());
     let values = regions::infer(&regions, count, cfg.points, live);
     let unique = |assigned: LocalId, local: LocalId, projection: &[PlaceElem]| {
         capture_temps.contains_key(&assigned)
             && is_immutable_root(ctx, PlaceRef { local, projection })
     };
     let mut loans = Loans::gather(ctx, body, &cfg, &regions, unique);
-    loans.compute_scopes(body, &cfg, &values);
+    match live_loans_input {
+        Some(liveness) => {
+            let live = polonius::live_loans(ctx, body, &cfg, &regions, count, &liveness, &loans);
+            loans.compute_polonius_scopes(body, &cfg, &live);
+        }
+        None => loans.compute_scopes(body, &cfg, &values),
+    }
     let borrows_entry = loans.entry_sets(ctx, body, &cfg);
     if std::env::var_os("RA_JIT_BORROWCK_DEBUG").is_some() {
         for (local, ty) in regions.local_tys.iter().enumerate() {
@@ -61,6 +69,12 @@ pub(super) fn check<'db>(
                 "loan {:?} {:?} at {:?} region {} points {points:?}",
                 loan.local, loan.projection, loan.location, loan.region
             );
+            for &(target, _) in &regions.universals {
+                let path = regions::constraint_path(&regions, count, loan.region, target);
+                if !path.is_empty() {
+                    eprintln!("  path to {target}: {path:?}");
+                }
+            }
         }
     }
     let mut checker = Checker {

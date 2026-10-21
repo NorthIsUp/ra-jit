@@ -12,6 +12,7 @@ mod liveness;
 mod loans;
 mod moves;
 mod names;
+mod polonius;
 mod regions;
 
 use std::sync::LazyLock;
