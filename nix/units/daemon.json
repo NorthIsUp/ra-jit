@@ -1,8 +1,8 @@
 {
  "dir": ".",
  "inputs": {
-  "Cargo.lock": "da85b81e0f4d01a9b3bb42d854ff7493c43d01382360e94299f8624748c46c11",
-  "Cargo.toml": "d95ba6c9af48d129e40090506045368f502ef14655c3e2ebfb785206cc5a7a91"
+  "Cargo.lock": "8e0b5139a24bee70611ddf674819ebeb78b572a06b6c982108c6d0aa1ad4e91e",
+  "Cargo.toml": "a80df009fb3822806890d63dbf03abd57e13dca92f9339e8db74663ef3b41597"
  },
  "packages": {
   "adler2@2.0.1": {
@@ -4727,6 +4727,40 @@
    "rust_version": "1.99",
    "source": {
     "dir": "crates/ra-jit-bench",
+    "kind": "path"
+   },
+   "version": "0.1.0"
+  },
+  "ra-jit-cache-macros@0.1.0": {
+   "authors": "Indexable, Inc.",
+   "description": "The #[cache] attribute of ra-jit-cache",
+   "homepage": "https://ra-jit.ix.dev",
+   "license": "MIT OR Apache-2.0",
+   "license_file": "",
+   "links": null,
+   "name": "ra-jit-cache-macros",
+   "readme": "",
+   "repository": "https://github.com/indexable-inc/ra-jit",
+   "rust_version": "",
+   "source": {
+    "dir": "crates/ra-jit-cache-macros",
+    "kind": "path"
+   },
+   "version": "0.1.0"
+  },
+  "ra-jit-cache@0.1.0": {
+   "authors": "Indexable, Inc.",
+   "description": "#[ra_jit::cache]: results of pure functions kept across runs, dropped when the code they reach changes",
+   "homepage": "https://ra-jit.ix.dev",
+   "license": "MIT OR Apache-2.0",
+   "license_file": "",
+   "links": null,
+   "name": "ra-jit-cache",
+   "readme": "README.md",
+   "repository": "https://github.com/indexable-inc/ra-jit",
+   "rust_version": "",
+   "source": {
+    "dir": "crates/ra-jit-cache",
     "kind": "path"
    },
    "version": "0.1.0"

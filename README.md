@@ -106,10 +106,15 @@ loop {
 }
 ```
 
+### Cached functions
+
+`#[ra_jit::cache]` on a pure function keeps its results across runs, until an edit changes
+the code it reaches ([docs/fn-cache.md](docs/fn-cache.md)).
+
 ## What to know
 
 - Live edits work on macOS Apple silicon only. Elsewhere you still get fast builds.
-- No borrow checker: keep running `cargo check`.
+- The borrow checker is partial and does not stop a build yet: keep running `cargo check`.
 - Rust 1.99.0 only.
 - Changing a struct the program is using asks for a restart.
 

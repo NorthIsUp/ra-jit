@@ -48,6 +48,7 @@ pub(crate) fn command(args: impl Iterator<Item = String>) -> anyhow::Result<()> 
             None => build(&asked)?,
         },
         Asked::Cargo(args) => plain_cargo(args)?,
+        Asked::Cache(args) => cache(args)?,
         Asked::Status => status()?,
         Asked::Stop => stop()?,
         Asked::Enable => switch::enable()?,
@@ -74,6 +75,7 @@ usage: cargo ra-jit <command> [cargo's flags]
   status             whether ra-jit is enabled, what the daemon has loaded, what fell back
   stop               ends the daemon; the next build starts one
   enable, disable    plain `cargo build|run|test|check` through ra-jit, and back
+  cache clear        forgets the results `#[ra_jit::cache]` functions kept
 
 Any other command is cargo's own. CARGO.md is the guide.";
 
@@ -98,6 +100,33 @@ fn settle(cargo: u32, typed: &[String]) -> anyhow::Result<()> {
     })();
     wrapper::settled(cargo);
     settled
+}
+
+/// `cargo ra-jit cache clear`: forgets the results `#[ra_jit::cache]` functions kept, which
+/// are under the target directory unless `RA_JIT_FN_CACHE_DIR` says where. Any other verb is
+/// one of `ra-jit cache`, on the disk store.
+fn cache(args: Vec<String>) -> anyhow::Result<i32> {
+    if args.first().map(String::as_str) != Some("clear") {
+        crate::remote::command(args.into_iter())?;
+        return Ok(0);
+    }
+    let dir = match std::env::var_os("RA_JIT_FN_CACHE_DIR") {
+        Some(dir) => std::path::PathBuf::from(dir),
+        None => {
+            let metadata = cargo_metadata::MetadataCommand::new()
+                .cargo_path(state::cargo_path())
+                .no_deps()
+                .exec()
+                .context("running `cargo metadata`")?;
+            metadata.target_directory.as_std_path().join("ra-jit").join("fn-cache")
+        }
+    };
+    match std::fs::remove_dir_all(&dir) {
+        Ok(()) => println!("cleared the kept results in {}", dir.display()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => println!("no results are kept"),
+        Err(e) => return Err(e).with_context(|| format!("clearing {}", dir.display())),
+    }
+    Ok(0)
 }
 
 /// Runs cargo with `args` and nothing of ra-jit's.

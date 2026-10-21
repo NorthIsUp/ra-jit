@@ -34,13 +34,14 @@ let
   # crates/ra-jit include_str!s harness/toolchain.
   pathSource = p:
     let d = p.source.dir; in
-    # hir-ty includes crates/hir-ty-codegen/mod.rs by a path that climbs to the repo root, so it
-    # gets a tree with both where they are in the repo.
+    # hir-ty includes crates/hir-ty-codegen/mod.rs and crates/hir-ty-borrowck/mod.rs by paths
+    # that climb to the repo root, so it gets a tree with all three where they are in the repo.
     if d == "vendor/rust-analyzer/crates/hir-ty" then
       "${pkgs.runCommandLocal "hir-ty-src" { } ''
         mkdir -p $out/vendor/rust-analyzer/crates $out/crates
         cp -r ${rustAnalyzer}/crates/hir-ty $out/vendor/rust-analyzer/crates/hir-ty
         cp -r ${lib.fileset.toSource { root = repo + "/crates/hir-ty-codegen"; fileset = repo + "/crates/hir-ty-codegen"; }} $out/crates/hir-ty-codegen
+        cp -r ${lib.fileset.toSource { root = repo + "/crates/hir-ty-borrowck"; fileset = repo + "/crates/hir-ty-borrowck"; }} $out/crates/hir-ty-borrowck
       ''}/${d}"
     else if lib.hasPrefix "vendor/rust-analyzer/" d then "${rustAnalyzer}/${lib.removePrefix "vendor/rust-analyzer/" d}"
     else if d == "vendor/rust-analyzer" then "${rustAnalyzer}"

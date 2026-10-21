@@ -3,6 +3,7 @@
 
 #![allow(clippy::print_stderr, reason = "a command line program: stderr is where it speaks")]
 
+mod borrowck;
 mod cargo;
 mod content;
 mod dep_info;
@@ -4419,6 +4420,7 @@ usage: ra-jit <command>
   stop              ends the daemon; the next build starts one
   cargo <command>   what `cargo ra-jit <command>` runs: build, run, test, check
   cache <verb>      the disk store: stats, gc, verify, push, pull, keygen
+                    (`cargo ra-jit cache clear` forgets what `#[ra_jit::cache]` kept)
   mir <dir> --crate <name> [--level 0|1|2] [--time]
                     a crate's MIR as ra-jit compiles it, written as rustc's -Zunpretty=mir
   --help, --version
@@ -4495,6 +4497,9 @@ fn main() -> anyhow::Result<()> {
     }
     if std::env::args().nth(1).as_deref() == Some("deps") {
         return deps::command(std::env::args().skip(2));
+    }
+    if std::env::args().nth(1).as_deref() == Some("borrowck") {
+        return borrowck::command(std::env::args().skip(2));
     }
     if std::env::args().nth(1).as_deref() == Some("weaken") {
         return weaken::command(std::env::args().skip(2));

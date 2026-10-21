@@ -123,6 +123,9 @@ pub(crate) enum Asked {
     Build(Box<Invocation>),
     /// A subcommand that is cargo's alone, with its arguments.
     Cargo(Vec<String>),
+    /// `cache` and its arguments: the kept results of `#[ra_jit::cache]` functions, or the
+    /// disk store.
+    Cache(Vec<String>),
     Status,
     Stop,
     Enable,
@@ -183,6 +186,7 @@ impl Asked {
             ("--help" | "-h" | "help", _) => Asked::Help,
             ("--version" | "-V", _) => Asked::Version,
             (_, Some(subcommand)) => Asked::Build(Box::new(Invocation::parse(subcommand, rest))),
+            ("cache", _) => Asked::Cache(rest.to_vec()),
             ("status", _) => Asked::Status,
             ("stop", _) => Asked::Stop,
             ("enable", _) => Asked::Enable,

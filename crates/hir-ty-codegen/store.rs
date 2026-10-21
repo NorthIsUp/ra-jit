@@ -90,6 +90,11 @@ pub fn compiles_against(toolchain: &str) {
     _ = TOOLCHAIN.set(toolchain.to_owned());
 }
 
+/// The toolchain [`compiles_against`] was told of.
+pub(super) fn toolchain() -> Option<&'static str> {
+    TOOLCHAIN.get().map(String::as_str)
+}
+
 /// What the bytes of this process's executable come to.
 fn program() -> Option<[u8; KEY]> {
     static PROGRAM: OnceLock<Option<[u8; KEY]>> = OnceLock::new();

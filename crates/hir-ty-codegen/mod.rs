@@ -96,6 +96,7 @@ mod cached;
 mod debuginfo;
 pub use debuginfo::Sidecar;
 mod float_pair;
+mod fncache;
 mod fragment;
 #[cfg(test)]
 mod fuzz;
@@ -10028,6 +10029,10 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             }
         };
         let db = self.cg.db;
+        if fncache::is_code(db, func) {
+            self.cache_code(generic_args, dst)?;
+            return self.finish_call(destination, target);
+        }
         let lang_items = self.interner.lang_items();
         if fn_trait_methods(lang_items).iter().any(|family| family.contains(&Some(func))) {
             self.call_fn_trait(func, generic_args, args, dst, dst_ty.ty)?;

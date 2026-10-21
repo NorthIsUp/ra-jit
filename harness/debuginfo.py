@@ -815,14 +815,18 @@ def profiler(tally, what, binary, cwd, crates):
         tally.say(f"{what}: perf", "not run", "no perf here, or it may not sample: see kernel.perf_event_paranoid")
         return
     script = subprocess.run([perf, "script", "-i", data, "-F", "ip,sym,srcline"], capture_output=True, text=True).stdout
-    frames = re.findall(r"^\s+[0-9a-f]+ (\S+)\n\s+(\S+)$", script, re.M)
-    mine = [(name, line) for name, line in frames if any(f"{len(c)}{c}" in name or f"{c}::" in name for c in crates)]
+    stacks = [stack for stack in script.split("\n\n") if stack.strip()]
+    shift = libdw_shift(binary)
+    ours = lambda frames: [(name, line) for name, line in frames if any(f"{len(c)}{c}" in name or f"{c}::" in name for c in crates)]
+    by_stack = [re.findall(r"^\s+[0-9a-f]+ (\S+)\n\s+(\S+)$", stack, re.M) for stack in stacks]
+    mine = ours(frame for frames in by_stack for frame in frames)
+    # Where perf looks a frame's CFI up somewhere else, the frames it unwinds to are wherever that
+    # lands, a static as well as code: only the frame sampled is read from the program as it is.
     # A line 0 of one of rustc's codegen units is rustc saying of its own code that it has no
     # line: the crate's functions that were left to rustc are not what is asked about here.
-    lost = [name for name, line in mine if not re.search(r"\.rs:\d+$|-cgu\.\d+:0$", line)]
-    stacks = [stack for stack in script.split("\n\n") if stack.strip()]
+    read = ours(frames[0] for frames in by_stack if frames) if shift else mine
+    lost = [name for name, line in read if not re.search(r"\.rs:\d+$|-cgu\.\d+:0$", line)]
     through = sum(bool(re.search(r"4main\b|::main\b", stack)) for stack in stacks)
-    shift = libdw_shift(binary)
     # Where perf looks a frame's CFI up somewhere else, how far its stacks get says nothing of the CFI:
     # some reach main where the code it lands in has the same rules, and some stop.
     verdict = ("NO SAMPLES" if not mine else "NO LINE" if lost else "named" if through

@@ -8,6 +8,14 @@ All notable changes to ra-jit are written here. The format follows
 
 ### Added
 
+- `#[ra_jit::cache]` ([#17](https://github.com/indexable-inc/ra-jit/issues/17)): the
+  `ra-jit-cache` crate's attribute keeps what a pure function returns, in memory and under
+  `target/ra-jit/fn-cache`, by its arguments and a hash of the code ra-jit compiled for it and
+  for everything it reaches. Comments, formatting and edits elsewhere keep the results; an
+  edit to anything it reaches drops them, live edits too. Functions that read statics that
+  change, thread-locals or the system (I/O, time, randomness) are refused with where that is
+  written. Under plain cargo it does nothing. `cargo ra-jit cache clear` forgets what was kept
+  ([docs/fn-cache.md](docs/fn-cache.md), `harness/fncache.py`).
 - rustc's MIR optimizations, optionally: `RA_JIT_MIR_OPT=1` runs what rustc runs on a debug
   build's MIR (copy propagation, removing unused locals, storage markers and drops of what
   needs none, folding constant branches, simplifying the control flow and instructions),
@@ -55,6 +63,14 @@ All notable changes to ra-jit are written here. The format follows
 - `harness/tierbench.py`, the benchmark table of docs/tiers.md; `--together` runs the builds
   of a round at once, so that a loaded machine slows them alike.
 - `RA_JIT_DUMP_LLVM=after` prints the LLVM IR as the passes left it.
+- A borrow checker, `crates/hir-ty-borrowck`, written to give rustc's verdict: Polonius alpha
+  by default as nightly rustc does, NLL with `RA_JIT_BORROWCK=nll`. It gives rustc's errors on
+  1033 of 1578 of rustc's own borrow-check tests that it can run (245 with none), scored by
+  `harness/borrowck_ui.py`, and finds nothing in ripgrep, fd, bat, hyperfine, just and axum.
+  Its errors are rust-analyzer diagnostics and `ra-jit borrowck` prints them; the daemon
+  does not refuse a build for them yet ([docs/borrowck.md](docs/borrowck.md)).
+- `ra-jit borrowck`: the borrow-check errors of single files, or of a cargo workspace with
+  `--project`.
 
 ### Changed
 
