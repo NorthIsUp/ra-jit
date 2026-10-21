@@ -65,16 +65,20 @@ the caller's location as the call passed it). Without this LLVM has nothing to w
 per-function `-O3` of the benchmark below runs at 50 generations per second, 2.5 times
 Cranelift.
 
-What the function itself calls and does not build in, LLVM is shown the body of
-(`tier::seen_body`, up to 10 000 instructions in all): a hot `#[inline(never)]` function,
-which stays a call (`noinline`) as rustc keeps it; one too large for the limit above (up to
+What the function calls and does not build in, and what the bodies built into it call, LLVM
+is shown the body of (`tier::seen_body`, up to 10 000 instructions in all, and ten deep as
+bodies built in are): a hot `#[inline(never)]` function, which stays a call (`noinline`) as rustc keeps it; one too large for the limit above (up to
 4000 instructions if hot, 2000 if not), which LLVM builds in itself where its own measure,
 taken after it optimized the body, finds it small enough; and drop glue. Each body is a
 function of the module beside the one compiled. LLVM infers from it what a call it keeps
 does (that it does not unwind, what it reads and writes, that it keeps no pointer it is
 given) and optimizes the caller with that; before code is emitted every copy left is
-replaced by the function itself and dropped. An edit of a body shown demotes the caller, as
-an edit of one built in does.
+replaced by the function itself and dropped. A body shown calls the bodies shown of what it
+calls in turn. One call left unseen is enough to lose a loop its registers: LLVM takes any
+pointer passed to it to escape, and loads what it points to again after every store. In the
+benchmark below that was the drop of the new grid on the way out of a panic, a call in a
+body built in, which had the grid's pointer and length read again for every cell. An edit of
+a body shown demotes the caller, as an edit of one built in does.
 
 ### What LLVM is told
 
@@ -105,6 +109,17 @@ would have:
   the address has not escaped yet. Its loop passes take an address that escapes anywhere to
   escape everywhere; with the scopes they know that a call in a loop leaves `&mut self`'s
   fields alone when `self` is passed on only after the loop, and keep the fields in registers.
+- **Unsigned overflow is checked as rustc checks it**: `a + b` as `add` and `icmp ult`, `a -
+  b` as `sub` and `icmp ult a, b`, not `llvm.uadd.with.overflow`. LLVM's range analysis reads
+  the comparison and drops checks it proves cannot fail; signed and multiplying checks keep
+  the intrinsics, as rustc's do.
+- **The pipeline cleans up after `-O3`**: `gvn`, `sccp`, `instcombine` and `simplifycfg` run
+  once more. `-O3` unrolls the loops over the eight neighbours of a cell late, after its last
+  `gvn`, while dead branches of the unrolled copies still hide that two copies compute the
+  same remainder; the second round folds them (16 remainders a cell down to 7).
+- **Alignment is not said**: an access is `align 1` unless Cranelift's IR flags it aligned.
+  On AArch64 an unaligned load is the same instruction; LLVM's code for the benchmark's
+  `step` is the same with every access given its natural alignment.
 
 ### Profile-guided optimization
 
@@ -116,6 +131,16 @@ Level 3 builds the same IR (the same functions built in), finds the same branche
 same order, and gives LLVM `!prof !{"branch_weights", taken, not}` on each and
 `!{"function_entry_count", n}` on the function; it counts nothing. When the branches do not
 line up (they always have so far), level 3 is compiled without weights.
+
+Counting the divisors of divisions was tried and dropped. Level 2 kept, for each division by
+a value that is not a constant, the divisor it saw most (a majority vote, as GCC's value
+profiling does), and level 3 checked each division whose divisor had been one value nearly
+always for that value, dividing by it as a constant where it was. In the benchmark the grid
+is 512 wide and every remainder became a mask, but the checks, one at each of the remainders
+in the loop, keep LLVM from sharing a remainder between neighbouring cells, and level 3 ran
+about 10% slower than without them. Checking once and compiling a copy of the loop for the
+value would avoid that; LLVM does it itself (`simple-loop-unswitch<nontrivial>`) only past
+its size limit for the copy, at twice the code.
 
 ### Edits and tiers
 

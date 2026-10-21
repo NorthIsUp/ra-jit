@@ -303,13 +303,15 @@ pub(super) fn seen_body(
         InstanceDef::Closure(_) | InstanceDef::DropGlue => None,
         _ => return None,
     };
-    // Of what the function being compiled calls itself: a body built into it shows none.
+    // Bodies built in show theirs too: one call left opaque, such as a drop on the unwind path,
+    // has LLVM take every pointer passed to it as escaped and load it again after each store.
     let (hot, room) = INLINING.with(|it| {
         let it = it.borrow();
         let inlining = it.as_ref()?;
-        Some((inlining.is_hot(instance), inlining.depth == 0 && inlining.seen < SEEN_BUDGET))
+        Some((inlining.is_hot(instance), inlining.depth < DEPTH && inlining.seen < SEEN_BUDGET))
     })?;
     if !room {
+        refused(db, instance, "not shown: budget");
         return None;
     }
     let never = func
@@ -320,6 +322,8 @@ pub(super) fn seen_body(
     }
     let body = body(db, instance, env, tracked)?;
     if body.func.dfg.num_insts() > limit {
+        let size = body.func.dfg.num_insts();
+        refused(db, instance, &format!("not shown: {size} instructions"));
         return None;
     }
     INLINING.with(|it| {
