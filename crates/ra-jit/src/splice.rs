@@ -341,6 +341,26 @@ impl Baseline {
         Ok((uuid, code, moved))
     }
 
+    /// Whether a patch can call the C symbol `name`, as far as the executable says: an
+    /// executable other than Mach-O is not asked.
+    pub(crate) fn can_call(&self, name: &str) -> bool {
+        match &*self.image {
+            Executable::MachO(image) => image.can_call(name),
+            _ => true,
+        }
+    }
+
+    /// A symbol the patch `object` refers to that the executable does not give it, as far as
+    /// the executable says: an executable other than Mach-O is not asked.
+    pub(crate) fn missing_in(&self, object: &[u8]) -> Option<String> {
+        let Executable::MachO(image) = &*self.image else { return None };
+        let file = object::File::parse(object).ok()?;
+        file.symbols().filter(|it| it.is_undefined()).find_map(|it| {
+            let name = it.name_bytes().ok()?;
+            (!image.gives(name)).then(|| String::from_utf8_lossy(name).into_owned())
+        })
+    }
+
     /// The `LC_UUID` of the executable, when it is one that has it.
     pub(crate) fn uuid(&self) -> Option<[u8; 16]> {
         match &*self.image {

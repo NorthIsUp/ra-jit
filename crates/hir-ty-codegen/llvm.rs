@@ -44,6 +44,24 @@ use lower::{Defined, Lowering};
 const OWN: &str = "ra-jit.own";
 const PERSONALITY: &str = "rust_eh_personality";
 
+/// Whether every call of `func` that unwinds has one handler, which takes the exception alone.
+/// A call of a body Cranelift built in has handlers of its own and of the caller's, which
+/// may take the caller's values; LLVM lowers those too, each with a landing pad of its own.
+pub(super) fn plain_handlers(func: &ir::Function) -> bool {
+    let dfg = &func.dfg;
+    dfg.exception_tables.values().all(|table| {
+        let mut items = table.items();
+        match (items.next(), items.next()) {
+            (Some(ir::ExceptionTableItem::Tag(_, handler)), None) => {
+                matches!(handler.args(&dfg.value_lists).collect::<Vec<_>>()[..], [
+                    ir::BlockArg::TryCallExn(0)
+                ])
+            }
+            _ => false,
+        }
+    })
+}
+
 /// `named` are the slots of the locals with a name. `weights`, from what code of the function
 /// counted while it ran, become its `!prof`.
 pub(super) fn emit(
@@ -111,18 +129,18 @@ pub(super) fn emit(
                     by_id.insert(it.id.as_u32(), function);
                 }
             }
-            let empty = FxHashMap::default();
+            // A body shown calls the others shown, as the function being compiled does, so
+            // that what LLVM learns of one (that it keeps no pointer it is given, say) holds
+            // of those that call it.
+            let declared = by_id.clone();
             for (it, defined) in std::iter::zip(&seen, &shown) {
                 let Some(&function) = by_id.get(&it.id.as_u32()) else { continue };
-                // A body that is not lowered is a declaration, which `unshow` replaces.
                 let defined = Lowering::define(
-                    context, &module, function, defined, &constants, &statics, &empty,
+                    context, &module, function, defined, &constants, &statics, &declared,
                 );
                 if defined.is_err() {
                     by_id.remove(&it.id.as_u32());
-                    // SAFETY: nothing refers to it yet: the bodies shown call the functions
-                    // themselves, and the function being compiled is defined last.
-                    unsafe { function.delete() };
+                    unshow(&module, &FxHashMap::from_iter([(it.id.as_u32(), function)]));
                 }
             }
             Lowering::define(context, &module, function, &own, &constants, &statics, &by_id)?;
@@ -297,14 +315,21 @@ impl Optimization {
     /// discriminant. Left to the default pipeline, the join is folded into `select`s first,
     /// and a loop over a range counts with `i + (i < n)`, which LLVM can neither unroll nor
     /// prove an index of in bounds or free of overflow with. Threaded, it counts with `i + 1`.
+    ///
+    /// At `-O3` what LLVM made redundant is then removed once more. A loop of a callee
+    /// Cranelift built in is unrolled late in the pipeline, after LLVM's last numbering of
+    /// values, while the copies are still joined by branches on constants: each copy keeps
+    /// its own `%` and overflow check (16 `urem`s where rustc, which optimizes the callee on
+    /// its own before building it in, has 7, in the Life benchmark's `step`).
     fn pipeline(self) -> Option<&'static str> {
         match self.passes {
             Passes::None => None,
             Passes::Less => Some("function(sroa,instsimplify,sroa),default<O1>"),
             Passes::Default => Some("function(sroa,instsimplify,sroa,jump-threading),default<O2>"),
-            Passes::Aggressive => {
-                Some("function(sroa,instsimplify,sroa,jump-threading),default<O3>")
-            }
+            Passes::Aggressive => Some(
+                "function(sroa,instsimplify,sroa,jump-threading),default<O3>,\
+                 function(gvn,sccp,instcombine,simplifycfg)",
+            ),
         }
     }
 

@@ -123,8 +123,9 @@ default there, off with `RA_JIT_TIER=off`.
 | Levels 2 and 3, output identical to cargo's | yes, `harness/tiers.py` (local) | no |
 | An edit demotes a tiered function in the same build | yes, `harness/tiers.py` (local) | no |
 | An edit does not wait for a compile at a higher level | yes (local, with LLVM's part stretched to a second) | no |
+| Code no patch can hold stays out, the program is not started over | yes (local, 12 runs of the Life benchmark under one daemon, [tiers.md](tiers.md#code-no-patch-can-hold)) | no |
 | `RA_JIT_TIER=off` changes nothing | yes, `harness/tiers.py` (local) | does not apply |
-| Within 10% of a release build | no: 68% of it on the Life benchmark, and 79% of a release build that checks overflow as the dev profile does, which is as far as the tiered code may go | no |
+| Within 10% of a release build | within 6% of a release build that checks overflow as the dev profile does, which is as far as the tiered code may go, and 88% of release, on the Life benchmark under load | no |
 
 ## Debug info
 
@@ -191,10 +192,12 @@ miscompiles in the order temporaries are dropped. Twenty are fixed or worked aro
 is the first row above. Nearly every full-size run found something, so expect that more
 exist.
 
-ra-jit has no borrow checker and no diagnostics. The daemon refuses source in which
-rust-analyzer finds an error (a type mismatch, an unresolved name, a missing field), and
-under `cargo ra-jit` cargo then runs and rustc reports it. An error rust-analyzer does not
-find is not refused. Borrow-check errors are the main case: with a warm daemon,
+The daemon refuses source in which rust-analyzer finds an error (a type mismatch, an
+unresolved name, a missing field), and under `cargo ra-jit` cargo then runs and rustc
+reports it. An error rust-analyzer does not find is not refused. Borrow-check errors are the
+main case: ra-jit has a borrow checker ([borrowck.md](borrowck.md)) that gives rustc's
+verdict on 65% of rustc's borrow-check tests and finds nothing in six of seven real projects,
+but the daemon does not refuse a build for its errors yet. With a warm daemon,
 `cargo ra-jit run` built and ran a program that uses a `String` after moving it, which rustc
 rejects with E0382 (checked by hand at f191c6e42a). Run `cargo ra-jit check` or
 `cargo check` to get rustc's verdict.

@@ -125,19 +125,83 @@ impl Tiered {
     pub fn counters_used(&self) -> u32 {
         self.counters.map_or(0, |_| 1 + 2 * self.branches)
     }
+
+    /// What its code calls by the name of a symbol, such as the C library's functions.
+    pub fn symbols(&self) -> impl Iterator<Item = &str> {
+        self.code.requests.funcs.iter().filter_map(|it| match &it.target {
+            super::fragment::FuncTarget::Symbol(name) => Some(name.as_str()),
+            _ => None,
+        })
+    }
 }
 
 /// The functions of a program at a level above 1.
 #[derive(Default, Clone)]
 pub struct Tiers {
     nodes: FxHashMap<Node, Arc<Tiered>>,
+    /// What was installed since a patch last held the code, with the code each replaced.
+    fresh: Vec<(Node, Option<Arc<Tiered>>)>,
+    /// Code installed together with code no patch could hold, to install again one by one.
+    trial: Vec<(Node, Arc<Tiered>)>,
     /// The functions an edit sent back to level 1, and why, since this was last asked.
     demoted: Arc<Mutex<Vec<(Node, String)>>>,
+    /// The functions whose code no patch could hold, the level they are back at, and why,
+    /// since this was last asked.
+    refused: Vec<(Node, Level, String)>,
 }
 
 impl Tiers {
     pub fn install(&mut self, node: Node, tiered: Tiered) {
-        self.nodes.insert(node, Arc::new(tiered));
+        self.put(node, Arc::new(tiered));
+    }
+
+    fn put(&mut self, node: Node, tiered: Arc<Tiered>) {
+        let was = self.nodes.insert(node.clone(), tiered);
+        self.fresh.push((node, was));
+    }
+
+    /// A patch holds the code installed so far. `true` when code installed with code no
+    /// patch could hold is installed again, one function of it, for a patch to hold next.
+    pub fn held(&mut self) -> bool {
+        self.fresh.clear();
+        let Some((node, tiered)) = self.trial.pop() else { return false };
+        self.put(node, tiered);
+        true
+    }
+
+    /// Puts back the code that what was installed since a patch last held it replaced, as no
+    /// patch can hold it: a build that is not a patch would link the program again and start
+    /// it over. Of several functions installed together, which one it is is found by
+    /// installing them again one by one, from the first here on. `false` when nothing was
+    /// installed since.
+    pub fn refuse(&mut self, why: &str) -> bool {
+        if self.fresh.is_empty() {
+            return false;
+        }
+        let alone = self.fresh.len() == 1;
+        for (node, was) in std::mem::take(&mut self.fresh).into_iter().rev() {
+            let level = was.as_ref().map_or(Level::Cranelift, |it| it.level);
+            let tiered = match was {
+                Some(was) => self.nodes.insert(node.clone(), was),
+                None => self.nodes.remove(&node),
+            };
+            match tiered {
+                Some(tiered) if !alone => self.trial.push((node, tiered)),
+                _ => {
+                    self.refused.retain(|it| it.0 != node);
+                    self.refused.push((node, level, why.to_owned()));
+                }
+            }
+        }
+        if let Some((node, tiered)) = self.trial.pop() {
+            self.put(node, tiered);
+        }
+        true
+    }
+
+    /// The functions whose code a patch could not hold since the last call.
+    pub fn take_refused(&mut self) -> Vec<(Node, Level, String)> {
+        std::mem::take(&mut self.refused)
     }
 
     pub fn level(&self, node: &Node) -> Level {
@@ -154,6 +218,8 @@ impl Tiers {
 
     /// Sends every function back to level 1, as a full build does.
     pub fn clear(&mut self) {
+        self.fresh.clear();
+        self.trial.clear();
         let mut demoted = self.demoted.lock().unwrap_or_else(|e| e.into_inner());
         for (node, _) in self.nodes.drain() {
             demoted.push((node, "the program was linked again".to_owned()));
@@ -165,6 +231,8 @@ impl Tiers {
         let demoted = std::mem::take(&mut *self.demoted.lock().unwrap_or_else(|e| e.into_inner()));
         for (node, _) in &demoted {
             self.nodes.remove(node);
+            self.fresh.retain(|it| it.0 != *node);
+            self.trial.retain(|it| it.0 != *node);
         }
         demoted
     }
@@ -303,13 +371,15 @@ pub(super) fn seen_body(
         InstanceDef::Closure(_) | InstanceDef::DropGlue => None,
         _ => return None,
     };
-    // Of what the function being compiled calls itself: a body built into it shows none.
+    // Bodies built in show theirs too: one call left opaque, such as a drop on the unwind path,
+    // has LLVM take every pointer passed to it as escaped and load it again after each store.
     let (hot, room) = INLINING.with(|it| {
         let it = it.borrow();
         let inlining = it.as_ref()?;
-        Some((inlining.is_hot(instance), inlining.depth == 0 && inlining.seen < SEEN_BUDGET))
+        Some((inlining.is_hot(instance), inlining.depth < DEPTH && inlining.seen < SEEN_BUDGET))
     })?;
     if !room {
+        refused(db, instance, "not shown: budget");
         return None;
     }
     let never = func
@@ -320,6 +390,8 @@ pub(super) fn seen_body(
     }
     let body = body(db, instance, env, tracked)?;
     if body.func.dfg.num_insts() > limit {
+        let size = body.func.dfg.num_insts();
+        refused(db, instance, &format!("not shown: {size} instructions"));
         return None;
     }
     INLINING.with(|it| {
