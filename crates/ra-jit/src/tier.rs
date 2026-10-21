@@ -629,6 +629,18 @@ pub(crate) fn demoted(binary: &Path, symbol: &str, why: &str) {
     });
 }
 
+/// Notes that no patch could hold the code `symbol` was compiled to: it is back at `level`
+/// and stays there until an edit.
+pub(crate) fn refused(binary: &Path, symbol: &str, level: Level, why: &str) {
+    with_binary(binary, |program| {
+        let name = shown(symbol);
+        let Some((_, function)) = program.by_symbol(symbol) else { return };
+        function.level = (level > Level::Cranelift).then_some(level);
+        function.stuck = Some(why.to_owned());
+        program.event(format!("{name}: stays at {}: {why}", format::level_name(level.number())));
+    });
+}
+
 /// Notes that an [`Ask`] could not be taken up at all, and why.
 pub(crate) fn declined(binary: &Path, why: &str) {
     with_binary(binary, |program| {

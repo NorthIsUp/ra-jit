@@ -159,6 +159,24 @@ after the handle is dropped. Code it finishes from IR an edit made stale is caug
 prints above and not used. The worker logs `tier-timing:` for each compile, the time with
 the database and LLVM's without.
 
+### Code no patch can hold
+
+Code built in at a higher level can call what rustc built into its own callers and left no
+symbol of: the C library's `memcmp` where rustc's code calls `bcmp`, a `pthread_` function
+the standard library reaches only from code rustc inlined, a standard-library instance that
+reads a `static` with no symbol. The executable can't give a patch with such a call what it
+names, and a patch it can't take is linked in full instead, which starts the program over at
+level 1 and, as the worker keeps the code, would have every later patch of the program
+linked in full too. So the code goes, not the program:
+
+- a function whose code calls a C symbol the executable does not link stays where it is
+  (`tier: median3: stays at Cranelift: it calls memcmp, which the executable does not link`);
+- a patch that can't be built with the code installed, or that refers to a symbol the
+  executable does not have (`Baseline::missing_in`), has the code installed since the last
+  patch put back (`Tiers::refuse`) and is built again. Of several functions installed
+  together, the others are installed again one at a time, a build each, and only the one no
+  patch can hold stays where it was, with why in the events.
+
 ### What is not replaced
 
 - A frame that is running a function finishes in the code it started in; the next call runs

@@ -3141,6 +3141,23 @@ fn shell(cmd: &str) -> Command {
     command
 }
 
+/// Whether a patch of `binary` can call the C symbol `name`; yes while its executable is being
+/// read, which a splice then says.
+fn can_call(binary: &Path, name: &str) -> bool {
+    match lock(&LINKED).get(binary) {
+        Some(Executable::Read(baseline)) => baseline.can_call(name),
+        _ => true,
+    }
+}
+
+/// A symbol the patch at `patch` refers to that the executable at `binary` does not give it;
+/// none while the executable is being read, which a splice then says.
+fn missing_in(binary: &Path, patch: &Path) -> Option<String> {
+    let linked = lock(&LINKED);
+    let Some(Executable::Read(baseline)) = linked.get(binary) else { return None };
+    baseline.missing_in(&std::fs::read(patch).ok()?)
+}
+
 /// The executable of the last full link, for splicing edits into.
 enum Executable {
     /// Just linked, and being read.
@@ -3964,7 +3981,11 @@ fn compile_tiered(
         return;
     }
     let db = db.clone();
-    std::thread::spawn(move || {
+    let asked_of = binary.clone();
+    // Each body built in or shown is built inside the one that calls it, up to ten deep, with
+    // the frames of a whole function's build each; a thread's default 2 MiB does not hold that.
+    let thread = std::thread::Builder::new().name("tier".to_owned()).stack_size(64 << 20);
+    let spawned = thread.spawn(move || {
         // The IR of every function is built with the database, which is let go of before
         // LLVM runs: a change to the source waits for the database to be let go of, and
         // so for nothing LLVM does.
@@ -3994,6 +4015,17 @@ fn compile_tiered(
                 "tier-timing: {symbol}: IR {with_db:.1?} with the database, LLVM {:.1?} without",
                 start.elapsed()
             );
+            // The executable may not link what LLVM's code calls (`memcmp` where rustc's calls
+            // `bcmp`), and a patch that calls it would leave the program taking none at all.
+            let compiled = compiled.and_then(|tiered| {
+                let missing = tiered.symbols().find(|it| !can_call(&binary, it)).map(str::to_owned);
+                match missing {
+                    Some(name) => {
+                        Err(format!("it calls {name}, which the executable does not link"))
+                    }
+                    None => Ok(tiered),
+                }
+            });
             let outcome = compiled.map(|tiered| {
                 let used = tiered.counters_used();
                 if let Some(first) = tiered.counters {
@@ -4012,6 +4044,10 @@ fn compile_tiered(
         }
         let _ = sender.send(Event::Tiered(at, Tiered { binary, code, done, counters }));
     });
+    if let Err(why) = spawned {
+        eprintln!("tier: no thread to compile on: {why}");
+        tier::done(&asked_of, Vec::new(), counters);
+    }
 }
 
 impl std::io::Write for &Client {
@@ -4136,10 +4172,16 @@ impl Builds {
                 continue;
             }
             let demoted = program.known.tiers.take_demoted();
+            let refused = program.known.tiers.take_refused();
             let Some(binary) = program.args.splice.clone() else { continue };
             for (node, why) in demoted {
                 if let Some(symbol) = program.known.tier_symbol(&node) {
                     tier::demoted(&binary, &symbol, &why);
+                }
+            }
+            for (node, level, why) in refused {
+                if let Some(symbol) = program.known.tier_symbol(&node) {
+                    tier::refused(&binary, &symbol, level, &why);
                 }
             }
         }
@@ -6571,7 +6613,29 @@ impl Program {
             let warm = build(db, table, args, known, listed);
             (warm, check.join().ok().flatten())
         });
-        let warm = warm?;
+        let mut warm = warm?;
+        // Code compiled at a higher level can call what rustc built into its callers and left
+        // no symbol of. The executable can't take a patch with it, and a full link would start
+        // the program over, so the code goes instead; of several functions installed
+        // together, the others are installed again one by one, a build each.
+        loop {
+            let missing = match (&args.splice, &args.patch) {
+                (Some(binary), Some(patch)) if known.stats.patched.is_some() => {
+                    missing_in(binary, patch)
+                }
+                _ => None,
+            };
+            let again = match missing {
+                Some(missing) => known.tiers.refuse(&format!(
+                    "no patch can hold its code: {missing} is not in the executable"
+                )),
+                None => known.tiers.held(),
+            };
+            if !again {
+                break;
+            }
+            warm = build(db, table, args, known, listed)?;
+        }
         if known.stats.patched.is_none() {
             *whole = Some(args.out.clone());
         }

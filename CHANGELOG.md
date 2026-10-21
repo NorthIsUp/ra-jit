@@ -135,6 +135,14 @@ All notable changes to ra-jit are written here. The format follows
 - On macOS a spliced executable lists its sections in the order of their addresses, and
   each segment a splice adds has a section, as `dyld_info` requires: it read none of the
   spliced executables on macOS 27 (`harness/splices.py`: 11 of 71 right, now 71).
+- Tiered code that calls what the executable has no symbol of (`memcmp` where rustc's code
+  calls `bcmp`, a `pthread_` function only rustc's inlined code reached) no longer has the
+  program linked in full and started over at level 1, after which every later patch of it
+  was linked in full too: that function stays where it was, and says why
+  ([docs/tiers.md](docs/tiers.md), "Code no patch can hold").
+- The thread that compiles at a higher level has a stack of 64 MiB, and the bodies a body
+  built in shows are ten deep at most: a deep chain of them overflowed the 2 MiB default and
+  took the worker down.
 
 ## [0.1.0] - 2026-10-20
 
