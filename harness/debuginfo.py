@@ -459,6 +459,11 @@ def jumps_away(binary, name):
         targets = [int(it, 16) for it in re.findall(r"^\s*[0-9a-f]+:\s+(?:jmp|b)\s+([0-9a-f]+)\b", listed, re.M)]
         if any(not low <= target < high for target in targets):
             return True
+        # A call through a pointer in tail position is a jump through a register. A jump table's
+        # is one too, but has the function's code after it: the tail call is the last instruction.
+        last = re.findall(r"^\s*[0-9a-f]+:\s+(\S.*)$", listed, re.M)[-1:]
+        if last and re.match(r"(?:notrack\s+)?jmp\s+\*|br\s+x\d+\b", last[0]):
+            return True
     return False
 
 

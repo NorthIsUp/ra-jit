@@ -205,8 +205,9 @@ and Windows x86-64, each on a machine of its own kind. Each platform:
 - builds ra-jit once, with the `llvm` feature, and hands the binary to its other jobs;
 - runs `harness/unittests.py`;
 - runs each part of `ci.py --parts` under each backend as a job of its own;
-- on Linux x86-64 and macOS, runs `cargo_ra_jit.py` on its checks and on ripgrep and
-  hyperfine. The larger projects (fd and the rest) run nightly and by hand.
+- on Linux x86-64 and macOS, runs `cargo_ra_jit.py` on its checks, on ripgrep and
+  hyperfine, and on fd. Nightly and by hand, Linux AArch64 also runs it on ripgrep, fd,
+  bat, hyperfine, just, axum and nushell, with each project's tests.
 
 A change to nothing but documentation or the site runs `fmt` and nothing else. On a pull
 request a newer push cancels the run before it. On main a run always finishes, and the newest
