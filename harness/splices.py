@@ -21,8 +21,9 @@ import linkline
 from difftest import Fixture, RA_JIT, sysroot_rlibs, RUNNER, BINUTILS, toolchain, WINDOWS, TARGET, TARGET_ARGS, built, WASM, host
 
 # How many of the steps are spliced, by target: the rest link in full for the reasons printed,
-# and one more of them is a splice that got worse. A target that is not here is held to none.
-SPLICED = {"x86_64-pc-windows-msvc": 61}
+# or not at all where nothing was edited, and one more of them is a splice that got worse. A
+# target that is not here is held to none.
+SPLICED = {"x86_64-pc-windows-msvc": 60}
 
 TOML = """[package]
 name = "sedge"

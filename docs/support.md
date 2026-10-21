@@ -49,8 +49,8 @@ to stable; those are marked where they are used.
    AArch64, where a branch reaches only 128 MB. Not every edit can be spliced: about 60 of
    the 71 steps are, and the rest link in full by design (an executable somebody else
    wrote, a static that grew, a running executable, and similar).
-4. [platforms.md](platforms.md), Windows: 71 of 71 with 61 spliced and 10 full links,
-   and the harness fails on Windows if the count is not 61.
+4. [platforms.md](platforms.md), Windows: 71 of 71 with 60 spliced, 10 full links and
+   1 step with nothing edited, and the harness fails on Windows if the count is not 60.
 5. [platforms.md](platforms.md), macOS: `splices.py` 71 of 71. Executables with chained
    fixups are declined and linked in full; that was measured with
    `MACOSX_DEPLOYMENT_TARGET=13.0`. rustc's default target of 11.0 splices.
