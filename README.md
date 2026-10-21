@@ -106,6 +106,11 @@ loop {
 }
 ```
 
+### Cached functions
+
+`#[ra_jit::cache]` on a pure function keeps its results across runs, until an edit changes
+the code it reaches ([docs/fn-cache.md](docs/fn-cache.md)).
+
 ## What to know
 
 - Live edits work on macOS Apple silicon only. Elsewhere you still get fast builds.

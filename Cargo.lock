@@ -3179,6 +3179,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ra-jit-cache"
+version = "0.1.0"
+dependencies = [
+ "postcard",
+ "ra-jit-cache-macros",
+ "serde",
+]
+
+[[package]]
+name = "ra-jit-cache-macros"
+version = "0.1.0"
+
+[[package]]
 name = "ra-jit-live"
 version = "0.1.0"
 

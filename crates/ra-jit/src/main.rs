@@ -4377,6 +4377,7 @@ usage: ra-jit <command>
   stop              ends the daemon; the next build starts one
   cargo <command>   what `cargo ra-jit <command>` runs: build, run, test, check
   cache <verb>      the disk store: stats, gc, verify, push, pull, keygen
+                    (`cargo ra-jit cache clear` forgets what `#[ra_jit::cache]` kept)
   mir <dir> --crate <name> [--level 0|1|2] [--time]
                     a crate's MIR as ra-jit compiles it, written as rustc's -Zunpretty=mir
   --help, --version

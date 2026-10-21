@@ -21,8 +21,8 @@ type FxIndexMap<K, V> = indexmap::IndexMap<K, V, FxBuildHasher>;
 use crate::{db::HirDatabase, traits::StoredParamEnvAndCrate};
 
 use super::{
-    CodegenError, Instance, ObjectCodegen, OwnStatics, Phases, Rejections, Result, Roots,
-    SymbolResolver, TheirStatics, Walked, async_blocks, compiled_instance, compiled_root,
+    CodegenError, Instance, InstanceDef, ObjectCodegen, OwnStatics, Phases, Rejections, Result,
+    Roots, SymbolResolver, TheirStatics, Walked, async_blocks, compiled_instance, compiled_root,
     compiled_static, declaration_location,
     fragment::{CompiledFunction, DataRequest, FuncTarget, Requests},
     home::{body_file, body_files},
@@ -329,6 +329,11 @@ pub(super) struct Base {
     /// to rustc, and stays there for as long as the base does.
     rejected: Vec<(Instance, StoredParamEnvAndCrate)>,
     pub(super) bodies: usize,
+    /// The roots and instances that are `#[ra_jit::cache]` functions, by their index in
+    /// `compiled` and `instances`. The hash of what each reaches is in its code, and an edit
+    /// anywhere can change that.
+    cached_roots: Vec<u32>,
+    cached_instances: Vec<u32>,
 }
 
 /// Where in the base the code of each crate is, and the code that comes from the bodies of
@@ -401,6 +406,11 @@ struct Touched {
 impl Touched {
     fn reaches(&self, krate: Crate) -> bool {
         self.any || self.crates.contains(&krate)
+    }
+
+    /// Whether a file changed since the last look.
+    fn edited(&self) -> bool {
+        self.any || !self.crates.is_empty() || !self.bodies.is_empty()
     }
 
     /// Starts over from what a look at the whole base found: the edits before it can have
@@ -627,6 +637,15 @@ impl Base {
         let crates: Vec<Crate> = compiled.iter().map(|&(root, _)| root.krate(db)).collect();
         let files: Vec<FileId> =
             compiled.iter().map(|&(root, _)| body_file(db, root.into())).collect();
+        let cached = |func| super::fncache::cached_closure(db, func).is_some();
+        let cached_roots =
+            (0..compiled.len() as u32).filter(|&i| cached(compiled[i as usize].0)).collect();
+        let cached_instances = (0..instances.len() as u32)
+            .filter(|&i| {
+                let (instance, _) = instances.get_index(i as usize).unwrap();
+                matches!(instance.def, InstanceDef::Fn(func) if cached(func))
+            })
+            .collect();
         Some(Base {
             debug,
             rejected,
@@ -664,6 +683,8 @@ impl Base {
                 .any(|(name, _)| super::stable::StableNames::of_checkout(name)),
             outdated: false,
             bodies: cg.bodies,
+            cached_roots,
+            cached_instances,
         })
     }
 
@@ -752,6 +773,9 @@ impl Base {
         let of_files = touched.bodies.iter().filter_map(|it| homes.roots_of_file.get(it));
         let mut asked: Vec<u32> = of_crates.chain(of_files).flatten().copied().collect();
         asked.extend(touched.roots.iter().filter_map(|it| homes.root.get(it)));
+        if touched.edited() {
+            asked.extend(&self.cached_roots);
+        }
         Box::new(part_of(asked, part, parts))
     }
 
@@ -772,6 +796,9 @@ impl Base {
         let mut asked: Vec<u32> = of_crates.chain(of_files).flatten().copied().collect();
         if !touched.bodies.is_empty() {
             asked.extend(&homes.instances_of_any_file);
+        }
+        if touched.edited() {
+            asked.extend(&self.cached_instances);
         }
         asked.extend(
             touched
@@ -803,7 +830,8 @@ impl Base {
             let root = self.compiled[i].0;
             let touched = self.touched.reaches(self.crates[i])
                 || self.touched.reaches_bodies(Some(&[self.files[i]]))
-                || self.touched.roots.contains(&root);
+                || self.touched.roots.contains(&root)
+                || self.touched.edited() && self.cached_roots.binary_search(&(i as u32)).is_ok();
             if !touched && !check_all {
                 continue;
             }
@@ -830,7 +858,9 @@ impl Base {
             let Some((instance, was)) = self.instances.get_index(i) else { continue };
             let touched = self.touched.reaches(was.env.krate)
                 || self.touched.reaches_bodies(was.files.as_deref())
-                || self.touched.instances.contains(instance);
+                || self.touched.instances.contains(instance)
+                || self.touched.edited()
+                    && self.cached_instances.binary_search(&(i as u32)).is_ok();
             if !touched && !check_all {
                 continue;
             }
