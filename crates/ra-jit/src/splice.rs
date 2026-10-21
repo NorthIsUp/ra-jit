@@ -292,7 +292,12 @@ impl Baseline {
             end = end.max(written);
         }
         end = moved.iter().map(|it| it.to + it.len).fold(end, u64::max);
-        file.set_len(end.max(len))?;
+        // A file is not cut short behind what a splice wrote: XFS takes a truncation, also to
+        // the size the file has, as a reason to write out every page of it not yet written when
+        // it is closed, 100 ms of nushell's after a link. Nothing reads what is past `end`.
+        if file.metadata()?.len() < end.max(len) {
+            file.set_len(end.max(len))?;
+        }
         let written_at = start.elapsed();
         for (offset, bytes) in &addition.overwritten {
             let mut old = vec![0; bytes.len()];
