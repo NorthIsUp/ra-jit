@@ -537,15 +537,29 @@ impl CodegenUnit {
             if stale.is_empty() {
                 stale.push(base.stale(db, 0, 1));
             }
-            let patch =
-                base.patch(db, symbols, roots, &on_demand, denied, known, own_statics, stale);
-            let patch = match patch {
-                Ok(Ok(patch)) => Some(patch),
-                Ok(Err(why)) => {
-                    declined = Some(why);
-                    None
+            let patch = loop {
+                let patch = base.patch(
+                    db,
+                    symbols,
+                    roots,
+                    &on_demand,
+                    denied,
+                    known,
+                    own_statics.clone(),
+                    stale.clone(),
+                );
+                let why = match patch {
+                    Ok(Ok(patch)) => break Some(patch),
+                    Ok(Err(why)) => Some(why),
+                    Err(_) => None,
+                };
+                // Code compiled at a higher level that a patch can't hold goes, not the
+                // program the patch is for.
+                let told = why.unwrap_or("it could not be compiled");
+                if !known.tiers.refuse(&format!("no patch can hold its code: {told}")) {
+                    declined = why;
+                    break None;
                 }
-                Err(_) => None,
             };
             if let Some(patch) = patch {
                 backend::Tally::global().report();

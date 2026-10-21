@@ -410,6 +410,22 @@ impl Rebases {
 }
 
 impl Image {
+    /// Whether a patch can call the C symbol `name`: the executable defines it, or has the
+    /// address slot of the library's that defines it, as a patch reaches what it calls.
+    pub(super) fn can_call(&self, name: &str) -> bool {
+        self.gives(format!("_{name}").as_bytes())
+    }
+
+    /// Whether a patch that refers to the symbol `name`, as its object names it, is given
+    /// what it names.
+    pub(super) fn gives(&self, name: &[u8]) -> bool {
+        match self.symbols.get(name) {
+            Some(Named::One(defined)) => defined.kind != SymbolKind::Tls,
+            Some(Named::Many) => false,
+            None => self.imports.get(name).is_some_and(|it| it.slot.is_some()),
+        }
+    }
+
     pub(super) fn read(bytes: &[u8]) -> anyhow::Result<Image> {
         ensure!(
             u32_at(bytes, 0)? == macho::MH_MAGIC_64 && u32_at(bytes, 4)? == macho::CPU_TYPE_ARM64,
