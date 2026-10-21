@@ -104,7 +104,8 @@ def polonius_of(flags):
         flag = flag.replace(" ", "")
         if flag.startswith("-Zpolonius"):
             value = flag.partition("=")[2]
-            return {"next": "polonius", "off": "nll", "": "legacy", "legacy": "legacy"}.get(value, "legacy")
+            off = {"off", "no", "n", "false"}
+            return "polonius" if value == "next" else "nll" if value in off else "legacy"
     return None
 
 
