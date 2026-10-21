@@ -602,6 +602,72 @@ main 107 ms):
 7. The macOS splice writes all 57 MB it appends though most is as the last splice wrote it
    (append 4 ms), and placing the patch takes 5 to 8.
 
+### Warm edits on Linux x86-64: where the time goes, and build scripts (2026-10-20)
+
+On dev-aws-11, the machine of the README's run (AWS c8a.metal-24xl, AMD EPYC 9R45, the run
+pinned to cores 0-15), with `harness/bench.py` in `nix develop .#bench`, Cranelift, 5 runs.
+Before is main cc22006337, after is c8f58ac7d9 (the two commits on build scripts); both are
+built as released, without the `llvm` feature. Median ms; the multiplier is cargo's time of the
+same run over ra-jit's.
+
+| Project | Edit | cargo | before | after |
+|---|---|---:|---:|---:|
+| ripgrep 15.1.0 | a function | 453 | 76 (5.9x) | 50 (9.1x) |
+| | a widely used function | 724 | 36 (20x) | 37 (20x) |
+| | a signature | 562 | 70 (8.0x) | 68 (8.3x) |
+| | nothing | 386 | 18 (21x) | 19 (20x) |
+| fd 10.3.0 | a function | 434 | 88 (5.0x) | 43 (10x) |
+| | a widely used function | 400 | 74 (5.4x) | 32 (13x) |
+| | a signature | 638 | 119 (5.3x) | 71 (9.0x) |
+| hyperfine 1.19.0 | a function | 318 | 81 (3.9x) | 34 (9.4x) |
+| | a widely used function | 350 | 81 (4.3x) | 34 (10x) |
+| | a signature | 355 | 119 (3.0x) | 71 (5.0x) |
+| nushell 0.108.0 | a function | 1436 | 258 (5.7x) | 261 (5.5x) |
+| | a widely used function | 4805 | 227 (21x) | 231 (21x) |
+| | a signature | 4848 | 308 (16x) | 308 (16x) |
+
+bat, just and axum have no build script that runs again for these edits, and moved by 1 ms or
+less. Every program said what cargo's said, in both runs.
+
+Where the time of one edit went before, from `RA_JIT_TRACE` (the median of 5 to 7):
+
+| | ripgrep, a function (70 ms) | nushell, a function (252 ms) |
+|---|---:|---:|
+| cargo starting and handing over to `cargo-ra-jit` and `ra-jit` | 14 | 20 |
+| the worker waiting for `cargo check --compile-time-deps` | 26 | 1 |
+| type-checking, MIR, translating and Cranelift of the edited function | 18 | 149 |
+| rust-analyzer taking the change | 4 | 20 |
+| object, debug info, and what is reached from the function | 5 | 15 |
+| the splice into the executable | 0.3 | 1.9 |
+| the rest of client, daemon and worker | 2 | 46 |
+
+- Cargo's part is the same on both sides: Nix's `cargo` is a bash wrapper (1.3 ms), and cargo
+  takes about 8 ms before it runs an external subcommand (`cargo --version` takes 1.5 ms), part
+  of it reading the 470 KB certificate bundle. `cargo-ra-jit` takes 0.4 ms and `ra-jit` 0.9 ms to
+  start.
+- The splice keeps the executable of the last link and appends the edit, so linking is not
+  on the way: 0.3 to 2 ms, also for nushell's 1.1 GB executable. A full link happens on the
+  first edit after the daemon loads (14 s for nushell, which writes a 457 MB object); bench.py
+  keeps it out of the medians.
+- The kernel has 8.6% of the processor time of nushell's edit, spread over page faults and
+  `stat`; nothing on Linux's side of it is worth more than a millisecond.
+- A binary built with `--features llvm` loads libLLVM (198 MB) each time it starts: `ra-jit
+  --version` takes 7.8 ms against 1.4 ms, mostly the dynamic loader binding and relocating it.
+  The README's run until now used that binary for the Cranelift column; it now uses the build
+  as released (nothing changed in ripgrep: 28 ms with the feature, 19 ms without).
+
+What changed: ripgrep's, fd's and hyperfine's build scripts name no `rerun-if-changed`, so the
+worker ran every build script of the workspace through cargo before each edit of their
+package. It now runs the one script as cargo ran it and compares it with what it loaded, and
+not at all when `cargo ra-jit` just did; cargo runs them when the script is older than its
+source, read a variable while compiled that cargo does not set, or printed or wrote something
+else (CHANGELOG, commits 20708cd2da and c8f58ac7d9).
+
+Commands: for each side, `RA_JIT_BIN=<side>/ra-jit taskset -c 0-15 python3 harness/bench.py
+<projects> --backend cranelift --runs 5`; the after run measured both tiers (with
+`RA_JIT_LLVM_BIN` a build with the feature) and is the README's.
+
+||||||| cc22006337
 ## Disagreements
 
 Where reports disagree, this file follows the later one.

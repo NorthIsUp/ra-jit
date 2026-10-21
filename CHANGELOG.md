@@ -36,6 +36,15 @@ All notable changes to ra-jit are written here. The format follows
 
 ### Changed
 
+- An edit in a package whose build script cargo runs again for it (one that names no
+  `rerun-if-changed`, as ripgrep's, fd's and hyperfine's) no longer waits for a
+  `cargo check` that runs every build script of the workspace: the daemon runs that one
+  script again as cargo ran it and compares what it prints and writes with what it loaded,
+  as `cargo ra-jit` already did, and asks cargo only when the two differ, the script is older
+  than its source, or it was compiled reading a variable cargo did not set. A script
+  `cargo ra-jit` ran again for the same build, with nothing it reads written since, is not
+  run a second time. On Linux x86-64 an edit of ripgrep's `search` goes from 72 to 48 ms,
+  fd's `run` from 78 to 42 ms and hyperfine's `run` from 80 to 35 ms.
 - `vendor/rust-analyzer` and `vendor/rustc_abi` are git subtrees instead of submodules: a
   plain `git clone` builds, and the flake builds from its own tree with no second pin of the
   forks.
