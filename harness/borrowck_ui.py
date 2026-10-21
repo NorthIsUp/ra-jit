@@ -31,7 +31,7 @@ import argparse, collections, concurrent.futures, hashlib, json, os, re, shlex, 
 BORROWCK = {
     "E0373", "E0381", "E0382", "E0384", "E0499", "E0500", "E0501", "E0502", "E0503", "E0504", "E0505",
     "E0506", "E0507", "E0508", "E0509", "E0510", "E0515", "E0521", "E0524", "E0594", "E0596", "E0597",
-    "E0626", "E0712", "E0713", "E0716", "E0310", "E0311", "E0621", "E0700", "E0792", "E0793",
+    "E0626", "E0712", "E0713", "E0716", "E0309", "E0310", "E0311", "E0621", "E0700", "E0792", "E0793",
 }
 # Errors rustc reports without a code, named by what their message starts with.
 CODELESS = {

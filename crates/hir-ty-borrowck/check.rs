@@ -12,7 +12,7 @@ use crate::{
         AsmOperand, BorrowKind, LocalId, MirBody, MirSpan, MutBorrowKind, Operand, OperandKind,
         PlaceElem, ProjectionElem, Rvalue, StatementKind, StoredPlace, TerminatorKind,
     },
-    next_solver::TyKind,
+    next_solver::{Ty, TyKind},
 };
 
 use super::{
@@ -819,10 +819,17 @@ impl<'a, 'db> Checker<'a, '_, 'db> {
             } else {
                 ("", "lifetime may not live long enough".to_owned())
             };
-            self.report(code, blamed.span, message);
+            let span = match blamed.category {
+                Category::Return => self.tail(blamed.span),
+                _ => blamed.span,
+            };
+            self.report(code, span, message);
         }
         let mut reported = FxHashSet::default();
         for test in &self.regions.type_tests {
+            if self.type_test_holds(test.ty, test.lower) {
+                continue;
+            }
             for universal in self.values.universals_of(test.lower) {
                 let kind = universals[universal].1;
                 if kind == UniversalKind::FnBody
@@ -845,6 +852,31 @@ impl<'a, 'db> Checker<'a, '_, 'db> {
                 break;
             }
         }
+    }
+
+    /// The expression a block's value comes from, where rustc points at a returned value.
+    fn tail(&self, span: MirSpan) -> MirSpan {
+        let mut span = span;
+        while let MirSpan::ExprId(expr) = span
+            && let hir_def::hir::Expr::Block { tail: Some(tail), .. } = self.ctx.store[expr]
+        {
+            span = MirSpan::ExprId(tail);
+        }
+        span
+    }
+
+    /// rustc's `eval_verify_bound` for `ty: lower`, `ty` a type parameter: one of its bounds,
+    /// or the function body every parameter outlives, outlives `lower` as region inference
+    /// left them.
+    fn type_test_holds(&self, ty: Ty<'db>, lower: usize) -> bool {
+        let fn_body = self.regions.universals[1].0;
+        let needed: Vec<usize> = self.values.universals_of(lower).collect();
+        self.regions.type_bounds_of(ty).into_iter().chain([fn_body]).any(|bound| {
+            let have: Vec<usize> = self.values.universals_of(bound).collect();
+            needed
+                .iter()
+                .all(|&shorter| have.iter().any(|&longer| self.regions.knows(longer, shorter)))
+        })
     }
 
     fn check_access_permissions(

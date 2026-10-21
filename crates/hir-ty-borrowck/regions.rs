@@ -105,13 +105,22 @@ pub(super) struct Regions<'db> {
     pub(super) is_impl_item: bool,
 }
 
-impl Regions<'_> {
+impl<'db> Regions<'db> {
     pub(super) fn universal(&self, rv: Rv) -> Option<usize> {
         self.universal_index.get(&rv).copied()
     }
 
     pub(super) fn knows(&self, longer: usize, shorter: usize) -> bool {
         self.known[longer].contains(shorter)
+    }
+
+    /// The regions the where clauses say the type parameter `ty` outlives.
+    pub(super) fn type_bounds_of(&self, ty: Ty<'db>) -> Vec<Rv> {
+        self.type_bounds
+            .iter()
+            .filter(|&&(bounded, _)| bounded == ty)
+            .map(|&(_, region)| region)
+            .collect()
     }
 
     /// Whether the type parameter `ty` is known to outlive the universal region `universal`.
@@ -202,6 +211,10 @@ pub(super) fn build<'db>(ctx: &Ctx<'_, 'db>, body: &MirBody<'db>, cfg: &Cfg) -> 
         location: None,
     };
     builder.universal_regions();
+    builder.location = None;
+    builder.annotations();
+    // After the annotations, which can name a late-bound lifetime the signature does not.
+    builder.known_relations();
     for &block in &cfg.order {
         let data = &body.basic_blocks[block];
         for (statement, it) in data.statements.iter().enumerate() {
@@ -304,6 +317,16 @@ impl<'db> Builder<'_, '_, 'db> {
                 Some(region)
             }
             RegionKind::ReBound(..) => Some(region),
+            // A late-bound lifetime the body names, the same as in the signature.
+            RegionKind::ReLateParam(late) if self.ctx.closure_local.is_none() => {
+                let var = late.bound_region.var.as_u32();
+                if let Some(&it) = self.late.get(&var) {
+                    return Some(it);
+                }
+                let region = self.new_universal(UniversalKind::Named);
+                self.late.insert(var, region);
+                Some(region)
+            }
             RegionKind::ReStatic => Some(self.static_region()),
             RegionKind::ReEarlyParam(early) => Some(self.early_region(early.index)),
             _ => None,
@@ -426,7 +449,83 @@ impl<'db> Builder<'_, '_, 'db> {
             });
         }
         self.regions.local_tys = local_tys.into_iter().map(|it| it.unwrap()).collect();
-        self.known_relations();
+    }
+
+    /// What a `let` with a type written out requires, as rustc's user type annotations: that
+    /// the type is well-formed, and for a `_` pattern that the value has the type.
+    fn annotations(&mut self) {
+        let mut lets = Vec::new();
+        for (_, expr) in self.ctx.store.exprs() {
+            let hir_def::hir::Expr::Block { statements, .. } = expr else { continue };
+            for statement in statements.iter() {
+                if let Statement::Let { pat, type_ref: Some(_), initializer, .. } = statement {
+                    lets.push((*pat, *initializer));
+                }
+            }
+        }
+        for (pat, initializer) in lets {
+            let Some(ty) = self.ctx.infer.type_of_pat.get(pat).map(|it| it.as_ref()) else {
+                continue;
+            };
+            let ty = rustc_type_ir::fold_regions(self.interner(), ty, |region, depth| {
+                self.signature_region(region, depth).unwrap_or_else(|| self.fresh())
+            });
+            let at = At { category: Category::TypeAnnotation, span: MirSpan::PatId(pat) };
+            self.well_formed(ty, at, 0);
+            if let Pat::Wild = self.ctx.store[pat]
+                && let Some(initializer) = initializer
+                && let Some(local) = self.path_local(initializer)
+            {
+                let value = self.regions.local_tys[local.into_raw().into_u32() as usize];
+                self.relate(value, ty, Variance::Covariant, at);
+            }
+        }
+    }
+
+    /// The local of the variable `expr` names, if it is a path to one of this body's.
+    fn path_local(&self, expr: hir_def::hir::ExprId) -> Option<LocalId> {
+        use hir_def::resolver::{HasResolver, ValueNs};
+        let hir_def::hir::Expr::Path(path) = &self.ctx.store[expr] else { return None };
+        let db = self.ctx.db;
+        let owner = self.body.owner;
+        let mut resolver = owner.resolver(db);
+        let _guard = resolver.update_to_inner_scope(db, owner.expression_store_owner(db), expr);
+        let hygiene = self.ctx.store.expr_path_hygiene(expr);
+        match resolver.resolve_path_in_value_ns_fully(db, path, hygiene)? {
+            ValueNs::LocalBinding(binding) => self.body.binding_locals.get(binding).copied(),
+            _ => None,
+        }
+    }
+
+    /// The constraints the type `ty` holds being well-formed: in `&'a T` that `T: 'a`, and
+    /// the where clauses of the structs and enums it names.
+    fn well_formed(&mut self, ty: Ty<'db>, at: At, depth: usize) {
+        if depth > 8 {
+            return;
+        }
+        match ty.kind() {
+            TyKind::Ref(region, inner, _) => {
+                self.type_outlives(inner, region, at);
+                self.well_formed(inner, at, depth + 1);
+            }
+            TyKind::Adt(def, args) => {
+                self.predicates(GenericDefId::AdtId(def.def_id()), args, at, true);
+                for arg in args.iter() {
+                    if let GenericArgKind::Type(it) = arg.kind() {
+                        self.well_formed(it, at, depth + 1);
+                    }
+                }
+            }
+            TyKind::Tuple(tys) => {
+                for it in tys.iter() {
+                    self.well_formed(it, at, depth + 1);
+                }
+            }
+            TyKind::Array(inner, _) | TyKind::Slice(inner) | TyKind::RawPtr(inner, _) => {
+                self.well_formed(inner, at, depth + 1)
+            }
+            _ => (),
+        }
     }
 
     fn annotated_locals(&self) -> FxHashSet<LocalId> {
@@ -811,6 +910,18 @@ impl<'db> Builder<'_, '_, 'db> {
                         }
                     }
                     _ => (),
+                }
+                if let MirSpan::ExprId(expr) = span
+                    && let hir_def::hir::Expr::Cast { .. } = self.ctx.store[expr]
+                    && let Some(written) = self.ctx.infer.type_of_expr.get(expr)
+                {
+                    let written = written.as_ref();
+                    let written =
+                        rustc_type_ir::fold_regions(self.interner(), written, |r, depth| {
+                            self.signature_region(r, depth).unwrap_or_else(|| self.fresh())
+                        });
+                    let at = At { category: Category::TypeAnnotation, span };
+                    self.relate(target, written, Variance::Invariant, at);
                 }
                 Some(target)
             }
